@@ -1,0 +1,44 @@
+name: econnect-backend
+region: nyc
+
+services:
+  - name: api
+    source_dir: /
+    github:
+      repo: EConnectLtd/ECONNECT-BACKEND
+      branch: main
+      deploy_on_push: true
+    build_command: npm install
+    run_command: npm start
+    environment_slug: node-js
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 4000
+    health_check:
+      http_path: /api/health
+      initial_delay_seconds: 10
+      period_seconds: 10
+      timeout_seconds: 3
+      success_threshold: 1
+      failure_threshold: 3
+    routes:
+      - path: /
+    envs:
+      - key: NODE_ENV
+        value: production
+        scope: RUN_TIME
+      - key: PORT
+        value: "4000"
+        scope: RUN_TIME
+      # Note: Set sensitive environment variables (JWT_SECRET, MONGODB_URI, etc.)
+      # in the Digital Ocean App Platform dashboard as SECRET type
+      # Required variables to set in dashboard:
+      # - JWT_SECRET (SECRET)
+      # - MONGODB_URI or DATABASE_URL (SECRET)
+      # Optional variables:
+      # - REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
+      # - ALLOWED_ORIGINS, FRONTEND_URL
+      # - BEEM_API_KEY, BEEM_SECRET_KEY, BEEM_SOURCE_ADDR
+      # - AZAMPAY_APP_NAME, AZAMPAY_CLIENT_ID, AZAMPAY_CLIENT_SECRET, AZAMPAY_API_URL
+      # - MAX_FILE_SIZE
+

@@ -51,6 +51,8 @@ const io = socketIO(server, {
           "http://localhost:3000",
           "http://localhost:5173",
           "https://econnectz.netlify.app",
+          "https://econnect.co.tz",
+          "https://econnect-app-vo4td.ondigitalocean.app",
         ],
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
     credentials: true,
@@ -229,8 +231,14 @@ const uploadDirs = [
 ];
 
 uploadDirs.forEach((dir) => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  const fullPath = path.join(__dirname, dir);
+  if (!fs.existsSync(fullPath)) {
+    try {
+      fs.mkdirSync(fullPath, { recursive: true });
+      console.log(`✅ Created directory: ${dir}`);
+    } catch (error) {
+      console.error(`❌ Failed to create directory ${dir}:`, error.message);
+    }
   }
 });
 
@@ -295,6 +303,8 @@ app.use(
           "http://localhost:3000",
           "http://localhost:5173",
           "https://econnectz.netlify.app",
+          "https://econnect.co.tz",
+          "https://econnect-app-vo4td.ondigitalocean.app",
         ],
     credentials: true,
   })
@@ -325,16 +335,29 @@ if (!JWT_SECRET) {
   throw new Error("JWT_SECRET is missing from environment variables");
 }
 
+// ✅ Fixed (Mongoose 6+)
 mongoose
   .connect(MONGODB_URI, {
-    maxPoolSize: 10,
+    // These are fine, but add retry logic
     serverSelectionTimeoutMS: 5000,
     socketTimeoutMS: 45000,
   })
-  .then(() => console.log("✅ MongoDB Connected Successfully"))
+  .then(() => {
+    console.log("✅ MongoDB Connected Successfully");
+    console.log(`   Database: ${mongoose.connection.name}`);
+    console.log(`   Host: ${mongoose.connection.host}`);
+  })
   .catch((err) => {
-    console.error("❌ MongoDB Connection Error:", err);
-    process.exit(1);
+    console.error("❌ MongoDB Connection Error:", err.message);
+    console.error("   Retrying in 5 seconds...");
+
+    // Retry connection after 5 seconds
+    setTimeout(() => {
+      mongoose.connect(MONGODB_URI).catch((e) => {
+        console.error("❌ MongoDB Retry Failed:", e.message);
+        process.exit(1);
+      });
+    }, 5000);
   });
 
 // ============================================
