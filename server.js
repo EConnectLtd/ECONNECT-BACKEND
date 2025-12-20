@@ -441,6 +441,21 @@ const userSchema = new mongoose.Schema({
   salary: Number,
   hireDate: Date,
 
+  // ✅ NEW GUARDIAN FIELDS
+  guardianEmail: String,
+  guardianOccupation: String,
+  guardianNationalId: String,
+
+  // ✅ NEW PARENT/GUARDIAN LOCATION FIELDS
+  parentRegionId: { type: mongoose.Schema.Types.ObjectId, ref: "Region" },
+  parentDistrictId: { type: mongoose.Schema.Types.ObjectId, ref: "District" },
+  parentWardId: { type: mongoose.Schema.Types.ObjectId, ref: "Ward" },
+  parentAddress: String,
+
+  // ✅ NEW STUDENT FIELDS
+  institutionType: { type: String, enum: ["government", "private"] },
+  classLevel: String, // Primary, Secondary, College, University
+
   // Registration Type (for students)
   registration_type: {
     type: String,
@@ -640,6 +655,22 @@ const talentSchema = new mongoose.Schema({
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now },
 });
+
+// Subject Schema
+const subjectSchema = new mongoose.Schema({
+  name: { type: String, required: true, trim: true },
+  code: { type: String, trim: true, uppercase: true },
+  description: String,
+  category: String, // e.g., "Science", "Arts", "Mathematics"
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School" }, // Optional: school-specific subjects
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now },
+});
+
+subjectSchema.index({ name: 1, schoolId: 1 }, { unique: true });
+
+const Subject = mongoose.model("Subject", subjectSchema);
 
 // Student Talent Schema
 const studentTalentSchema = new mongoose.Schema({
@@ -2714,8 +2745,21 @@ app.post("/api/auth/register", async (req, res) => {
       schoolId,
       regionId,
       districtId,
+      wardId,
       registration_type,
       is_ctm_student,
+
+      // ✅ NEW FIELDS
+      institutionType,
+      classLevel,
+      gradeLevel,
+      guardianEmail,
+      guardianOccupation,
+      guardianNationalId,
+      parentRegionId,
+      parentDistrictId,
+      parentWardId,
+      parentAddress,
     } = req.body;
 
     // Validation
@@ -2753,10 +2797,23 @@ app.post("/api/auth/register", async (req, res) => {
       schoolId,
       regionId,
       districtId,
+      wardId,
       isActive: true,
       registration_type,
       is_ctm_student,
       registration_date: new Date(),
+
+      // ✅ NEW FIELDS
+      institutionType,
+      classLevel,
+      gradeLevel,
+      guardianEmail,
+      guardianOccupation,
+      guardianNationalId,
+      parentRegionId,
+      parentDistrictId,
+      parentWardId,
+      parentAddress,
     });
 
     // ✅ AUTO-GENERATE INVOICE if registration type requires payment
@@ -17610,6 +17667,293 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to generate revenue report",
+        message: error.message,
+      });
+    }
+  }
+);
+
+// ============================================
+// SUBJECT ENDPOINTS
+// ============================================
+
+// GET all subjects
+app.get("/api/subjects", async (req, res) => {
+  try {
+    const { schoolId, category, isActive = true } = req.query;
+
+    const query = {};
+
+    if (isActive !== undefined) {
+      query.isActive = isActive === "true";
+    }
+
+    if (category) {
+      query.category = category;
+    }
+
+    if (schoolId) {
+      // Get both global subjects and school-specific ones
+      query.$or = [{ schoolId: schoolId }, { schoolId: { $exists: false } }];
+    } else {
+      // Only return global subjects if no schoolId specified
+      query.schoolId = { $exists: false };
+    }
+
+    const subjects = await Subject.find(query)
+      .sort({ category: 1, name: 1 })
+      .select("_id name code description category isActive createdAt");
+
+    console.log(`✅ Fetched ${subjects.length} subjects`);
+
+    res.json({
+      success: true,
+      data: subjects,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching subjects:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch subjects",
+      message: error.message,
+    });
+  }
+});
+
+// GET subject by ID
+app.get("/api/subjects/:id", async (req, res) => {
+  try {
+    const subject = await Subject.findById(req.params.id);
+
+    if (!subject) {
+      return res.status(404).json({
+        success: false,
+        error: "Subject not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      data: subject,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching subject:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch subject",
+      message: error.message,
+    });
+  }
+});
+
+// CREATE subject (admin only)
+app.post(
+  "/api/subjects",
+  authenticateToken,
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  async (req, res) => {
+    try {
+      const { name, code, description, category, schoolId } = req.body;
+
+      if (!name) {
+        return res.status(400).json({
+          success: false,
+          error: "Subject name is required",
+        });
+      }
+
+      // Check if subject already exists
+      const existingSubject = await Subject.findOne({
+        name,
+        ...(schoolId ? { schoolId } : { schoolId: { $exists: false } }),
+      });
+
+      if (existingSubject) {
+        return res.status(409).json({
+          success: false,
+          error: "Subject already exists",
+        });
+      }
+
+      const subject = await Subject.create({
+        name,
+        code,
+        description,
+        category,
+        schoolId: schoolId || undefined,
+      });
+
+      await logActivity(
+        req.user.id,
+        "SUBJECT_CREATED",
+        `Created subject: ${name}`,
+        req
+      );
+
+      res.status(201).json({
+        success: true,
+        message: "Subject created successfully",
+        data: subject,
+      });
+    } catch (error) {
+      console.error("❌ Error creating subject:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to create subject",
+        message: error.message,
+      });
+    }
+  }
+);
+
+// UPDATE subject
+app.put(
+  "/api/subjects/:id",
+  authenticateToken,
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  async (req, res) => {
+    try {
+      const subject = await Subject.findByIdAndUpdate(
+        req.params.id,
+        { ...req.body, updatedAt: new Date() },
+        { new: true, runValidators: true }
+      );
+
+      if (!subject) {
+        return res.status(404).json({
+          success: false,
+          error: "Subject not found",
+        });
+      }
+
+      await logActivity(
+        req.user.id,
+        "SUBJECT_UPDATED",
+        `Updated subject: ${subject.name}`,
+        req
+      );
+
+      res.json({
+        success: true,
+        message: "Subject updated successfully",
+        data: subject,
+      });
+    } catch (error) {
+      console.error("❌ Error updating subject:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to update subject",
+        message: error.message,
+      });
+    }
+  }
+);
+
+// DELETE subject (soft delete)
+app.delete(
+  "/api/subjects/:id",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const subject = await Subject.findByIdAndUpdate(
+        req.params.id,
+        { isActive: false, updatedAt: new Date() },
+        { new: true }
+      );
+
+      if (!subject) {
+        return res.status(404).json({
+          success: false,
+          error: "Subject not found",
+        });
+      }
+
+      await logActivity(
+        req.user.id,
+        "SUBJECT_DELETED",
+        `Deleted subject: ${subject.name}`,
+        req
+      );
+
+      res.json({
+        success: true,
+        message: "Subject deleted successfully",
+      });
+    } catch (error) {
+      console.error("❌ Error deleting subject:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to delete subject",
+        message: error.message,
+      });
+    }
+  }
+);
+
+// SEED subjects (pre-populate common subjects)
+app.post(
+  "/api/subjects/seed",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const defaultSubjects = [
+        // Science Subjects
+        { name: "Mathematics", code: "MATH", category: "Science" },
+        { name: "Physics", code: "PHY", category: "Science" },
+        { name: "Chemistry", code: "CHEM", category: "Science" },
+        { name: "Biology", code: "BIO", category: "Science" },
+        { name: "Computer Science", code: "CS", category: "Science" },
+
+        // Arts Subjects
+        { name: "English", code: "ENG", category: "Arts" },
+        { name: "Kiswahili", code: "KIS", category: "Arts" },
+        { name: "History", code: "HIST", category: "Arts" },
+        { name: "Geography", code: "GEO", category: "Arts" },
+        { name: "Civics", code: "CIV", category: "Arts" },
+
+        // Commerce Subjects
+        { name: "Commerce", code: "COM", category: "Commerce" },
+        { name: "Accounting", code: "ACC", category: "Commerce" },
+        { name: "Book Keeping", code: "BK", category: "Commerce" },
+        { name: "Economics", code: "ECON", category: "Commerce" },
+
+        // Other Subjects
+        { name: "Basic Mathematics", code: "BMATH", category: "Basic" },
+        { name: "Religious Education", code: "RE", category: "Other" },
+        { name: "Physical Education", code: "PE", category: "Other" },
+      ];
+
+      const results = [];
+      for (const subjectData of defaultSubjects) {
+        const existing = await Subject.findOne({
+          name: subjectData.name,
+          schoolId: { $exists: false },
+        });
+        if (!existing) {
+          const subject = await Subject.create(subjectData);
+          results.push(subject);
+        }
+      }
+
+      await logActivity(
+        req.user.id,
+        "SUBJECTS_SEEDED",
+        `Seeded ${results.length} subjects`,
+        req
+      );
+
+      res.json({
+        success: true,
+        message: `Seeded ${results.length} subjects successfully`,
+        data: results,
+      });
+    } catch (error) {
+      console.error("❌ Error seeding subjects:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to seed subjects",
         message: error.message,
       });
     }
