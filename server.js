@@ -52,7 +52,7 @@ const io = socketIO(server, {
           "http://localhost:5173",
           "https://econnectz.netlify.app",
           "https://econnect.co.tz",
-          "https://econnect-app-vo4td.ondigitalocean.app",
+          "https://www.econnect.co.tz",
         ],
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
     credentials: true,
@@ -304,7 +304,7 @@ app.use(
           "http://localhost:5173",
           "https://econnectz.netlify.app",
           "https://econnect.co.tz",
-          "https://econnect-app-vo4td.ondigitalocean.app",
+          "https://www.econnect.co.tz",
         ],
     credentials: true,
   })
