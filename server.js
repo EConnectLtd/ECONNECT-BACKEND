@@ -32,6 +32,11 @@ const path = require("path");
 const fs = require("fs");
 const axios = require("axios");
 const crypto = require("crypto");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
+const { body, validationResult, param, query } = require("express-validator");
+const mongoSanitize = require("express-mongo-sanitize");
+const xss = require("xss-clean");
 
 // Load environment variables
 dotenv.config();
@@ -295,6 +300,24 @@ const upload = multer({
 // ============================================
 // MIDDLEWARE
 // ============================================
+
+// Security Headers (Helmet)
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrc: ["'self'"],
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false, // Allow Socket.io
+  })
+);
+
+// CORS Configuration
 app.use(
   cors({
     origin: process.env.ALLOWED_ORIGINS
@@ -310,8 +333,17 @@ app.use(
   })
 );
 
+// Body Parsing
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+
+// Data Sanitization - Prevent NoSQL Injection
+app.use(mongoSanitize());
+
+// XSS Protection
+app.use(xss());
+
+// Static Files
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Request logging middleware
@@ -2728,182 +2760,311 @@ app.get("/api/health", async (req, res) => {
 });
 
 // ============================================
+// RATE LIMITING CONFIGURATION
+// ============================================
+
+// Strict rate limiter for authentication endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // Limit each IP to 5 requests per windowMs
+  message: {
+    success: false,
+    error: "Too many authentication attempts, please try again later",
+  },
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  skipSuccessfulRequests: false, // Count successful requests too
+});
+
+// Moderate rate limiter for general API endpoints
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: {
+    success: false,
+    error: "Too many requests, please try again later",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Strict rate limiter for password reset
+const passwordResetLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 3, // Limit each IP to 3 password reset attempts per hour
+  message: {
+    success: false,
+    error: "Too many password reset attempts, please try again later",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ============================================
+// VALIDATION MIDDLEWARE HELPERS
+// ============================================
+
+// Validation error handler
+const handleValidationErrors = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      error: "Validation failed",
+      errors: errors.array(),
+    });
+  }
+  next();
+};
+
+// Sanitize error messages for production
+const sanitizeError = (error, isDevelopment = false) => {
+  if (isDevelopment || process.env.NODE_ENV === "development") {
+    return error.message || "An error occurred";
+  }
+  // In production, return generic messages
+  return "An error occurred. Please try again later.";
+};
+
+// Validate MongoDB ObjectId
+const isValidObjectId = (id) => {
+  return mongoose.Types.ObjectId.isValid(id);
+};
+
+// ObjectId validation middleware
+const validateObjectId = (paramName = "id") => {
+  return [
+    param(paramName).custom((value) => {
+      if (!isValidObjectId(value)) {
+        throw new Error(`Invalid ${paramName} format`);
+      }
+      return true;
+    }),
+    handleValidationErrors,
+  ];
+};
+
+// ============================================
 // AUTHENTICATION ENDPOINTS
 // ============================================
 
 // Register with OTP
-app.post("/api/auth/register", async (req, res) => {
-  try {
-    const {
-      username,
-      email,
-      password,
-      role,
-      firstName,
-      lastName,
-      phoneNumber,
-      schoolId,
-      regionId,
-      districtId,
-      wardId,
-      registration_type,
-      is_ctm_student,
+app.post(
+  "/api/auth/register",
+  authLimiter,
+  [
+    body("username")
+      .trim()
+      .isLength({ min: 3, max: 30 })
+      .withMessage("Username must be between 3 and 30 characters")
+      .matches(/^[a-zA-Z0-9_]+$/)
+      .withMessage(
+        "Username can only contain letters, numbers, and underscores"
+      ),
+    body("email")
+      .isEmail()
+      .normalizeEmail()
+      .withMessage("Invalid email address"),
+    body("password")
+      .isLength({ min: 8 })
+      .withMessage("Password must be at least 8 characters")
+      .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
+      .withMessage(
+        "Password must contain at least one uppercase letter, one lowercase letter, and one number"
+      ),
+    body("role")
+      .isIn([
+        "student",
+        "teacher",
+        "headmaster",
+        "staff",
+        "entrepreneur",
+        "super_admin",
+        "district_official",
+        "regional_official",
+        "national_official",
+        "tamisemi",
+      ])
+      .withMessage("Invalid role"),
+    body("phoneNumber")
+      .optional()
+      .matches(/^\+?[1-9]\d{1,14}$/)
+      .withMessage("Invalid phone number format"),
+  ],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const {
+        username,
+        email,
+        password,
+        role,
+        firstName,
+        lastName,
+        phoneNumber,
+        schoolId,
+        regionId,
+        districtId,
+        wardId,
+        registration_type,
+        is_ctm_student,
 
-      // ✅ NEW FIELDS
-      institutionType,
-      classLevel,
-      gradeLevel,
-      guardianEmail,
-      guardianOccupation,
-      guardianNationalId,
-      parentRegionId,
-      parentDistrictId,
-      parentWardId,
-      parentAddress,
-    } = req.body;
+        // ✅ NEW FIELDS
+        institutionType,
+        classLevel,
+        gradeLevel,
+        guardianEmail,
+        guardianOccupation,
+        guardianNationalId,
+        parentRegionId,
+        parentDistrictId,
+        parentWardId,
+        parentAddress,
+      } = req.body;
 
-    // Validation
-    if (!username || !email || !password || !role) {
-      return res.status(400).json({
-        success: false,
-        error: "Username, email, password, and role are required",
-      });
-    }
-
-    // Check if user already exists
-    const existingUser = await User.findOne({
-      $or: [{ username }, { email }, { phoneNumber }],
-    });
-
-    if (existingUser) {
-      return res.status(409).json({
-        success: false,
-        error: "Username, email, or phone number already exists",
-      });
-    }
-
-    // Hash password
-    const hashedPassword = await hashPassword(password);
-
-    // Create user
-    const user = await User.create({
-      username,
-      email,
-      password: hashedPassword,
-      role,
-      firstName,
-      lastName,
-      phoneNumber,
-      schoolId,
-      regionId,
-      districtId,
-      wardId,
-      isActive: true,
-      registration_type,
-      is_ctm_student,
-      registration_date: new Date(),
-
-      // ✅ NEW FIELDS
-      institutionType,
-      classLevel,
-      gradeLevel,
-      guardianEmail,
-      guardianOccupation,
-      guardianNationalId,
-      parentRegionId,
-      parentDistrictId,
-      parentWardId,
-      parentAddress,
-    });
-
-    // ✅ AUTO-GENERATE INVOICE if registration type requires payment
-    if (registration_type && registration_type !== "normal_registration") {
-      const registrationFees = {
-        premier_registration: 70000,
-        silver_registration: 49000,
-        diamond_registration: 55000,
-      };
-
-      const amount = registrationFees[registration_type];
-
-      if (amount) {
-        const invoiceNumber = `INV-${Date.now()}-${Math.random()
-          .toString(36)
-          .substring(2, 9)
-          .toUpperCase()}`;
-
-        await Invoice.create({
-          student_id: user._id,
-          invoiceNumber,
-          type: "ctm_membership",
-          description: `${registration_type
-            .replace("_", " ")
-            .toUpperCase()} Fee`,
-          amount,
-          currency: "TZS",
-          status: "pending",
-          dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
-          academicYear: new Date().getFullYear().toString(),
+      // Validation
+      if (!username || !email || !password || !role) {
+        return res.status(400).json({
+          success: false,
+          error: "Username, email, password, and role are required",
         });
+      }
 
-        // Set next billing date for monthly subscriptions
-        if (
-          ["premier_registration", "diamond_registration"].includes(
-            registration_type
-          )
-        ) {
-          user.next_billing_date = new Date(
-            Date.now() + 30 * 24 * 60 * 60 * 1000
-          );
-          await user.save();
+      // Check if user already exists
+      const existingUser = await User.findOne({
+        $or: [{ username }, { email }, { phoneNumber }],
+      });
+
+      if (existingUser) {
+        return res.status(409).json({
+          success: false,
+          error: "Username, email, or phone number already exists",
+        });
+      }
+
+      // Hash password
+      const hashedPassword = await hashPassword(password);
+
+      // Create user
+      const user = await User.create({
+        username,
+        email,
+        password: hashedPassword,
+        role,
+        firstName,
+        lastName,
+        phoneNumber,
+        schoolId,
+        regionId,
+        districtId,
+        wardId,
+        isActive: true,
+        registration_type,
+        is_ctm_student,
+        registration_date: new Date(),
+
+        // ✅ NEW FIELDS
+        institutionType,
+        classLevel,
+        gradeLevel,
+        guardianEmail,
+        guardianOccupation,
+        guardianNationalId,
+        parentRegionId,
+        parentDistrictId,
+        parentWardId,
+        parentAddress,
+      });
+
+      // ✅ AUTO-GENERATE INVOICE if registration type requires payment
+      if (registration_type && registration_type !== "normal_registration") {
+        const registrationFees = {
+          premier_registration: 70000,
+          silver_registration: 49000,
+          diamond_registration: 55000,
+        };
+
+        const amount = registrationFees[registration_type];
+
+        if (amount) {
+          const invoiceNumber = `INV-${Date.now()}-${Math.random()
+            .toString(36)
+            .substring(2, 9)
+            .toUpperCase()}`;
+
+          await Invoice.create({
+            student_id: user._id,
+            invoiceNumber,
+            type: "ctm_membership",
+            description: `${registration_type
+              .replace("_", " ")
+              .toUpperCase()} Fee`,
+            amount,
+            currency: "TZS",
+            status: "pending",
+            dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+            academicYear: new Date().getFullYear().toString(),
+          });
+
+          // Set next billing date for monthly subscriptions
+          if (
+            ["premier_registration", "diamond_registration"].includes(
+              registration_type
+            )
+          ) {
+            user.next_billing_date = new Date(
+              Date.now() + 30 * 24 * 60 * 60 * 1000
+            );
+            await user.save();
+          }
         }
       }
-    }
 
-    // Send OTP for phone verification (if phone number provided)
-    if (phoneNumber) {
-      await sendOTP(phoneNumber, "registration");
-    }
+      // Send OTP for phone verification (if phone number provided)
+      if (phoneNumber) {
+        await sendOTP(phoneNumber, "registration");
+      }
 
-    // Generate token
-    const token = generateToken(user);
+      // Generate token
+      const token = generateToken(user);
 
-    // Log activity
-    await logActivity(
-      user._id,
-      "USER_REGISTERED",
-      `New ${role} account created`,
-      req
-    );
+      // Log activity
+      await logActivity(
+        user._id,
+        "USER_REGISTERED",
+        `New ${role} account created`,
+        req
+      );
 
-    res.status(201).json({
-      success: true,
-      message: phoneNumber
-        ? "User registered. Please verify your phone number."
-        : "User registered successfully.",
-      data: {
-        user: {
-          id: user._id,
-          username: user.username,
-          email: user.email,
-          role: user.role,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          phoneNumber: user.phoneNumber,
-          isPhoneVerified: user.isPhoneVerified,
+      res.status(201).json({
+        success: true,
+        message: phoneNumber
+          ? "User registered. Please verify your phone number."
+          : "User registered successfully.",
+        data: {
+          user: {
+            id: user._id,
+            username: user.username,
+            email: user.email,
+            role: user.role,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            phoneNumber: user.phoneNumber,
+            isPhoneVerified: user.isPhoneVerified,
+          },
+          token,
         },
-        token,
-      },
-    });
-  } catch (error) {
-    console.error("❌ Registration error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Registration failed",
-      message: error.message,
-    });
+      });
+    } catch (error) {
+      console.error("❌ Registration error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Registration failed",
+        message: error.message,
+      });
+    }
   }
-});
+);
 
 // Verify OTP
 app.post("/api/auth/verify-otp", authenticateToken, async (req, res) => {
@@ -2990,74 +3151,83 @@ app.post("/api/auth/resend-otp", authenticateToken, async (req, res) => {
 });
 
 // Login
-app.post("/api/auth/login", async (req, res) => {
-  try {
-    const { username, password } = req.body;
+app.post(
+  "/api/auth/login",
+  authLimiter,
+  [
+    body("username").trim().notEmpty().withMessage("Username is required"),
+    body("password").notEmpty().withMessage("Password is required"),
+  ],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const { username, password } = req.body;
 
-    if (!username || !password) {
-      return res.status(400).json({
-        success: false,
-        error: "Username and password are required",
-      });
-    }
+      if (!username || !password) {
+        return res.status(400).json({
+          success: false,
+          error: "Username and password are required",
+        });
+      }
 
-    const user = await User.findOne({
-      $or: [{ username }, { email: username }],
-    }).populate("schoolId regionId districtId");
+      const user = await User.findOne({
+        $or: [{ username }, { email: username }],
+      }).populate("schoolId regionId districtId");
 
-    if (!user || !(await comparePassword(password, user.password))) {
-      return res.status(401).json({
-        success: false,
-        error: "Invalid credentials",
-      });
-    }
+      if (!user || !(await comparePassword(password, user.password))) {
+        return res.status(401).json({
+          success: false,
+          error: "Invalid credentials",
+        });
+      }
 
-    if (!user.isActive) {
-      return res.status(403).json({
-        success: false,
-        error: "Account is deactivated. Please contact support.",
-      });
-    }
+      if (!user.isActive) {
+        return res.status(403).json({
+          success: false,
+          error: "Account is deactivated. Please contact support.",
+        });
+      }
 
-    user.lastLogin = new Date();
-    await user.save();
+      user.lastLogin = new Date();
+      await user.save();
 
-    const token = generateToken(user);
+      const token = generateToken(user);
 
-    await logActivity(user._id, "USER_LOGIN", "User logged in", req);
+      await logActivity(user._id, "USER_LOGIN", "User logged in", req);
 
-    res.json({
-      success: true,
-      message: "Login successful",
-      data: {
-        user: {
-          id: user._id,
-          username: user.username,
-          email: user.email,
-          role: user.role,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          phoneNumber: user.phoneNumber,
-          schoolId: user.schoolId,
-          regionId: user.regionId,
-          districtId: user.districtId,
-          profileImage: user.profileImage,
-          isPhoneVerified: user.isPhoneVerified,
-          isEmailVerified: user.isEmailVerified,
-          lastLogin: user.lastLogin,
+      res.json({
+        success: true,
+        message: "Login successful",
+        data: {
+          user: {
+            id: user._id,
+            username: user.username,
+            email: user.email,
+            role: user.role,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            phoneNumber: user.phoneNumber,
+            schoolId: user.schoolId,
+            regionId: user.regionId,
+            districtId: user.districtId,
+            profileImage: user.profileImage,
+            isPhoneVerified: user.isPhoneVerified,
+            isEmailVerified: user.isEmailVerified,
+            lastLogin: user.lastLogin,
+          },
+          token,
         },
-        token,
-      },
-    });
-  } catch (error) {
-    console.error("❌ Login error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Login failed",
-      message: error.message,
-    });
+      });
+    } catch (error) {
+      console.error("❌ Login error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Login failed",
+        message: error.message,
+      });
+    }
   }
-});
+);
 
 // Get current user profile
 app.get("/api/auth/me", authenticateToken, async (req, res) => {
@@ -3201,107 +3371,130 @@ app.post("/api/auth/change-password", authenticateToken, async (req, res) => {
 });
 
 // Forgot password - Request OTP
-app.post("/api/auth/forgot-password", async (req, res) => {
-  try {
-    const { email } = req.body;
+app.post(
+  "/api/auth/forgot-password",
+  passwordResetLimiter,
+  [
+    body("email")
+      .isEmail()
+      .normalizeEmail()
+      .withMessage("Invalid email address"),
+  ],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const { email } = req.body;
 
-    if (!email) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Email is required" });
-    }
+      const user = await User.findOne({ email });
 
-    const user = await User.findOne({ email });
+      if (!user) {
+        // Don't reveal if email exists
+        return res.json({
+          success: true,
+          message: "If the email exists, you will receive a password reset OTP",
+        });
+      }
 
-    if (!user) {
-      // Don't reveal if email exists
-      return res.json({
+      if (!user.phoneNumber) {
+        return res.status(400).json({
+          success: false,
+          error: "No phone number associated with this account",
+        });
+      }
+
+      await sendOTP(user.phoneNumber, "password_reset");
+
+      res.json({
         success: true,
-        message: "If the email exists, you will receive a password reset OTP",
+        message: "Password reset OTP sent to your registered phone number",
       });
-    }
-
-    if (!user.phoneNumber) {
-      return res.status(400).json({
+    } catch (error) {
+      console.error("❌ Forgot password error:", error);
+      res.status(500).json({
         success: false,
-        error: "No phone number associated with this account",
+        error: "Failed to process request",
+        message: sanitizeError(error),
       });
     }
-
-    await sendOTP(user.phoneNumber, "password_reset");
-
-    res.json({
-      success: true,
-      message: "Password reset OTP sent to your registered phone number",
-    });
-  } catch (error) {
-    console.error("❌ Forgot password error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to process request",
-      message: error.message,
-    });
   }
-});
+);
 
 // Reset password with OTP
-app.post("/api/auth/reset-password", async (req, res) => {
-  try {
-    const { email, otp, newPassword } = req.body;
+app.post(
+  "/api/auth/reset-password",
+  passwordResetLimiter,
+  [
+    body("email")
+      .isEmail()
+      .normalizeEmail()
+      .withMessage("Invalid email address"),
+    body("otp")
+      .notEmpty()
+      .withMessage("OTP is required")
+      .isLength({ min: 4, max: 6 })
+      .withMessage("OTP must be between 4 and 6 characters"),
+    body("newPassword")
+      .isLength({ min: 8 })
+      .withMessage("Password must be at least 8 characters")
+      .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
+      .withMessage(
+        "Password must contain at least one uppercase letter, one lowercase letter, and one number"
+      ),
+  ],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const { email, otp, newPassword } = req.body;
 
-    if (!email || !otp || !newPassword) {
-      return res.status(400).json({
+      const user = await User.findOne({ email });
+
+      if (!user) {
+        return res
+          .status(404)
+          .json({ success: false, error: "User not found" });
+      }
+
+      const verification = await verifyOTP(
+        user.phoneNumber,
+        otp,
+        "password_reset"
+      );
+
+      if (!verification.success) {
+        return res.status(400).json(verification);
+      }
+
+      user.password = await hashPassword(newPassword);
+      await user.save();
+
+      await logActivity(
+        user._id,
+        "PASSWORD_RESET",
+        "Password reset via OTP",
+        req
+      );
+
+      await createNotification(
+        user._id,
+        "Password Reset",
+        "Your password has been reset successfully",
+        "success"
+      );
+
+      res.json({
+        success: true,
+        message: "Password reset successfully",
+      });
+    } catch (error) {
+      console.error("❌ Reset password error:", error);
+      res.status(500).json({
         success: false,
-        error: "Email, OTP, and new password are required",
+        error: "Failed to reset password",
+        message: sanitizeError(error),
       });
     }
-
-    const user = await User.findOne({ email });
-
-    if (!user) {
-      return res.status(404).json({ success: false, error: "User not found" });
-    }
-
-    const verification = await verifyOTP(
-      user.phoneNumber,
-      otp,
-      "password_reset"
-    );
-
-    if (!verification.success) {
-      return res.status(400).json(verification);
-    }
-
-    user.password = await hashPassword(newPassword);
-    await user.save();
-
-    await logActivity(
-      user._id,
-      "PASSWORD_RESET",
-      "Password reset via OTP",
-      req
-    );
-
-    await createNotification(
-      user._id,
-      "Password Reset",
-      "Your password has been reset successfully",
-      "success"
-    );
-
-    res.json({
-      success: true,
-      message: "Password reset successfully",
-    });
-  } catch (error) {
-    console.error("❌ Reset password error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to reset password",
-      message: error.message,
-    });
   }
-});
+);
 
 // Logout
 app.post("/api/auth/logout", authenticateToken, async (req, res) => {
@@ -8780,7 +8973,7 @@ app.get(
         ),
         PerformanceRecord.aggregate([
           {
-            $match: { studentId: new mongoose.Types.ObjectId(studentId)() },
+            $match: { studentId: new mongoose.Types.ObjectId(studentId) },
           },
           {
             $group: {
@@ -9738,7 +9931,7 @@ app.get(
           PerformanceRecord.aggregate([
             {
               $match: {
-                studentId: new mongoose.Types.ObjectId(studentId)(),
+                studentId: new mongoose.Types.ObjectId(studentId),
               },
             },
             {
@@ -9754,7 +9947,7 @@ app.get(
           PerformanceRecord.aggregate([
             {
               $match: {
-                studentId: new mongoose.Types.ObjectId(studentId)(),
+                studentId: new mongoose.Types.ObjectId(studentId),
               },
             },
             {
@@ -9783,7 +9976,7 @@ app.get(
           PerformanceRecord.aggregate([
             {
               $match: {
-                studentId: new mongoose.Types.ObjectId(studentId)(),
+                studentId: new mongoose.Types.ObjectId(studentId),
               },
             },
             {
@@ -18199,12 +18392,18 @@ app.use((req, res) => {
   });
 });
 
+// Global error handler
 app.use((err, req, res, next) => {
   console.error("❌ Server Error:", err);
-  res.status(500).json({
+  const statusCode = err.status || err.statusCode || 500;
+  res.status(statusCode).json({
     success: false,
-    error: "Internal server error",
-    message: err.message,
+    error:
+      err.name === "ValidationError"
+        ? "Validation Error"
+        : "Internal server error",
+    message: sanitizeError(err),
+    ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
   });
 });
 
@@ -18241,7 +18440,9 @@ process.on("SIGTERM", () => {
   console.log("SIGTERM: Closing server...");
   server.close(() => {
     mongoose.connection.close();
-    redis.quit();
+    if (redis) {
+      redis.quit();
+    }
     process.exit(0);
   });
 });
@@ -18250,7 +18451,9 @@ process.on("SIGINT", () => {
   console.log("SIGINT: Closing server...");
   server.close(() => {
     mongoose.connection.close();
-    redis.quit();
+    if (redis) {
+      redis.quit();
+    }
     process.exit(0);
   });
 });
