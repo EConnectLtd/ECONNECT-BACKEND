@@ -8,10 +8,27 @@ This is a step-by-step guide to deploy your ECONNECT Backend as a **Web Service*
 - [ ] GitHub repository: `EConnectLtd/ECONNECT-BACKEND`
 - [ ] MongoDB database ready (connection string)
 - [ ] Code pushed to GitHub (including `.do/app.yaml`)
+- [ ] `package-lock.json` is committed to the repository (required for builds)
 
 ---
 
 ## Step-by-Step Deployment
+
+### Step 0: Ensure package-lock.json is Committed
+
+**IMPORTANT:** Before deploying, make sure `package-lock.json` is committed to your repository:
+
+```bash
+# Generate/update package-lock.json
+npm install
+
+# Commit it to your repository
+git add package-lock.json
+git commit -m "Add package-lock.json for Digital Ocean deployment"
+git push
+```
+
+Digital Ocean requires `package-lock.json` for reliable builds.
 
 ### Step 1: Access Digital Ocean App Platform
 
@@ -38,6 +55,7 @@ Digital Ocean should automatically detect your `.do/app.yaml` file. You should s
 - **HTTP Port:** 4000
 
 **If auto-detection doesn't work, manually configure:**
+
 1. Click **"Edit"** on the detected service
 2. Ensure **"Web Service"** is selected (not Worker or Static Site)
 3. Set:
@@ -54,30 +72,31 @@ Digital Ocean should automatically detect your `.do/app.yaml` file. You should s
 
 #### Required Environment Variables:
 
-| Variable Name | Value | Type | Notes |
-|--------------|-------|------|-------|
-| `NODE_ENV` | `production` | Plain | Already in app.yaml |
-| `PORT` | `4000` | Plain | Already in app.yaml |
-| `JWT_SECRET` | `your-secret-key-here` | **SECRET** | Generate a strong random string |
-| `MONGODB_URI` | `mongodb+srv://...` | **SECRET** | Your MongoDB connection string |
+| Variable Name | Value                  | Type       | Notes                           |
+| ------------- | ---------------------- | ---------- | ------------------------------- |
+| `NODE_ENV`    | `production`           | Plain      | Already in app.yaml             |
+| `PORT`        | `4000`                 | Plain      | Already in app.yaml             |
+| `JWT_SECRET`  | `your-secret-key-here` | **SECRET** | Generate a strong random string |
+| `MONGODB_URI` | `mongodb+srv://...`    | **SECRET** | Your MongoDB connection string  |
 
 **To mark as SECRET:**
+
 - Click the toggle next to the variable name
 - This hides the value in the UI
 
 #### Optional Environment Variables (Add as needed):
 
-| Variable Name | Type | When to Use |
-|--------------|------|-------------|
-| `REDIS_HOST` | SECRET | If using Redis queues |
-| `REDIS_PORT` | Plain | If using Redis (default: 6379) |
-| `REDIS_PASSWORD` | SECRET | If Redis requires password |
-| `ALLOWED_ORIGINS` | Plain | Comma-separated frontend URLs |
-| `FRONTEND_URL` | Plain | Your frontend domain |
-| `BEEM_API_KEY` | SECRET | If using Beem SMS |
-| `BEEM_SECRET_KEY` | SECRET | If using Beem SMS |
-| `AZAMPAY_CLIENT_ID` | SECRET | If using AzamPay |
-| `AZAMPAY_CLIENT_SECRET` | SECRET | If using AzamPay |
+| Variable Name           | Type   | When to Use                    |
+| ----------------------- | ------ | ------------------------------ |
+| `REDIS_HOST`            | SECRET | If using Redis queues          |
+| `REDIS_PORT`            | Plain  | If using Redis (default: 6379) |
+| `REDIS_PASSWORD`        | SECRET | If Redis requires password     |
+| `ALLOWED_ORIGINS`       | Plain  | Comma-separated frontend URLs  |
+| `FRONTEND_URL`          | Plain  | Your frontend domain           |
+| `BEEM_API_KEY`          | SECRET | If using Beem SMS              |
+| `BEEM_SECRET_KEY`       | SECRET | If using Beem SMS              |
+| `AZAMPAY_CLIENT_ID`     | SECRET | If using AzamPay               |
+| `AZAMPAY_CLIENT_SECRET` | SECRET | If using AzamPay               |
 
 ### Step 5: Choose Instance Size
 
@@ -90,6 +109,7 @@ Digital Ocean should automatically detect your `.do/app.yaml` file. You should s
 ### Step 6: Review and Deploy
 
 1. Review all settings:
+
    - ✅ Service type is **Web Service**
    - ✅ Environment variables are set
    - ✅ Health check path is `/api/health`
@@ -107,16 +127,20 @@ Digital Ocean should automatically detect your `.do/app.yaml` file. You should s
 Once deployment completes:
 
 1. **Check the URL:**
+
    - Your app will be at: `https://econnect-backend-xxxxx.ondigitalocean.app`
    - The exact URL is shown in the App Platform dashboard
 
 2. **Test Health Endpoint:**
+
    ```
    https://your-app-url.ondigitalocean.app/api/health
    ```
+
    Should return: `{"success":true,"message":"Server is healthy"}`
 
 3. **Check Logs:**
+
    - Go to **"Runtime Logs"** tab in Digital Ocean
    - Look for: `✅ Server: http://localhost:4000`
    - Look for: `✅ MongoDB Connected Successfully`
@@ -131,24 +155,32 @@ Once deployment completes:
 ## Common Issues & Solutions
 
 ### Issue: Build Fails
+
 **Solution:** Check build logs. Common causes:
+
 - Missing dependencies in `package.json`
 - Node version mismatch (ensure Node 18+)
 
 ### Issue: Health Check Fails
-**Solution:** 
+
+**Solution:**
+
 - Verify `/api/health` endpoint exists in your code
 - Check that PORT is set to 4000
 - Review runtime logs for errors
 
 ### Issue: MongoDB Connection Error
+
 **Solution:**
+
 - Verify `MONGODB_URI` is correct
 - Check MongoDB allows connections from Digital Ocean IPs
 - For MongoDB Atlas: Whitelist `0.0.0.0/0` or specific Digital Ocean IPs
 
 ### Issue: App Crashes on Start
+
 **Solution:**
+
 - Check runtime logs
 - Verify all required environment variables are set
 - Ensure `JWT_SECRET` is set (required)
@@ -181,6 +213,7 @@ ALLOWED_ORIGINS=https://your-frontend.com,https://www.your-frontend.com
 ### Scale Your App
 
 To scale up:
+
 1. Go to **Settings** → **App-Level Settings**
 2. Increase **Instance Count** for horizontal scaling
 3. Upgrade **Instance Size** for more resources
@@ -201,10 +234,10 @@ To scale up:
 ## Support
 
 If you encounter issues:
+
 1. Check **Runtime Logs** in Digital Ocean dashboard
 2. Verify all environment variables are set correctly
 3. Test health endpoint: `/api/health`
 4. Review MongoDB connection status
 
 **Your app is now live! 🚀**
-
