@@ -37,6 +37,7 @@ const rateLimit = require("express-rate-limit");
 const { body, validationResult, param, query } = require("express-validator");
 const mongoSanitize = require("express-mongo-sanitize");
 const xss = require("xss-clean");
+const compression = require("compression");
 
 // Load environment variables
 dotenv.config();
@@ -301,6 +302,21 @@ const upload = multer({
 // MIDDLEWARE
 // ============================================
 
+// Response Compression (Gzip) - Reduces response size by 70-90%
+app.use(
+  compression({
+    level: 6, // Compression level (1-9), 6 is a good balance
+    filter: (req, res) => {
+      // Don't compress if client doesn't support it
+      if (req.headers["x-no-compression"]) {
+        return false;
+      }
+      // Use compression for all other requests
+      return compression.filter(req, res);
+    },
+  })
+);
+
 // Security Headers (Helmet)
 app.use(
   helmet({
@@ -367,12 +383,19 @@ if (!JWT_SECRET) {
   throw new Error("JWT_SECRET is missing from environment variables");
 }
 
-// ✅ Fixed (Mongoose 6+)
+// ✅ Fixed (Mongoose 6+) - Optimized Connection Pooling
 mongoose
   .connect(MONGODB_URI, {
-    // These are fine, but add retry logic
+    // Connection timeout settings
     serverSelectionTimeoutMS: 5000,
     socketTimeoutMS: 45000,
+    // Connection pool optimization
+    maxPoolSize: 10, // Maximum number of connections in the pool
+    minPoolSize: 2, // Minimum number of connections in the pool
+    maxIdleTimeMS: 30000, // Close connections after 30 seconds of inactivity
+    // Performance optimizations
+    bufferCommands: false, // Disable mongoose buffering
+    bufferMaxEntries: 0, // Disable mongoose buffering
   })
   .then(() => {
     console.log("✅ MongoDB Connected Successfully");
@@ -510,9 +533,17 @@ const userSchema = new mongoose.Schema({
   passwordResetExpires: Date,
 });
 
-// Add indexes for performance
+// Add indexes for performance optimization
 userSchema.index({ schoolId: 1, role: 1 });
 userSchema.index({ regionId: 1, role: 1 });
+userSchema.index({ districtId: 1, role: 1 });
+userSchema.index({ email: 1 }); // Already unique, but explicit index helps
+userSchema.index({ phoneNumber: 1 }); // Sparse index for phone lookups
+userSchema.index({ username: 1 }); // Already unique, but explicit index helps
+userSchema.index({ isActive: 1, role: 1 }); // For filtering active users by role
+userSchema.index({ registration_type: 1, next_billing_date: 1 }); // For monthly billing queries
+userSchema.index({ createdAt: -1 }); // For sorting by creation date
+userSchema.index({ lastLogin: -1 }); // For sorting by last login
 
 const classLevelRequestSchema = new mongoose.Schema({
   studentId: {
@@ -768,6 +799,9 @@ const studentTalentSchema = new mongoose.Schema({
 });
 
 studentTalentSchema.index({ studentId: 1, talentId: 1 }, { unique: true });
+studentTalentSchema.index({ schoolId: 1, status: 1 }); // For school-based queries
+studentTalentSchema.index({ teacherId: 1 }); // For teacher queries
+studentTalentSchema.index({ registeredAt: -1 }); // For sorting by registration date
 
 // Book Schema (Books Store)
 const bookSchema = new mongoose.Schema({
@@ -806,7 +840,15 @@ const bookSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now },
 });
 
-bookSchema.index({ title: "text", author: "text", description: "text" });
+// Add indexes for Book schema performance
+bookSchema.index({ title: "text", author: "text", description: "text" }); // Text search
+bookSchema.index({ category: 1, isActive: 1 }); // Category filtering
+bookSchema.index({ price: 1 }); // Price sorting
+bookSchema.index({ createdAt: -1 }); // Newest first
+bookSchema.index({ soldCount: -1 }); // Best sellers
+bookSchema.index({ rating: -1 }); // Top rated
+bookSchema.index({ uploadedBy: 1 }); // User's books
+bookSchema.index({ isActive: 1, isFeatured: 1 }); // Featured books
 
 // Book Purchase Schema
 const bookPurchaseSchema = new mongoose.Schema({
@@ -2826,6 +2868,100 @@ const sanitizeError = (error, isDevelopment = false) => {
   return "An error occurred. Please try again later.";
 };
 
+// ============================================
+// REDIS CACHING HELPERS
+// ============================================
+
+// Cache helper functions
+const cache = {
+  // Get cached data
+  get: async (key) => {
+    if (!redis) return null;
+    try {
+      const data = await redis.get(key);
+      return data ? JSON.parse(data) : null;
+    } catch (error) {
+      console.error("❌ Cache get error:", error);
+      return null;
+    }
+  },
+
+  // Set cached data with TTL (Time To Live)
+  set: async (key, data, ttlSeconds = 300) => {
+    if (!redis) return false;
+    try {
+      await redis.setex(key, ttlSeconds, JSON.stringify(data));
+      return true;
+    } catch (error) {
+      console.error("❌ Cache set error:", error);
+      return false;
+    }
+  },
+
+  // Delete cached data
+  del: async (key) => {
+    if (!redis) return false;
+    try {
+      await redis.del(key);
+      return true;
+    } catch (error) {
+      console.error("❌ Cache delete error:", error);
+      return false;
+    }
+  },
+
+  // Delete multiple keys matching a pattern
+  delPattern: async (pattern) => {
+    if (!redis) return false;
+    try {
+      const keys = await redis.keys(pattern);
+      if (keys.length > 0) {
+        await redis.del(...keys);
+      }
+      return true;
+    } catch (error) {
+      console.error("❌ Cache delete pattern error:", error);
+      return false;
+    }
+  },
+};
+
+// Cache middleware for GET requests
+const cacheMiddleware = (ttlSeconds = 300) => {
+  return async (req, res, next) => {
+    // Only cache GET requests
+    if (req.method !== "GET") {
+      return next();
+    }
+
+    const cacheKey = `cache:${req.originalUrl || req.url}`;
+
+    try {
+      const cachedData = await cache.get(cacheKey);
+      if (cachedData) {
+        return res.json(cachedData);
+      }
+
+      // Store original json function
+      const originalJson = res.json.bind(res);
+
+      // Override json function to cache response
+      res.json = function (data) {
+        // Cache successful responses
+        if (res.statusCode === 200) {
+          cache.set(cacheKey, data, ttlSeconds).catch(() => {});
+        }
+        return originalJson(data);
+      };
+
+      next();
+    } catch (error) {
+      console.error("❌ Cache middleware error:", error);
+      next();
+    }
+  };
+};
+
 // Validate MongoDB ObjectId
 const isValidObjectId = (id) => {
   return mongoose.Types.ObjectId.isValid(id);
@@ -3936,8 +4072,8 @@ app.post(
 // SCHOOL ENDPOINTS (with Multi-School Isolation)
 // ============================================
 
-// GET all schools
-app.get("/api/schools", async (req, res) => {
+// GET all schools (with caching)
+app.get("/api/schools", cacheMiddleware(600), async (req, res) => {
   try {
     const {
       page = 1,
