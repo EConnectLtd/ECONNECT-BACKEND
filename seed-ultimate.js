@@ -1,113 +1,80 @@
 // ============================================
-// ECONNECT MULTI-SCHOOL & TALENT MANAGEMENT SYSTEM
-// ULTIMATE SEED FILE - COMPREHENSIVE DATA POPULATION
+// ECONNECT ULTIMATE DATABASE SEEDER
+// Complete data population for Tanzania
 // Version: 2.0.0
-// ============================================
-// ✅ Seeds ALL schemas with realistic test data
-// ✅ Creates complete hierarchical data structure
-// ✅ Includes 7+ user roles with sample users
-// ✅ Registration types with pricing
-// ✅ Events, books, businesses, talents, and more
 // ============================================
 
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
-const dotenv = require("dotenv");
-
-dotenv.config();
 
 // ============================================
 // DATABASE CONNECTION
 // ============================================
 const MONGODB_URI =
-  process.env.MONGODB_URI ||
-  process.env.DATABASE_URL ||
-  "mongodb://localhost:27017/econnect";
+  "mongodb+srv://doadmin:30J76F8e1Lfspo49@econnect-db-mongodb-fra1-99826-a3b6a8c0.mongo.ondigitalocean.com/admin?tls=true&authSource=admin";
 
 // ============================================
-// IMPORT ALL SCHEMAS
+// SCHEMAS (matching server.js)
 // ============================================
 
-const userSchema = new mongoose.Schema({
-  username: String,
-  email: String,
-  password: String,
-  role: String,
-  firstName: String,
-  lastName: String,
-  phoneNumber: String,
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School" },
-  regionId: { type: mongoose.Schema.Types.ObjectId, ref: "Region" },
-  districtId: { type: mongoose.Schema.Types.ObjectId, ref: "District" },
-  wardId: { type: mongoose.Schema.Types.ObjectId, ref: "Ward" },
-  isActive: { type: Boolean, default: true },
-  isEmailVerified: { type: Boolean, default: false },
-  isPhoneVerified: { type: Boolean, default: false },
-  profileImage: String,
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now },
-  lastLogin: Date,
-  dateOfBirth: Date,
-  gender: String,
-  address: String,
-  emergencyContact: String,
-  nationalId: String,
-  studentId: String,
-  gradeLevel: String,
-  enrollmentDate: Date,
-  employeeId: String,
-  qualification: String,
-  specialization: String,
-  yearsOfExperience: Number,
-  businessName: String,
-  businessType: String,
-  businessRegistrationNumber: String,
-  tinNumber: String,
-  staffPosition: String,
-  department: String,
-  salary: Number,
-  hireDate: Date,
-  registration_type: String,
-  registration_fee_paid: { type: Number, default: 0 },
-  registration_date: Date,
-  next_billing_date: Date,
-  is_ctm_student: { type: Boolean, default: true },
-});
-
+// Region Schema
 const regionSchema = new mongoose.Schema({
-  name: String,
-  code: String,
+  name: { type: String, required: true, unique: true },
+  code: { type: String, required: true, unique: true, uppercase: true },
   population: Number,
   area: Number,
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now },
 });
 
+// District Schema
 const districtSchema = new mongoose.Schema({
-  name: String,
-  code: String,
-  regionId: { type: mongoose.Schema.Types.ObjectId, ref: "Region" },
+  name: { type: String, required: true },
+  code: { type: String, required: true, unique: true, uppercase: true },
+  regionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Region",
+    required: true,
+  },
   population: Number,
   area: Number,
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now },
 });
 
+// Ward Schema
 const wardSchema = new mongoose.Schema({
-  name: String,
-  code: String,
-  districtId: { type: mongoose.Schema.Types.ObjectId, ref: "District" },
+  name: { type: String, required: true },
+  code: { type: String, required: true, unique: true, uppercase: true },
+  districtId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "District",
+    required: true,
+  },
   population: Number,
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now },
 });
 
+// School Schema
 const schoolSchema = new mongoose.Schema({
-  name: String,
-  schoolCode: String,
-  type: String,
-  regionId: { type: mongoose.Schema.Types.ObjectId, ref: "Region" },
-  districtId: { type: mongoose.Schema.Types.ObjectId, ref: "District" },
+  name: { type: String, required: true },
+  schoolCode: { type: String, required: true, unique: true, uppercase: true },
+  type: {
+    type: String,
+    enum: ["primary", "secondary", "high_school", "vocational", "special"],
+    required: true,
+  },
+  regionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Region",
+    required: true,
+  },
+  districtId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "District",
+    required: true,
+  },
   wardId: { type: mongoose.Schema.Types.ObjectId, ref: "Ward" },
   address: String,
   phoneNumber: String,
@@ -117,21 +84,25 @@ const schoolSchema = new mongoose.Schema({
   totalTeachers: { type: Number, default: 0 },
   isActive: { type: Boolean, default: true },
   logo: String,
-  website: String,
   establishedYear: Number,
-  accreditationStatus: String,
-  facilities: [String],
-  coordinates: {
-    latitude: Number,
-    longitude: Number,
-  },
   createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now },
 });
 
-const talentSchema = new mongoose.Schema({
-  name: String,
+// Subject Schema
+const subjectSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  code: { type: String },
+  description: String,
   category: String,
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School" },
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now },
+});
+
+// Talent Schema
+const talentSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  category: { type: String, required: true },
   description: String,
   icon: String,
   requirements: [String],
@@ -139,163 +110,987 @@ const talentSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
-const studentTalentSchema = new mongoose.Schema({
-  studentId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  talentId: { type: mongoose.Schema.Types.ObjectId, ref: "Talent" },
-  proficiencyLevel: String,
-  yearsOfExperience: Number,
-  achievements: [String],
-  awards: [Object],
-  certifications: [Object],
-  portfolio: [Object],
-  teacherId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+// User Schema
+const userSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  role: { type: String, required: true },
+  firstName: String,
+  lastName: String,
+  phoneNumber: { type: String, unique: true, sparse: true },
   schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School" },
-  status: String,
-  registeredAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now },
+  regionId: { type: mongoose.Schema.Types.ObjectId, ref: "Region" },
+  districtId: { type: mongoose.Schema.Types.ObjectId, ref: "District" },
+  wardId: { type: mongoose.Schema.Types.ObjectId, ref: "Ward" },
+  isActive: { type: Boolean, default: true },
+  profileImage: String,
+  dateOfBirth: Date,
+  gender: String,
+  gradeLevel: String,
+  institutionType: String,
+  classLevel: String,
+  registration_type: String,
+  is_ctm_student: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now },
 });
 
+// Book Schema
 const bookSchema = new mongoose.Schema({
-  title: String,
+  title: { type: String, required: true },
   author: String,
   isbn: String,
   category: String,
   description: String,
   coverImage: String,
   pdfFile: String,
-  price: Number,
+  price: { type: Number, default: 0 },
   discountPrice: Number,
   publisher: String,
   publishedDate: Date,
-  language: String,
+  language: { type: String, default: "Swahili" },
   pages: Number,
-  rating: Number,
-  ratingsCount: Number,
-  reviews: [Object],
-  soldCount: Number,
-  viewCount: Number,
-  stockQuantity: Number,
-  format: String,
-  tags: [String],
-  uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  rating: { type: Number, default: 0 },
+  soldCount: { type: Number, default: 0 },
+  stockQuantity: { type: Number, default: 0 },
   isActive: { type: Boolean, default: true },
   isFeatured: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now },
 });
 
+// Event Schema
 const eventSchema = new mongoose.Schema({
-  title: String,
+  title: { type: String, required: true },
   description: String,
-  eventType: String,
-  startDate: Date,
-  endDate: Date,
+  eventType: { type: String, required: true },
+  startDate: { type: Date, required: true },
+  endDate: { type: Date, required: true },
   location: String,
   venue: String,
   organizer: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School" },
   regionId: { type: mongoose.Schema.Types.ObjectId, ref: "Region" },
-  districtId: { type: mongoose.Schema.Types.ObjectId, ref: "District" },
   maxParticipants: Number,
   currentParticipants: { type: Number, default: 0 },
-  registrationFee: Number,
-  registrationDeadline: Date,
+  registrationFee: { type: Number, default: 0 },
   coverImage: String,
-  bannerImage: String,
-  status: String,
+  status: { type: String, default: "published" },
   isPublic: { type: Boolean, default: true },
-  requirements: [String],
-  prizes: [Object],
-  sponsors: [Object],
-  agenda: [Object],
   createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now },
 });
 
-const businessSchema = new mongoose.Schema({
-  ownerId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  name: String,
-  businessType: String,
-  registrationNumber: String,
-  tinNumber: String,
-  description: String,
-  logo: String,
-  bannerImage: String,
-  address: String,
-  phoneNumber: String,
-  email: String,
-  website: String,
-  socialMedia: Object,
-  regionId: { type: mongoose.Schema.Types.ObjectId, ref: "Region" },
-  districtId: { type: mongoose.Schema.Types.ObjectId, ref: "District" },
-  category: String,
-  subCategory: String,
-  establishedDate: Date,
-  employeesCount: Number,
-  annualRevenue: Number,
-  isVerified: { type: Boolean, default: false },
-  verificationDocuments: [String],
-  operatingHours: Object,
-  status: String,
-  rating: Number,
-  reviewsCount: Number,
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now },
-});
-
-const productSchema = new mongoose.Schema({
-  businessId: { type: mongoose.Schema.Types.ObjectId, ref: "Business" },
-  name: String,
-  description: String,
-  category: String,
-  type: String,
-  price: Number,
-  discountPrice: Number,
-  images: [String],
-  stockQuantity: Number,
-  sku: String,
-  specifications: Object,
-  tags: [String],
-  rating: Number,
-  reviewsCount: Number,
-  soldCount: Number,
-  viewCount: Number,
-  isActive: { type: Boolean, default: true },
-  isFeatured: { type: Boolean, default: false },
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now },
-});
-
-const ctmMembershipSchema = new mongoose.Schema({
-  studentId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  membershipNumber: String,
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School" },
-  status: String,
-  joinDate: Date,
-  expiryDate: Date,
-  membershipType: String,
-  talents: [{ type: mongoose.Schema.Types.ObjectId, ref: "Talent" }],
-  participationPoints: Number,
-  achievements: [Object],
-  events: [{ type: mongoose.Schema.Types.ObjectId, ref: "Event" }],
-  isActive: { type: Boolean, default: true },
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now },
-});
-
-// Create models
-const User = mongoose.model("User", userSchema);
+// ============================================
+// CREATE MODELS
+// ============================================
 const Region = mongoose.model("Region", regionSchema);
 const District = mongoose.model("District", districtSchema);
 const Ward = mongoose.model("Ward", wardSchema);
 const School = mongoose.model("School", schoolSchema);
+const Subject = mongoose.model("Subject", subjectSchema);
 const Talent = mongoose.model("Talent", talentSchema);
-const StudentTalent = mongoose.model("StudentTalent", studentTalentSchema);
+const User = mongoose.model("User", userSchema);
 const Book = mongoose.model("Book", bookSchema);
 const Event = mongoose.model("Event", eventSchema);
-const Business = mongoose.model("Business", businessSchema);
-const Product = mongoose.model("Product", productSchema);
-const CTMMembership = mongoose.model("CTMMembership", ctmMembershipSchema);
+
+// ============================================
+// SEED DATA
+// ============================================
+
+// Tanzania Regions (31 regions)
+const regionsData = [
+  { name: "Dar es Salaam", code: "DSM", population: 5500000, area: 1393 },
+  { name: "Arusha", code: "ARU", population: 2500000, area: 37576 },
+  { name: "Dodoma", code: "DOD", population: 2800000, area: 41311 },
+  { name: "Geita", code: "GEI", population: 1900000, area: 20054 },
+  { name: "Iringa", code: "IRI", population: 1200000, area: 35503 },
+  { name: "Kagera", code: "KAG", population: 2900000, area: 28388 },
+  { name: "Katavi", code: "KAT", population: 600000, area: 45843 },
+  { name: "Kigoma", code: "KIG", population: 2400000, area: 45066 },
+  { name: "Kilimanjaro", code: "KIL", population: 1900000, area: 13209 },
+  { name: "Lindi", code: "LIN", population: 1000000, area: 66046 },
+  { name: "Manyara", code: "MAN", population: 1700000, area: 44522 },
+  { name: "Mara", code: "MAR", population: 2000000, area: 21760 },
+  { name: "Mbeya", code: "MBE", population: 2700000, area: 35954 },
+  { name: "Morogoro", code: "MOR", population: 2800000, area: 73039 },
+  { name: "Mtwara", code: "MTW", population: 1400000, area: 16720 },
+  { name: "Mwanza", code: "MWA", population: 3500000, area: 25233 },
+  { name: "Njombe", code: "NJO", population: 800000, area: 21347 },
+  { name: "Pwani", code: "PWA", population: 1200000, area: 32547 },
+  { name: "Rukwa", code: "RUK", population: 1100000, area: 27765 },
+  { name: "Ruvuma", code: "RUV", population: 1500000, area: 63669 },
+  { name: "Shinyanga", code: "SHI", population: 1800000, area: 18901 },
+  { name: "Simiyu", code: "SIM", population: 2000000, area: 25212 },
+  { name: "Singida", code: "SIN", population: 1700000, area: 49341 },
+  { name: "Songwe", code: "SON", population: 1200000, area: 27598 },
+  { name: "Tabora", code: "TAB", population: 3100000, area: 76151 },
+  { name: "Tanga", code: "TAN", population: 2400000, area: 26677 },
+];
+
+// Districts (sample for major regions)
+const districtsData = [
+  // Dar es Salaam
+  { name: "Ilala", code: "DSM-ILA", regionCode: "DSM", population: 1800000 },
+  {
+    name: "Kinondoni",
+    code: "DSM-KIN",
+    regionCode: "DSM",
+    population: 2000000,
+  },
+  { name: "Temeke", code: "DSM-TEM", regionCode: "DSM", population: 1700000 },
+  { name: "Ubungo", code: "DSM-UBU", regionCode: "DSM", population: 900000 },
+  { name: "Kigamboni", code: "DSM-KIG", regionCode: "DSM", population: 300000 },
+
+  // Arusha
+  {
+    name: "Arusha City",
+    code: "ARU-CTY",
+    regionCode: "ARU",
+    population: 500000,
+  },
+  {
+    name: "Arusha District",
+    code: "ARU-DIS",
+    regionCode: "ARU",
+    population: 400000,
+  },
+  { name: "Karatu", code: "ARU-KAR", regionCode: "ARU", population: 250000 },
+  { name: "Longido", code: "ARU-LON", regionCode: "ARU", population: 200000 },
+  { name: "Meru", code: "ARU-MER", regionCode: "ARU", population: 300000 },
+
+  // Dodoma
+  {
+    name: "Dodoma City",
+    code: "DOD-CTY",
+    regionCode: "DOD",
+    population: 800000,
+  },
+  { name: "Bahi", code: "DOD-BAH", regionCode: "DOD", population: 300000 },
+  { name: "Chamwino", code: "DOD-CHA", regionCode: "DOD", population: 350000 },
+  { name: "Kondoa", code: "DOD-KON", regionCode: "DOD", population: 400000 },
+  { name: "Mpwapwa", code: "DOD-MPW", regionCode: "DOD", population: 300000 },
+
+  // Mwanza
+  { name: "Ilemela", code: "MWA-ILE", regionCode: "MWA", population: 600000 },
+  { name: "Nyamagana", code: "MWA-NYA", regionCode: "MWA", population: 700000 },
+  { name: "Kwimba", code: "MWA-KWI", regionCode: "MWA", population: 400000 },
+  { name: "Magu", code: "MWA-MAG", regionCode: "MWA", population: 350000 },
+  { name: "Misungwi", code: "MWA-MIS", regionCode: "MWA", population: 350000 },
+
+  // Kilimanjaro
+  {
+    name: "Moshi Municipal",
+    code: "KIL-MOS",
+    regionCode: "KIL",
+    population: 200000,
+  },
+  {
+    name: "Moshi Rural",
+    code: "KIL-MOR",
+    regionCode: "KIL",
+    population: 450000,
+  },
+  { name: "Hai", code: "KIL-HAI", regionCode: "KIL", population: 210000 },
+  { name: "Rombo", code: "KIL-ROM", regionCode: "KIL", population: 260000 },
+  { name: "Same", code: "KIL-SAM", regionCode: "KIL", population: 270000 },
+
+  // Mbeya
+  {
+    name: "Mbeya City",
+    code: "MBE-CTY",
+    regionCode: "MBE",
+    population: 500000,
+  },
+  {
+    name: "Mbeya District",
+    code: "MBE-DIS",
+    regionCode: "MBE",
+    population: 350000,
+  },
+  { name: "Chunya", code: "MBE-CHU", regionCode: "MBE", population: 300000 },
+  { name: "Kyela", code: "MBE-KYE", regionCode: "MBE", population: 220000 },
+  { name: "Rungwe", code: "MBE-RUN", regionCode: "MBE", population: 350000 },
+];
+
+// Wards (sample for Dar es Salaam districts)
+const wardsData = [
+  // Ilala District
+  {
+    name: "Kariakoo",
+    code: "DSM-ILA-KAR",
+    districtCode: "DSM-ILA",
+    population: 50000,
+  },
+  {
+    name: "Mchikichini",
+    code: "DSM-ILA-MCH",
+    districtCode: "DSM-ILA",
+    population: 45000,
+  },
+  {
+    name: "Buguruni",
+    code: "DSM-ILA-BUG",
+    districtCode: "DSM-ILA",
+    population: 60000,
+  },
+  {
+    name: "Tabata",
+    code: "DSM-ILA-TAB",
+    districtCode: "DSM-ILA",
+    population: 70000,
+  },
+  {
+    name: "Ilala",
+    code: "DSM-ILA-ILA",
+    districtCode: "DSM-ILA",
+    population: 55000,
+  },
+
+  // Kinondoni District
+  {
+    name: "Mwananyamala",
+    code: "DSM-KIN-MWA",
+    districtCode: "DSM-KIN",
+    population: 80000,
+  },
+  {
+    name: "Magomeni",
+    code: "DSM-KIN-MAG",
+    districtCode: "DSM-KIN",
+    population: 65000,
+  },
+  {
+    name: "Kinondoni",
+    code: "DSM-KIN-KIN",
+    districtCode: "DSM-KIN",
+    population: 70000,
+  },
+  {
+    name: "Manzese",
+    code: "DSM-KIN-MAN",
+    districtCode: "DSM-KIN",
+    population: 90000,
+  },
+  {
+    name: "Tandale",
+    code: "DSM-KIN-TAN",
+    districtCode: "DSM-KIN",
+    population: 85000,
+  },
+
+  // Temeke District
+  {
+    name: "Temeke",
+    code: "DSM-TEM-TEM",
+    districtCode: "DSM-TEM",
+    population: 75000,
+  },
+  {
+    name: "Mbagala",
+    code: "DSM-TEM-MBA",
+    districtCode: "DSM-TEM",
+    population: 80000,
+  },
+  {
+    name: "Kigamboni",
+    code: "DSM-TEM-KIG",
+    districtCode: "DSM-TEM",
+    population: 60000,
+  },
+  {
+    name: "Chanika",
+    code: "DSM-TEM-CHA",
+    districtCode: "DSM-TEM",
+    population: 50000,
+  },
+  {
+    name: "Chang'ombe",
+    code: "DSM-TEM-CHG",
+    districtCode: "DSM-TEM",
+    population: 55000,
+  },
+];
+
+// Schools (sample across regions)
+const schoolsData = [
+  // Dar es Salaam
+  {
+    name: "Azania Secondary School",
+    code: "AZA-SS-001",
+    type: "secondary",
+    districtCode: "DSM-ILA",
+    wardCode: "DSM-ILA-KAR",
+    address: "Kariakoo, Dar es Salaam",
+    phoneNumber: "+255222123456",
+    email: "info@azania.ac.tz",
+    principalName: "Dr. Hassan Mwinyi",
+    establishedYear: 1950,
+  },
+  {
+    name: "Jangwani Primary School",
+    code: "JAN-PS-002",
+    type: "primary",
+    districtCode: "DSM-ILA",
+    wardCode: "DSM-ILA-ILA",
+    address: "Ilala, Dar es Salaam",
+    phoneNumber: "+255222234567",
+    email: "info@jangwani.ac.tz",
+    principalName: "Mrs. Neema Katundu",
+    establishedYear: 1965,
+  },
+  {
+    name: "Mlimani City Secondary School",
+    code: "MLI-SS-003",
+    type: "secondary",
+    districtCode: "DSM-KIN",
+    wardCode: "DSM-KIN-KIN",
+    address: "Kinondoni, Dar es Salaam",
+    phoneNumber: "+255222345678",
+    email: "admin@mlimani.ac.tz",
+    principalName: "Mr. Joseph Mbwambo",
+    establishedYear: 1985,
+  },
+  {
+    name: "Temeke Secondary School",
+    code: "TEM-SS-004",
+    type: "secondary",
+    districtCode: "DSM-TEM",
+    wardCode: "DSM-TEM-TEM",
+    address: "Temeke, Dar es Salaam",
+    phoneNumber: "+255222456789",
+    email: "info@temeke.ac.tz",
+    principalName: "Mrs. Grace Mollel",
+    establishedYear: 1972,
+  },
+  {
+    name: "Mwenge Primary School",
+    code: "MWE-PS-005",
+    type: "primary",
+    districtCode: "DSM-KIN",
+    wardCode: "DSM-KIN-MWA",
+    address: "Mwananyamala, Dar es Salaam",
+    phoneNumber: "+255222567890",
+    email: "info@mwenge.ac.tz",
+    principalName: "Mr. Peter Kimaro",
+    establishedYear: 1980,
+  },
+
+  // Arusha
+  {
+    name: "Arusha Technical College",
+    code: "ARU-TC-006",
+    type: "vocational",
+    districtCode: "ARU-CTY",
+    address: "Arusha City Center",
+    phoneNumber: "+255272503123",
+    email: "info@arushatech.ac.tz",
+    principalName: "Eng. John Kisamo",
+    establishedYear: 1978,
+  },
+  {
+    name: "Meru Secondary School",
+    code: "MER-SS-007",
+    type: "secondary",
+    districtCode: "ARU-MER",
+    address: "Meru District, Arusha",
+    phoneNumber: "+255272503234",
+    email: "admin@meru.ac.tz",
+    principalName: "Mrs. Anna Laizer",
+    establishedYear: 1968,
+  },
+
+  // Dodoma
+  {
+    name: "Dodoma Secondary School",
+    code: "DOD-SS-008",
+    type: "secondary",
+    districtCode: "DOD-CTY",
+    address: "Dodoma City",
+    phoneNumber: "+255262322123",
+    email: "info@dodoma.ac.tz",
+    principalName: "Dr. Emmanuel Nyambo",
+    establishedYear: 1955,
+  },
+
+  // Mwanza
+  {
+    name: "Nyamagana Secondary School",
+    code: "NYA-SS-009",
+    type: "secondary",
+    districtCode: "MWA-NYA",
+    address: "Nyamagana, Mwanza",
+    phoneNumber: "+255282500123",
+    email: "info@nyamagana.ac.tz",
+    principalName: "Mr. Samwel Magesa",
+    establishedYear: 1963,
+  },
+
+  // Kilimanjaro
+  {
+    name: "Moshi Technical Secondary School",
+    code: "MOS-TSS-010",
+    type: "secondary",
+    districtCode: "KIL-MOS",
+    address: "Moshi Town",
+    phoneNumber: "+255272751123",
+    email: "info@moshitech.ac.tz",
+    principalName: "Eng. David Lyimo",
+    establishedYear: 1970,
+  },
+];
+
+// Subjects (Academic subjects for Tanzania curriculum)
+const subjectsData = [
+  // Science Subjects
+  {
+    name: "Mathematics",
+    code: "MATH",
+    category: "Science",
+    description: "Pure Mathematics",
+  },
+  {
+    name: "Physics",
+    code: "PHY",
+    category: "Science",
+    description: "Physical Science",
+  },
+  {
+    name: "Chemistry",
+    code: "CHEM",
+    category: "Science",
+    description: "Chemical Science",
+  },
+  {
+    name: "Biology",
+    code: "BIO",
+    category: "Science",
+    description: "Biological Science",
+  },
+  {
+    name: "Computer Science",
+    code: "CS",
+    category: "Science",
+    description: "ICT and Computing",
+  },
+  {
+    name: "Advanced Mathematics",
+    code: "AMATH",
+    category: "Science",
+    description: "Advanced Mathematics",
+  },
+
+  // Arts & Languages
+  {
+    name: "English Language",
+    code: "ENG",
+    category: "Arts",
+    description: "English Language & Literature",
+  },
+  {
+    name: "Kiswahili",
+    code: "KIS",
+    category: "Arts",
+    description: "Kiswahili Language",
+  },
+  {
+    name: "History",
+    code: "HIST",
+    category: "Arts",
+    description: "World and African History",
+  },
+  {
+    name: "Geography",
+    code: "GEO",
+    category: "Arts",
+    description: "Physical and Human Geography",
+  },
+  {
+    name: "Civics",
+    code: "CIV",
+    category: "Arts",
+    description: "Civics and Moral Education",
+  },
+  {
+    name: "French",
+    code: "FRE",
+    category: "Arts",
+    description: "French Language",
+  },
+  {
+    name: "Arabic",
+    code: "ARA",
+    category: "Arts",
+    description: "Arabic Language",
+  },
+
+  // Commerce Subjects
+  {
+    name: "Commerce",
+    code: "COM",
+    category: "Commerce",
+    description: "Business Commerce",
+  },
+  {
+    name: "Accounting",
+    code: "ACC",
+    category: "Commerce",
+    description: "Financial Accounting",
+  },
+  {
+    name: "Book Keeping",
+    code: "BK",
+    category: "Commerce",
+    description: "Book Keeping",
+  },
+  {
+    name: "Economics",
+    code: "ECON",
+    category: "Commerce",
+    description: "Economics",
+  },
+
+  // Basic & Other Subjects
+  {
+    name: "Basic Mathematics",
+    code: "BMATH",
+    category: "Basic",
+    description: "Basic Applied Mathematics",
+  },
+  {
+    name: "Religious Education",
+    code: "RE",
+    category: "Other",
+    description: "Religious Studies",
+  },
+  {
+    name: "Physical Education",
+    code: "PE",
+    category: "Other",
+    description: "Sports and Physical Education",
+  },
+  {
+    name: "Fine Arts",
+    code: "ART",
+    category: "Other",
+    description: "Visual Arts and Drawing",
+  },
+  {
+    name: "Music",
+    code: "MUS",
+    category: "Other",
+    description: "Music and Performance",
+  },
+];
+
+// Talents (Diverse talent categories)
+const talentsData = [
+  // Sports
+  {
+    name: "Football/Soccer",
+    category: "Sports",
+    icon: "⚽",
+    description: "Association Football",
+    requirements: ["Physical fitness", "Teamwork skills"],
+  },
+  {
+    name: "Basketball",
+    category: "Sports",
+    icon: "🏀",
+    description: "Basketball skills",
+    requirements: ["Height advantage", "Agility"],
+  },
+  {
+    name: "Volleyball",
+    category: "Sports",
+    icon: "🏐",
+    description: "Volleyball expertise",
+    requirements: ["Jumping ability", "Team coordination"],
+  },
+  {
+    name: "Athletics",
+    category: "Sports",
+    icon: "🏃",
+    description: "Track and field",
+    requirements: ["Speed", "Endurance"],
+  },
+  {
+    name: "Swimming",
+    category: "Sports",
+    icon: "🏊",
+    description: "Swimming competence",
+    requirements: ["Water confidence", "Stamina"],
+  },
+  {
+    name: "Netball",
+    category: "Sports",
+    icon: "🥅",
+    description: "Netball skills",
+    requirements: ["Agility", "Hand-eye coordination"],
+  },
+
+  // Performing Arts
+  {
+    name: "Traditional Dance",
+    category: "Performing Arts",
+    icon: "💃",
+    description: "Traditional Tanzanian dance",
+    requirements: ["Rhythm", "Cultural knowledge"],
+  },
+  {
+    name: "Modern Dance",
+    category: "Performing Arts",
+    icon: "🕺",
+    description: "Contemporary dance styles",
+    requirements: ["Flexibility", "Creativity"],
+  },
+  {
+    name: "Drama/Acting",
+    category: "Performing Arts",
+    icon: "🎭",
+    description: "Theatrical performance",
+    requirements: ["Expression", "Confidence"],
+  },
+  {
+    name: "Singing",
+    category: "Performing Arts",
+    icon: "🎤",
+    description: "Vocal performance",
+    requirements: ["Voice quality", "Musical ear"],
+  },
+  {
+    name: "Choir",
+    category: "Performing Arts",
+    icon: "👥",
+    description: "Choral singing",
+    requirements: ["Harmony skills", "Teamwork"],
+  },
+
+  // Music
+  {
+    name: "Piano",
+    category: "Music",
+    icon: "🎹",
+    description: "Piano playing",
+    requirements: ["Musical theory", "Practice dedication"],
+  },
+  {
+    name: "Guitar",
+    category: "Music",
+    icon: "🎸",
+    description: "Guitar performance",
+    requirements: ["Finger dexterity", "Rhythm"],
+  },
+  {
+    name: "Drums",
+    category: "Music",
+    icon: "🥁",
+    description: "Percussion instruments",
+    requirements: ["Timing", "Coordination"],
+  },
+  {
+    name: "Traditional Instruments",
+    category: "Music",
+    icon: "🪘",
+    description: "Traditional music instruments",
+    requirements: ["Cultural knowledge"],
+  },
+
+  // Visual Arts
+  {
+    name: "Painting",
+    category: "Visual Arts",
+    icon: "🎨",
+    description: "Painting and drawing",
+    requirements: ["Creativity", "Patience"],
+  },
+  {
+    name: "Sculpture",
+    category: "Visual Arts",
+    icon: "🗿",
+    description: "3D art creation",
+    requirements: ["Spatial awareness", "Tool skills"],
+  },
+  {
+    name: "Photography",
+    category: "Visual Arts",
+    icon: "📷",
+    description: "Digital photography",
+    requirements: ["Visual eye", "Technical skills"],
+  },
+  {
+    name: "Graphic Design",
+    category: "Visual Arts",
+    icon: "🖼️",
+    description: "Digital design",
+    requirements: ["Software knowledge", "Creativity"],
+  },
+
+  // Technology
+  {
+    name: "Programming",
+    category: "Technology",
+    icon: "💻",
+    description: "Software development",
+    requirements: ["Logic", "Problem-solving"],
+  },
+  {
+    name: "Robotics",
+    category: "Technology",
+    icon: "🤖",
+    description: "Robotics and automation",
+    requirements: ["Engineering basics", "Coding"],
+  },
+  {
+    name: "Web Design",
+    category: "Technology",
+    icon: "🌐",
+    description: "Website creation",
+    requirements: ["HTML/CSS", "Design sense"],
+  },
+
+  // Literature & Writing
+  {
+    name: "Creative Writing",
+    category: "Literature",
+    icon: "✍️",
+    description: "Story and poetry writing",
+    requirements: ["Imagination", "Language skills"],
+  },
+  {
+    name: "Journalism",
+    category: "Literature",
+    icon: "📰",
+    description: "News reporting",
+    requirements: ["Research", "Communication"],
+  },
+  {
+    name: "Poetry",
+    category: "Literature",
+    icon: "📖",
+    description: "Poetic expression",
+    requirements: ["Literary knowledge", "Creativity"],
+  },
+
+  // Leadership & Service
+  {
+    name: "Debate",
+    category: "Leadership",
+    icon: "🗣️",
+    description: "Public speaking and debate",
+    requirements: ["Confidence", "Critical thinking"],
+  },
+  {
+    name: "Student Leadership",
+    category: "Leadership",
+    icon: "👔",
+    description: "School governance",
+    requirements: ["Responsibility", "Communication"],
+  },
+  {
+    name: "Community Service",
+    category: "Leadership",
+    icon: "🤝",
+    description: "Volunteer work",
+    requirements: ["Empathy", "Commitment"],
+  },
+
+  // Other Talents
+  {
+    name: "Cooking",
+    category: "Life Skills",
+    icon: "👨‍🍳",
+    description: "Culinary arts",
+    requirements: ["Hygiene awareness", "Creativity"],
+  },
+  {
+    name: "Fashion Design",
+    category: "Life Skills",
+    icon: "👗",
+    description: "Clothing design",
+    requirements: ["Sewing skills", "Design sense"],
+  },
+  {
+    name: "Agriculture",
+    category: "Life Skills",
+    icon: "🌾",
+    description: "Farming skills",
+    requirements: ["Hard work", "Patience"],
+  },
+];
+
+// Books (Educational and general books)
+const booksData = [
+  {
+    title: "Shamba la Wanyama (Animal Farm - Swahili)",
+    author: "George Orwell (Translated)",
+    category: "Literature",
+    description: "Classic allegory about power and corruption",
+    language: "Swahili",
+    price: 15000,
+    pages: 112,
+    publisher: "East African Educational Publishers",
+    publishedDate: new Date("2015-01-01"),
+    stockQuantity: 50,
+    rating: 4.5,
+    isFeatured: true,
+  },
+  {
+    title: "Kusadikika",
+    author: "Ebrahim Hussein",
+    category: "Literature",
+    description: "Famous Swahili play about social issues",
+    language: "Swahili",
+    price: 12000,
+    pages: 96,
+    publisher: "Oxford University Press East Africa",
+    publishedDate: new Date("1970-01-01"),
+    stockQuantity: 40,
+    rating: 4.8,
+    isFeatured: true,
+  },
+  {
+    title: "Mathematics Form 1-4 Guide",
+    author: "Tanzania Institute of Education",
+    category: "Academic",
+    description: "Comprehensive mathematics guide for secondary schools",
+    language: "English",
+    price: 25000,
+    pages: 456,
+    publisher: "TIE",
+    publishedDate: new Date("2020-01-01"),
+    stockQuantity: 100,
+    rating: 4.3,
+  },
+  {
+    title: "Physics Practical Manual",
+    author: "Dr. John Kamuzora",
+    category: "Academic",
+    description: "Laboratory practical guide for physics students",
+    language: "English",
+    price: 20000,
+    pages: 200,
+    publisher: "Nyambari Nyangwine Publishers",
+    publishedDate: new Date("2019-06-15"),
+    stockQuantity: 60,
+    rating: 4.0,
+  },
+  {
+    title: "Kiswahili Grammar Simplified",
+    author: "Prof. Lioba Moshi",
+    category: "Academic",
+    description: "Easy-to-understand Kiswahili grammar rules",
+    language: "Swahili/English",
+    price: 18000,
+    pages: 280,
+    publisher: "TUKI",
+    publishedDate: new Date("2018-03-20"),
+    stockQuantity: 75,
+    rating: 4.6,
+  },
+  {
+    title: "Chemistry O-Level Notes",
+    author: "Dr. Mary Nkya",
+    category: "Academic",
+    description: "Complete chemistry revision notes",
+    language: "English",
+    price: 22000,
+    pages: 320,
+    publisher: "Mkuki na Nyota",
+    publishedDate: new Date("2021-01-10"),
+    stockQuantity: 55,
+    rating: 4.4,
+  },
+  {
+    title: "Tanzania History: From Pre-Colonial to Independence",
+    author: "Prof. Isaria Kimambo",
+    category: "History",
+    description: "Comprehensive Tanzanian history",
+    language: "English",
+    price: 30000,
+    pages: 512,
+    publisher: "Dar es Salaam University Press",
+    publishedDate: new Date("2017-07-01"),
+    stockQuantity: 30,
+    rating: 4.9,
+    isFeatured: true,
+  },
+  {
+    title: "English Grammar in Use - Tanzania Edition",
+    author: "Raymond Murphy (Adapted)",
+    category: "Academic",
+    description: "English grammar for Tanzanian students",
+    language: "English",
+    price: 28000,
+    pages: 380,
+    publisher: "Cambridge University Press",
+    publishedDate: new Date("2020-09-01"),
+    stockQuantity: 80,
+    rating: 4.7,
+  },
+];
+
+// Events (Upcoming school events)
+const eventsData = [
+  {
+    title: "National CTM Talent Show 2025",
+    description:
+      "Annual showcase of student talents from across Tanzania. Categories include music, dance, drama, sports demonstrations, and technology innovations.",
+    eventType: "talent_show",
+    location: "National Stadium, Dar es Salaam",
+    venue: "Main Arena",
+    registrationFee: 10000,
+    maxParticipants: 500,
+    status: "published",
+    isPublic: true,
+  },
+  {
+    title: "Inter-School Science Competition",
+    description:
+      "Students compete in physics, chemistry, and biology challenges. Team-based and individual categories available.",
+    eventType: "competition",
+    location: "University of Dar es Salaam",
+    venue: "Science Complex",
+    registrationFee: 5000,
+    maxParticipants: 200,
+    status: "published",
+    isPublic: true,
+  },
+  {
+    title: "Football Championship - Regional Finals",
+    description:
+      "Regional football tournament for secondary schools. Top 3 teams advance to nationals.",
+    eventType: "competition",
+    location: "Uhuru Stadium, Dar es Salaam",
+    venue: "Main Pitch",
+    registrationFee: 50000,
+    maxParticipants: 16,
+    status: "published",
+    isPublic: true,
+  },
+  {
+    title: "ICT Workshop: Introduction to Programming",
+    description:
+      "3-day intensive workshop on Python programming for beginners. Laptops provided.",
+    eventType: "workshop",
+    location: "Dar es Salaam",
+    venue: "Azania Front Lutheran Church Hall",
+    registrationFee: 15000,
+    maxParticipants: 50,
+    status: "published",
+    isPublic: true,
+  },
+  {
+    title: "Art Exhibition: Young Tanzanian Artists",
+    description:
+      "Student artwork exhibition featuring paintings, sculptures, and digital art. Prizes for top 3 in each category.",
+    eventType: "exhibition",
+    location: "National Museum, Dar es Salaam",
+    venue: "Exhibition Hall",
+    registrationFee: 0,
+    maxParticipants: 100,
+    status: "published",
+    isPublic: true,
+  },
+];
 
 // ============================================
 // HELPER FUNCTIONS
@@ -305,1321 +1100,539 @@ async function hashPassword(password) {
   return await bcrypt.hash(password, 10);
 }
 
-function randomDate(start, end) {
+function generateRandomDate(start, end) {
   return new Date(
     start.getTime() + Math.random() * (end.getTime() - start.getTime())
   );
 }
 
-function randomElement(array) {
-  return array[Math.floor(Math.random() * array.length)];
-}
-
 // ============================================
-// SEED DATA DEFINITIONS
-// ============================================
-
-const REGIONS_DATA = [
-  { name: "Dar es Salaam", code: "DSM", population: 5383728, area: 1590 },
-  { name: "Arusha", code: "ARU", population: 2356255, area: 37576 },
-  { name: "Dodoma", code: "DOD", population: 2083588, area: 41311 },
-  { name: "Mwanza", code: "MWZ", population: 3699872, area: 25233 },
-  { name: "Mbeya", code: "MBY", population: 2707410, area: 35954 },
-  { name: "Morogoro", code: "MOR", population: 2218492, area: 73039 },
-  { name: "Tanga", code: "TNG", population: 2615597, area: 27350 },
-  { name: "Kilimanjaro", code: "KLM", population: 1640087, area: 13309 },
-  { name: "Mtwara", code: "MTW", population: 1270854, area: 16720 },
-  { name: "Kagera", code: "KGR", population: 2458023, area: 28388 },
-];
-
-const TALENTS_DATA = [
-  {
-    category: "Arts",
-    talents: [
-      {
-        name: "Painting",
-        description: "Visual art using colors and brushes",
-        icon: "🎨",
-        requirements: ["Brushes", "Canvas", "Paints"],
-      },
-      {
-        name: "Drawing",
-        description: "Creating images with pencils and pens",
-        icon: "✏️",
-        requirements: ["Pencils", "Paper", "Erasers"],
-      },
-      {
-        name: "Sculpture",
-        description: "Three-dimensional artwork creation",
-        icon: "🗿",
-        requirements: ["Clay", "Tools", "Workspace"],
-      },
-    ],
-  },
-  {
-    category: "Music",
-    talents: [
-      {
-        name: "Singing",
-        description: "Vocal music performance",
-        icon: "🎤",
-        requirements: ["Microphone", "Practice space"],
-      },
-      {
-        name: "Guitar Playing",
-        description: "String instrument mastery",
-        icon: "🎸",
-        requirements: ["Guitar", "Tuner", "Picks"],
-      },
-      {
-        name: "Piano",
-        description: "Keyboard instrument performance",
-        icon: "🎹",
-        requirements: ["Piano/Keyboard", "Sheet music"],
-      },
-      {
-        name: "Traditional Drums",
-        description: "African percussion instruments",
-        icon: "🥁",
-        requirements: ["Drums", "Practice space"],
-      },
-    ],
-  },
-  {
-    category: "Sports",
-    talents: [
-      {
-        name: "Football",
-        description: "Team ball sport",
-        icon: "⚽",
-        requirements: ["Ball", "Field", "Boots"],
-      },
-      {
-        name: "Athletics",
-        description: "Track and field events",
-        icon: "🏃",
-        requirements: ["Running shoes", "Track"],
-      },
-      {
-        name: "Basketball",
-        description: "Court ball sport",
-        icon: "🏀",
-        requirements: ["Ball", "Court", "Hoop"],
-      },
-      {
-        name: "Netball",
-        description: "Team ball sport",
-        icon: "🏐",
-        requirements: ["Ball", "Court", "Posts"],
-      },
-    ],
-  },
-  {
-    category: "Dance",
-    talents: [
-      {
-        name: "Traditional Dance",
-        description: "Cultural dance forms",
-        icon: "💃",
-        requirements: ["Traditional attire", "Practice space"],
-      },
-      {
-        name: "Modern Dance",
-        description: "Contemporary dance styles",
-        icon: "🕺",
-        requirements: ["Dance floor", "Music system"],
-      },
-      {
-        name: "Ballet",
-        description: "Classical dance technique",
-        icon: "🩰",
-        requirements: ["Ballet shoes", "Barre", "Studio"],
-      },
-    ],
-  },
-  {
-    category: "Technology",
-    talents: [
-      {
-        name: "Programming",
-        description: "Software development",
-        icon: "💻",
-        requirements: ["Computer", "Internet", "IDE"],
-      },
-      {
-        name: "Robotics",
-        description: "Building and programming robots",
-        icon: "🤖",
-        requirements: ["Robot kit", "Tools", "Workspace"],
-      },
-      {
-        name: "Graphic Design",
-        description: "Digital visual creation",
-        icon: "🎨",
-        requirements: ["Computer", "Design software"],
-      },
-    ],
-  },
-  {
-    category: "Literature",
-    talents: [
-      {
-        name: "Poetry",
-        description: "Creative verse writing",
-        icon: "📝",
-        requirements: ["Notebook", "Pen"],
-      },
-      {
-        name: "Storytelling",
-        description: "Narrative creation and delivery",
-        icon: "📖",
-        requirements: ["Platform", "Audience"],
-      },
-      {
-        name: "Creative Writing",
-        description: "Fiction and non-fiction composition",
-        icon: "✍️",
-        requirements: ["Writing materials"],
-      },
-    ],
-  },
-  {
-    category: "Performing Arts",
-    talents: [
-      {
-        name: "Drama/Acting",
-        description: "Theatrical performance",
-        icon: "🎭",
-        requirements: ["Scripts", "Stage", "Costumes"],
-      },
-      {
-        name: "Comedy",
-        description: "Humorous performance",
-        icon: "😂",
-        requirements: ["Stage", "Microphone"],
-      },
-      {
-        name: "Public Speaking",
-        description: "Eloquent speech delivery",
-        icon: "🗣️",
-        requirements: ["Platform", "Audience"],
-      },
-    ],
-  },
-  {
-    category: "Crafts",
-    talents: [
-      {
-        name: "Beadwork",
-        description: "Creating items with beads",
-        icon: "📿",
-        requirements: ["Beads", "Thread", "Tools"],
-      },
-      {
-        name: "Weaving",
-        description: "Textile creation",
-        icon: "🧶",
-        requirements: ["Loom", "Thread", "Materials"],
-      },
-      {
-        name: "Pottery",
-        description: "Ceramic creation",
-        icon: "🏺",
-        requirements: ["Clay", "Wheel", "Kiln"],
-      },
-    ],
-  },
-];
-
-const BOOKS_DATA = [
-  {
-    title: "Maths for Form 1",
-    author: "Dr. John Matemba",
-    category: "Education",
-    description: "Comprehensive mathematics textbook for Form 1 students",
-    price: 15000,
-    publisher: "Tanzania Education Publishers",
-    language: "English",
-    pages: 320,
-    format: "pdf",
-    tags: ["mathematics", "secondary", "education"],
-  },
-  {
-    title: "Kiswahili Kitukuu",
-    author: "Prof. Amina Hassan",
-    category: "Language",
-    description: "Advanced Kiswahili language learning",
-    price: 12000,
-    publisher: "Mkuki na Nyota",
-    language: "English", // Using "English" to avoid MongoDB text index language errors
-    pages: 280,
-    format: "pdf",
-    tags: ["kiswahili", "language", "secondary"],
-  },
-  {
-    title: "Tanzania History & Civics",
-    author: "Dr. Mohamed Ali",
-    category: "Social Studies",
-    description: "Comprehensive history and civics for secondary schools",
-    price: 18000,
-    publisher: "Tanzania Education Board",
-    language: "English",
-    pages: 400,
-    format: "pdf",
-    tags: ["history", "civics", "secondary"],
-  },
-  {
-    title: "Biology Form 2",
-    author: "Dr. Grace Mwakasege",
-    category: "Science",
-    description: "Biology textbook with practical experiments",
-    price: 20000,
-    publisher: "Science Publishers TZ",
-    language: "English",
-    pages: 380,
-    format: "pdf",
-    tags: ["biology", "science", "secondary"],
-  },
-  {
-    title: "Physics Fundamentals",
-    author: "Dr. Peter Kamwela",
-    category: "Science",
-    description: "Introduction to physics concepts",
-    price: 22000,
-    publisher: "Academic Press TZ",
-    language: "English",
-    pages: 420,
-    format: "pdf",
-    tags: ["physics", "science", "secondary"],
-  },
-  {
-    title: "English Grammar & Composition",
-    author: "Margaret Johnson",
-    category: "Language",
-    description: "Complete English language guide",
-    price: 16000,
-    publisher: "Language Masters",
-    language: "English",
-    pages: 350,
-    format: "pdf",
-    tags: ["english", "language", "grammar"],
-  },
-];
-
-const EVENTS_DATA = [
-  {
-    title: "National Talent Show 2025",
-    description:
-      "Showcase your talents in music, dance, arts, and more. Open to all students nationwide.",
-    eventType: "talent_show",
-    daysFromNow: 30,
-    duration: 3,
-    location: "Julius Nyerere International Convention Centre, Dar es Salaam",
-    venue: "Main Hall",
-    maxParticipants: 500,
-    registrationFee: 5000,
-    prizes: [
-      {
-        position: "1st Place",
-        description: "Trophy + TZS 500,000",
-        amount: 500000,
-      },
-      {
-        position: "2nd Place",
-        description: "Trophy + TZS 300,000",
-        amount: 300000,
-      },
-      {
-        position: "3rd Place",
-        description: "Trophy + TZS 200,000",
-        amount: 200000,
-      },
-    ],
-  },
-  {
-    title: "Inter-School Football Championship",
-    description: "Annual football tournament for secondary schools",
-    eventType: "competition",
-    daysFromNow: 45,
-    duration: 7,
-    location: "National Stadium, Dar es Salaam",
-    venue: "Main Pitch",
-    maxParticipants: 32,
-    registrationFee: 50000,
-    prizes: [
-      {
-        position: "Winner",
-        description: "Trophy + TZS 2,000,000",
-        amount: 2000000,
-      },
-      {
-        position: "Runner-up",
-        description: "Trophy + TZS 1,000,000",
-        amount: 1000000,
-      },
-    ],
-  },
-  {
-    title: "Robotics & Innovation Workshop",
-    description: "Learn robotics, programming, and innovation skills",
-    eventType: "workshop",
-    daysFromNow: 15,
-    duration: 2,
-    location: "University of Dar es Salaam",
-    venue: "Engineering Building",
-    maxParticipants: 100,
-    registrationFee: 10000,
-  },
-  {
-    title: "Art Exhibition & Competition",
-    description: "Display your artwork and compete for prizes",
-    eventType: "exhibition",
-    daysFromNow: 20,
-    duration: 5,
-    location: "National Museum, Dar es Salaam",
-    venue: "Gallery A",
-    maxParticipants: 200,
-    registrationFee: 3000,
-    prizes: [
-      { position: "Best Painting", description: "TZS 300,000", amount: 300000 },
-      {
-        position: "Best Sculpture",
-        description: "TZS 250,000",
-        amount: 250000,
-      },
-      {
-        position: "Best Photography",
-        description: "TZS 200,000",
-        amount: 200000,
-      },
-    ],
-  },
-  {
-    title: "Drama & Theatre Festival",
-    description: "Perform your plays and compete with other schools",
-    eventType: "festival",
-    daysFromNow: 60,
-    duration: 4,
-    location: "Mlimani City Theatre, Dar es Salaam",
-    venue: "Main Stage",
-    maxParticipants: 30,
-    registrationFee: 20000,
-  },
-];
-
-// ============================================
-// MAIN SEED FUNCTION
+// MAIN SEEDER FUNCTION
 // ============================================
 
 async function seedDatabase() {
   try {
-    console.log("🌱 Starting database seeding...\n");
+    console.log("═══════════════════════════════════════════════════════");
+    console.log("🚀 ECONNECT ULTIMATE DATABASE SEEDER");
+    console.log("═══════════════════════════════════════════════════════\n");
 
     // Connect to MongoDB
-    await mongoose.connect(MONGODB_URI, {
-      maxPoolSize: 10,
-      serverSelectionTimeoutMS: 5000,
-    });
+    console.log("📡 Connecting to MongoDB...");
+    await mongoose.connect(MONGODB_URI);
     console.log("✅ Connected to MongoDB\n");
 
     // ============================================
-    // CLEAR EXISTING DATA
+    // 1. SEED REGIONS
     // ============================================
-    console.log("🗑️  Clearing existing data...");
-    await Promise.all([
-      User.deleteMany({}),
-      Region.deleteMany({}),
-      District.deleteMany({}),
-      Ward.deleteMany({}),
-      School.deleteMany({}),
-      Talent.deleteMany({}),
-      StudentTalent.deleteMany({}),
-      Book.deleteMany({}),
-      Event.deleteMany({}),
-      Business.deleteMany({}),
-      Product.deleteMany({}),
-      CTMMembership.deleteMany({}),
-    ]);
-    console.log("✅ Database cleared\n");
+    console.log("📍 1. Seeding Regions...");
+    const regionMap = new Map();
+
+    for (const regionData of regionsData) {
+      const existing = await Region.findOne({ code: regionData.code });
+      if (!existing) {
+        const region = await Region.create(regionData);
+        regionMap.set(regionData.code, region._id);
+        console.log(`   ✓ Created region: ${regionData.name}`);
+      } else {
+        regionMap.set(regionData.code, existing._id);
+        console.log(`   - Region exists: ${regionData.name}`);
+      }
+    }
+    console.log(`✅ Regions: ${regionMap.size} total\n`);
 
     // ============================================
-    // SEED REGIONS
+    // 2. SEED DISTRICTS
     // ============================================
-    console.log("📍 Seeding regions...");
-    const regions = await Region.insertMany(REGIONS_DATA);
-    console.log(`✅ Created ${regions.length} regions\n`);
+    console.log("🏘️  2. Seeding Districts...");
+    const districtMap = new Map();
 
-    // ============================================
-    // SEED DISTRICTS
-    // ============================================
-    console.log("📍 Seeding districts...");
-    const districtsData = [];
-    regions.forEach((region, regionIndex) => {
-      const districtNames = [
-        ["Ilala", "Kinondoni", "Temeke", "Ubungo", "Kigamboni"],
-        ["Arusha City", "Arusha Rural", "Karatu", "Monduli", "Ngorongoro"],
-        ["Dodoma Urban", "Dodoma Rural", "Kondoa", "Mpwapwa", "Kongwa"],
-        ["Mwanza City", "Nyamagana", "Ilemela", "Sengerema", "Ukerewe"],
-        ["Mbeya City", "Mbeya Rural", "Rungwe", "Kyela", "Chunya"],
-        ["Morogoro Urban", "Morogoro Rural", "Mvomero", "Kilombero", "Ulanga"],
-        ["Tanga City", "Muheza", "Pangani", "Handeni", "Lushoto"],
-        ["Moshi Urban", "Moshi Rural", "Hai", "Rombo", "Same"],
-        ["Mtwara Urban", "Mtwara Rural", "Masasi", "Newala", "Tandahimba"],
-        ["Bukoba Urban", "Bukoba Rural", "Muleba", "Karagwe", "Ngara"],
-      ];
+    for (const districtData of districtsData) {
+      const regionId = regionMap.get(districtData.regionCode);
+      if (!regionId) {
+        console.log(`   ⚠️  Region not found for: ${districtData.regionCode}`);
+        continue;
+      }
 
-      districtNames[regionIndex].forEach((name, idx) => {
-        districtsData.push({
-          name,
-          code: `${region.code}${(idx + 1).toString().padStart(2, "0")}`,
-          regionId: region._id,
-          population: Math.floor(Math.random() * 500000) + 100000,
-          area: Math.floor(Math.random() * 5000) + 500,
+      const existing = await District.findOne({ code: districtData.code });
+      if (!existing) {
+        const district = await District.create({
+          name: districtData.name,
+          code: districtData.code,
+          regionId,
+          population: districtData.population,
         });
+        districtMap.set(districtData.code, district._id);
+        console.log(`   ✓ Created district: ${districtData.name}`);
+      } else {
+        districtMap.set(districtData.code, existing._id);
+        console.log(`   - District exists: ${districtData.name}`);
+      }
+    }
+    console.log(`✅ Districts: ${districtMap.size} total\n`);
+
+    // ============================================
+    // 3. SEED WARDS
+    // ============================================
+    console.log("🏡 3. Seeding Wards...");
+    const wardMap = new Map();
+
+    for (const wardData of wardsData) {
+      const districtId = districtMap.get(wardData.districtCode);
+      if (!districtId) {
+        console.log(`   ⚠️  District not found for: ${wardData.districtCode}`);
+        continue;
+      }
+
+      const existing = await Ward.findOne({ code: wardData.code });
+      if (!existing) {
+        const ward = await Ward.create({
+          name: wardData.name,
+          code: wardData.code,
+          districtId,
+          population: wardData.population,
+        });
+        wardMap.set(wardData.code, ward._id);
+        console.log(`   ✓ Created ward: ${wardData.name}`);
+      } else {
+        wardMap.set(wardData.code, existing._id);
+        console.log(`   - Ward exists: ${wardData.name}`);
+      }
+    }
+    console.log(`✅ Wards: ${wardMap.size} total\n`);
+
+    // ============================================
+    // 4. SEED SCHOOLS
+    // ============================================
+    console.log("🏫 4. Seeding Schools...");
+    const schoolMap = new Map();
+
+    for (const schoolData of schoolsData) {
+      const districtId = districtMap.get(schoolData.districtCode);
+      const wardId = schoolData.wardCode
+        ? wardMap.get(schoolData.wardCode)
+        : undefined;
+
+      // Get region from district
+      const district = await District.findById(districtId);
+      const regionId = district ? district.regionId : undefined;
+
+      if (!districtId) {
+        console.log(
+          `   ⚠️  District not found for: ${schoolData.districtCode}`
+        );
+        continue;
+      }
+
+      const existing = await School.findOne({ schoolCode: schoolData.code });
+      if (!existing) {
+        const school = await School.create({
+          name: schoolData.name,
+          schoolCode: schoolData.code,
+          type: schoolData.type,
+          regionId,
+          districtId,
+          wardId,
+          address: schoolData.address,
+          phoneNumber: schoolData.phoneNumber,
+          email: schoolData.email,
+          principalName: schoolData.principalName,
+          establishedYear: schoolData.establishedYear,
+        });
+        schoolMap.set(schoolData.code, school._id);
+        console.log(`   ✓ Created school: ${schoolData.name}`);
+      } else {
+        schoolMap.set(schoolData.code, existing._id);
+        console.log(`   - School exists: ${schoolData.name}`);
+      }
+    }
+    console.log(`✅ Schools: ${schoolMap.size} total\n`);
+
+    // ============================================
+    // 5. SEED SUBJECTS
+    // ============================================
+    console.log("📚 5. Seeding Subjects...");
+    let subjectCount = 0;
+
+    for (const subjectData of subjectsData) {
+      const existing = await Subject.findOne({
+        name: subjectData.name,
+        schoolId: { $exists: false },
       });
-    });
-    const districts = await District.insertMany(districtsData);
-    console.log(`✅ Created ${districts.length} districts\n`);
-
-    // ============================================
-    // SEED WARDS
-    // ============================================
-    console.log("📍 Seeding wards...");
-    const wardsData = [];
-    districts.slice(0, 10).forEach((district, idx) => {
-      // Seed wards for first 10 districts
-      for (let i = 1; i <= 5; i++) {
-        wardsData.push({
-          name: `${district.name} Ward ${i}`,
-          code: `${district.code}W${i.toString().padStart(2, "0")}`,
-          districtId: district._id,
-          population: Math.floor(Math.random() * 50000) + 5000,
-        });
+      if (!existing) {
+        await Subject.create(subjectData);
+        subjectCount++;
+        console.log(`   ✓ Created subject: ${subjectData.name}`);
+      } else {
+        console.log(`   - Subject exists: ${subjectData.name}`);
       }
-    });
-    const wards = await Ward.insertMany(wardsData);
-    console.log(`✅ Created ${wards.length} wards\n`);
+    }
+    console.log(`✅ Subjects: ${subjectCount} created\n`);
 
     // ============================================
-    // SEED SCHOOLS
+    // 6. SEED TALENTS
     // ============================================
-    console.log("🏫 Seeding schools...");
-    const schoolsData = [];
-    const schoolTypes = ["primary", "secondary", "high_school"];
-    const accreditationStatuses = [
-      "accredited",
-      "provisional",
-      "not_accredited",
-    ];
+    console.log("🎨 6. Seeding Talents...");
+    let talentCount = 0;
 
-    districts.slice(0, 20).forEach((district, idx) => {
-      for (let i = 1; i <= 3; i++) {
-        const regionName = regions.find(
-          (r) => r._id.toString() === district.regionId.toString()
-        )?.name;
-        schoolsData.push({
-          name: `${district.name} ${randomElement([
-            "Primary",
-            "Secondary",
-            "High",
-          ])} School ${i}`,
-          schoolCode: `SCH${(idx * 3 + i).toString().padStart(4, "0")}`,
-          type: randomElement(schoolTypes),
-          regionId: district.regionId,
-          districtId: district._id,
-          wardId: wards.find(
-            (w) => w.districtId.toString() === district._id.toString()
-          )?._id,
-          address: `${district.name}, ${regionName}`,
-          phoneNumber: `+255${
-            Math.floor(Math.random() * 900000000) + 700000000
-          }`,
-          email: `school${idx * 3 + i}@econnect.co.tz`,
-          principalName: `${randomElement([
-            "Dr.",
-            "Mr.",
-            "Mrs.",
-            "Ms.",
-          ])} ${randomElement([
-            "John",
-            "Mary",
-            "Peter",
-            "Grace",
-            "James",
-            "Sarah",
-          ])} ${randomElement([
-            "Kamwela",
-            "Mwakasege",
-            "Hassan",
-            "Matemba",
-            "Mushi",
-          ])}`,
-          totalStudents: Math.floor(Math.random() * 800) + 200,
-          totalTeachers: Math.floor(Math.random() * 50) + 10,
-          establishedYear: Math.floor(Math.random() * 50) + 1970,
-          accreditationStatus: randomElement(accreditationStatuses),
-          facilities: [
-            "Library",
-            "Computer Lab",
-            "Science Lab",
-            "Sports Field",
-            "Cafeteria",
-          ],
-          coordinates: {
-            latitude: -6.8 + Math.random() * 2,
-            longitude: 39.0 + Math.random() * 2,
-          },
-        });
+    for (const talentData of talentsData) {
+      const existing = await Talent.findOne({
+        name: talentData.name,
+        category: talentData.category,
+      });
+      if (!existing) {
+        await Talent.create(talentData);
+        talentCount++;
+        console.log(`   ✓ Created talent: ${talentData.name}`);
+      } else {
+        console.log(`   - Talent exists: ${talentData.name}`);
       }
-    });
-    const schools = await School.insertMany(schoolsData);
-    console.log(`✅ Created ${schools.length} schools\n`);
+    }
+    console.log(`✅ Talents: ${talentCount} created\n`);
 
     // ============================================
-    // SEED SUPER ADMIN
+    // 7. SEED USERS
     // ============================================
-    console.log("👤 Creating Super Admin...");
-    const superAdmin = await User.create({
-      username: "superadmin",
-      email: "admin@econnect.co.tz",
-      password: await hashPassword("Admin@123"),
-      role: "super_admin",
-      firstName: "System",
-      lastName: "Administrator",
-      phoneNumber: "+255700000001",
-      isActive: true,
-      isEmailVerified: true,
-      isPhoneVerified: true,
-    });
-    console.log("✅ Super Admin created");
-    console.log("   📧 Email: admin@econnect.co.tz");
-    console.log("   🔑 Password: Admin@123\n");
+    console.log("👥 7. Seeding Users...");
 
-    // ============================================
-    // SEED TAMISEMI & OFFICIALS
-    // ============================================
-    console.log("👥 Creating TAMISEMI and Officials...");
-    const officials = [];
+    const hashedPassword = await hashPassword("password123");
 
-    // TAMISEMI
-    officials.push(
+    // SuperAdmin
+    const existingSuperAdmin = await User.findOne({ username: "superadmin" });
+    if (!existingSuperAdmin) {
       await User.create({
-        username: "tamisemi",
-        email: "tamisemi@econnect.co.tz",
-        password: await hashPassword("Tamisemi@123"),
-        role: "tamisemi",
-        firstName: "TAMISEMI",
-        lastName: "Official",
-        phoneNumber: "+255700000002",
+        username: "superadmin",
+        email: "admin@econnect.co.tz",
+        password: hashedPassword,
+        role: "super_admin",
+        firstName: "System",
+        lastName: "Administrator",
+        phoneNumber: "+255700000001",
         isActive: true,
-        isEmailVerified: true,
-        staffPosition: "Director",
-        department: "Education",
-      })
-    );
+      });
+      console.log("   ✓ Created SuperAdmin");
+    } else {
+      console.log("   - SuperAdmin exists");
+    }
 
-    // National Officials
-    officials.push(
+    // National Official
+    const existingNational = await User.findOne({
+      username: "national_official",
+    });
+    if (!existingNational) {
       await User.create({
         username: "national_official",
-        email: "national@econnect.co.tz",
-        password: await hashPassword("National@123"),
+        email: "national@tamisemi.go.tz",
+        password: hashedPassword,
         role: "national_official",
-        firstName: "National",
-        lastName: "Education Officer",
-        phoneNumber: "+255700000003",
+        firstName: "Dr. James",
+        lastName: "Mwangi",
+        phoneNumber: "+255700000002",
         isActive: true,
-        isEmailVerified: true,
-        staffPosition: "National Coordinator",
-        department: "National Education",
-      })
-    );
-
-    // Regional Officials (one per region)
-    for (let i = 0; i < Math.min(3, regions.length); i++) {
-      officials.push(
-        await User.create({
-          username: `regional_${regions[i].code.toLowerCase()}`,
-          email: `regional.${regions[i].code.toLowerCase()}@econnect.co.tz`,
-          password: await hashPassword("Regional@123"),
-          role: "regional_official",
-          firstName: "Regional",
-          lastName: `Officer ${regions[i].name}`,
-          phoneNumber: `+2557000000${10 + i}`,
-          regionId: regions[i]._id,
-          isActive: true,
-          isEmailVerified: true,
-          staffPosition: "Regional Education Officer",
-          department: `${regions[i].name} Region`,
-        })
-      );
+      });
+      console.log("   ✓ Created National Official");
+    } else {
+      console.log("   - National Official exists");
     }
 
-    // District Officials (one per first 5 districts)
-    for (let i = 0; i < Math.min(5, districts.length); i++) {
-      officials.push(
-        await User.create({
-          username: `district_${districts[i].code.toLowerCase()}`,
-          email: `district.${districts[i].code.toLowerCase()}@econnect.co.tz`,
-          password: await hashPassword("District@123"),
-          role: "district_official",
-          firstName: "District",
-          lastName: `Officer ${districts[i].name}`,
-          phoneNumber: `+2557000000${20 + i}`,
-          regionId: districts[i].regionId,
-          districtId: districts[i]._id,
-          isActive: true,
-          isEmailVerified: true,
-          staffPosition: "District Education Officer",
-          department: `${districts[i].name} District`,
-        })
-      );
+    // Regional Official (Dar es Salaam)
+    const dsmRegionId = regionMap.get("DSM");
+    const existingRegional = await User.findOne({ username: "regional_dsm" });
+    if (!existingRegional && dsmRegionId) {
+      await User.create({
+        username: "regional_dsm",
+        email: "regional@dsm.go.tz",
+        password: hashedPassword,
+        role: "regional_official",
+        firstName: "Mrs. Sarah",
+        lastName: "Mwakasege",
+        phoneNumber: "+255700000003",
+        regionId: dsmRegionId,
+        isActive: true,
+      });
+      console.log("   ✓ Created Regional Official (DSM)");
+    } else {
+      console.log("   - Regional Official exists");
     }
 
-    console.log(`✅ Created ${officials.length} officials\n`);
+    // District Official (Ilala)
+    const ilalaDistrictId = districtMap.get("DSM-ILA");
+    const existingDistrict = await User.findOne({ username: "district_ilala" });
+    if (!existingDistrict && ilalaDistrictId) {
+      await User.create({
+        username: "district_ilala",
+        email: "district@ilala.go.tz",
+        password: hashedPassword,
+        role: "district_official",
+        firstName: "Mr. John",
+        lastName: "Mahenge",
+        phoneNumber: "+255700000004",
+        regionId: dsmRegionId,
+        districtId: ilalaDistrictId,
+        isActive: true,
+      });
+      console.log("   ✓ Created District Official (Ilala)");
+    } else {
+      console.log("   - District Official exists");
+    }
 
-    // ============================================
-    // SEED HEADMASTERS
-    // ============================================
-    console.log("👨‍💼 Creating Headmasters...");
-    const headmasters = [];
-    for (let i = 0; i < Math.min(20, schools.length); i++) {
-      const school = schools[i];
-      headmasters.push(
+    // Headmasters for each school
+    let headmasterCount = 0;
+    for (const [code, schoolId] of schoolMap.entries()) {
+      const school = await School.findById(schoolId);
+      const username = `headmaster_${code.toLowerCase().replace(/-/g, "_")}`;
+
+      const existing = await User.findOne({ username });
+      if (!existing) {
         await User.create({
-          username: `headmaster_${school.schoolCode.toLowerCase()}`,
-          email: `headmaster.${school.schoolCode.toLowerCase()}@econnect.co.tz`,
-          password: await hashPassword("Head@123"),
+          username,
+          email: `headmaster@${code.toLowerCase()}.ac.tz`,
+          password: hashedPassword,
           role: "headmaster",
-          firstName:
-            randomElement(["Dr.", "Mr.", "Mrs."]) +
-            " " +
-            randomElement(["John", "Mary", "Peter", "Grace"]),
-          lastName: randomElement([
-            "Kamwela",
-            "Mwakasege",
-            "Hassan",
-            "Matemba",
-          ]),
-          phoneNumber: `+2557000001${i.toString().padStart(2, "0")}`,
-          schoolId: school._id,
+          firstName: school.principalName
+            ? school.principalName.split(" ")[0]
+            : "Head",
+          lastName: school.principalName
+            ? school.principalName.split(" ").slice(1).join(" ")
+            : "Master",
+          phoneNumber: `+2557000${String(headmasterCount + 10).padStart(
+            5,
+            "0"
+          )}`,
+          schoolId,
           regionId: school.regionId,
           districtId: school.districtId,
           isActive: true,
-          isEmailVerified: true,
-          staffPosition: "Headmaster",
-          department: "Administration",
-          qualification: randomElement(["PhD", "Masters", "Bachelors"]),
-          yearsOfExperience: Math.floor(Math.random() * 20) + 5,
-        })
-      );
+        });
+        headmasterCount++;
+        console.log(`   ✓ Created Headmaster for ${school.name}`);
+      }
     }
-    console.log(`✅ Created ${headmasters.length} headmasters\n`);
 
-    // ============================================
-    // SEED TEACHERS
-    // ============================================
-    console.log("👨‍🏫 Creating Teachers...");
-    const teachers = [];
-    const subjects = [
-      "Mathematics",
-      "English",
-      "Kiswahili",
-      "Physics",
-      "Chemistry",
-      "Biology",
-      "History",
-      "Geography",
-      "Civics",
-      "Computer Science",
-    ];
+    // Sample Teachers (3 per school)
+    let teacherCount = 0;
+    for (const [code, schoolId] of schoolMap.entries()) {
+      const school = await School.findById(schoolId);
 
-    for (let i = 0; i < Math.min(50, schools.length * 3); i++) {
-      const school = schools[i % schools.length];
-      teachers.push(
-        await User.create({
-          username: `teacher${(i + 1).toString().padStart(3, "0")}`,
-          email: `teacher${i + 1}@econnect.co.tz`,
-          password: await hashPassword("Teacher@123"),
-          role: "teacher",
-          firstName: randomElement([
-            "John",
-            "Mary",
-            "Peter",
-            "Grace",
-            "James",
-            "Sarah",
-            "David",
-            "Lucy",
-          ]),
-          lastName: randomElement([
-            "Kamwela",
-            "Mwakasege",
-            "Hassan",
-            "Matemba",
-            "Mushi",
-            "Mbwana",
-            "Mlowe",
-          ]),
-          phoneNumber: `+2557000002${i.toString().padStart(2, "0")}`,
-          schoolId: school._id,
-          regionId: school.regionId,
-          districtId: school.districtId,
-          isActive: true,
-          isEmailVerified: true,
-          employeeId: `EMP${(i + 1).toString().padStart(5, "0")}`,
-          specialization: randomElement(subjects),
-          qualification: randomElement(["Bachelors", "Masters", "Diploma"]),
-          yearsOfExperience: Math.floor(Math.random() * 15) + 1,
-        })
-      );
+      for (let i = 1; i <= 3; i++) {
+        const username = `teacher_${code
+          .toLowerCase()
+          .replace(/-/g, "_")}_${i}`;
+        const existing = await User.findOne({ username });
+
+        if (!existing) {
+          const subjects = [
+            "Mathematics",
+            "English",
+            "Kiswahili",
+            "Physics",
+            "Chemistry",
+            "Biology",
+          ];
+          await User.create({
+            username,
+            email: `teacher${i}@${code.toLowerCase()}.ac.tz`,
+            password: hashedPassword,
+            role: "teacher",
+            firstName: `Teacher${i}`,
+            lastName: school.name.split(" ")[0],
+            phoneNumber: `+2557001${String(teacherCount).padStart(5, "0")}`,
+            schoolId,
+            regionId: school.regionId,
+            districtId: school.districtId,
+            specialization: subjects[i % subjects.length],
+            isActive: true,
+          });
+          teacherCount++;
+        }
+      }
     }
-    console.log(`✅ Created ${teachers.length} teachers\n`);
+    console.log(`   ✓ Created ${teacherCount} Teachers`);
 
-    // ============================================
-    // SEED STUDENTS
-    // ============================================
-    console.log("👨‍🎓 Creating Students...");
-    const students = [];
+    // Sample Students (5 per school)
+    let studentCount = 0;
     const registrationTypes = [
       "normal_registration",
       "premier_registration",
       "silver_registration",
       "diamond_registration",
     ];
-    const gradeLevels = [
-      "Form 1",
-      "Form 2",
-      "Form 3",
-      "Form 4",
-      "Form 5",
-      "Form 6",
-    ];
 
-    for (let i = 0; i < 100; i++) {
-      const school = schools[i % schools.length];
-      const regType = randomElement(registrationTypes);
-      const isCTM = regType.includes("normal") || regType.includes("premier");
+    for (const [code, schoolId] of schoolMap.entries()) {
+      const school = await School.findById(schoolId);
 
-      students.push(
-        await User.create({
-          username: `student${(i + 1).toString().padStart(4, "0")}`,
-          email: `student${i + 1}@econnect.co.tz`,
-          password: await hashPassword("Student@123"),
-          role: "student",
-          firstName: randomElement([
-            "John",
-            "Mary",
-            "Peter",
-            "Grace",
-            "James",
-            "Sarah",
-            "David",
-            "Lucy",
-            "Daniel",
-            "Anna",
-          ]),
-          lastName: randomElement([
-            "Kamwela",
-            "Mwakasege",
-            "Hassan",
-            "Matemba",
-            "Mushi",
-            "Mbwana",
-            "Mlowe",
-            "Kilonzo",
-          ]),
-          phoneNumber: `+2557000003${i.toString().padStart(2, "0")}`,
-          schoolId: school._id,
-          regionId: school.regionId,
-          districtId: school.districtId,
-          isActive: true,
-          isEmailVerified: true,
-          studentId: `STD${(i + 1).toString().padStart(6, "0")}`,
-          gradeLevel: randomElement(gradeLevels),
-          enrollmentDate: randomDate(new Date(2020, 0, 1), new Date()),
-          dateOfBirth: randomDate(new Date(2005, 0, 1), new Date(2010, 11, 31)),
-          gender: randomElement(["male", "female"]),
-          registration_type: regType,
-          registration_fee_paid:
-            regType === "normal_registration"
-              ? 15000
-              : regType === "premier_registration"
-              ? 70000
-              : regType === "silver_registration"
-              ? 49000
-              : 55000,
-          registration_date: new Date(),
-          is_ctm_student: isCTM,
-          next_billing_date:
-            regType === "premier_registration" ||
-            regType === "diamond_registration"
-              ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
-              : null,
-        })
-      );
-    }
-    console.log(`✅ Created ${students.length} students\n`);
+      for (let i = 1; i <= 5; i++) {
+        const username = `student_${code
+          .toLowerCase()
+          .replace(/-/g, "_")}_${i}`;
+        const existing = await User.findOne({ username });
 
-    // ============================================
-    // SEED ENTREPRENEURS
-    // ============================================
-    console.log("💼 Creating Entrepreneurs...");
-    const entrepreneurs = [];
-    for (let i = 0; i < 10; i++) {
-      const region = regions[i % regions.length];
-      const district = districts.find(
-        (d) => d.regionId.toString() === region._id.toString()
-      );
-
-      entrepreneurs.push(
-        await User.create({
-          username: `entrepreneur${i + 1}`,
-          email: `entrepreneur${i + 1}@econnect.co.tz`,
-          password: await hashPassword("Entrepreneur@123"),
-          role: "entrepreneur",
-          firstName: randomElement(["John", "Mary", "Peter", "Grace", "James"]),
-          lastName: randomElement([
-            "Kamwela",
-            "Mwakasege",
-            "Hassan",
-            "Matemba",
-          ]),
-          phoneNumber: `+2557000004${i.toString().padStart(2, "0")}`,
-          regionId: region._id,
-          districtId: district?._id,
-          isActive: true,
-          isEmailVerified: true,
-          businessName: `${randomElement([
-            "Tech",
-            "Smart",
-            "Digital",
-            "Creative",
-          ])} ${randomElement([
-            "Solutions",
-            "Innovations",
-            "Enterprises",
-            "Ventures",
-          ])} ${i + 1}`,
-          businessType: randomElement([
-            "Technology",
-            "Retail",
-            "Services",
-            "Manufacturing",
-          ]),
-          tinNumber: `TIN${(i + 1).toString().padStart(8, "0")}`,
-        })
-      );
-    }
-    console.log(`✅ Created ${entrepreneurs.length} entrepreneurs\n`);
-
-    // ============================================
-    // SEED TALENTS
-    // ============================================
-    console.log("🎨 Creating Talents...");
-    const talents = [];
-    for (const category of TALENTS_DATA) {
-      for (const talent of category.talents) {
-        talents.push(
-          await Talent.create({
-            name: talent.name,
-            category: category.category,
-            description: talent.description,
-            icon: talent.icon,
-            requirements: talent.requirements,
+        if (!existing) {
+          await User.create({
+            username,
+            email: `student${i}@${code.toLowerCase()}.ac.tz`,
+            password: hashedPassword,
+            role: "student",
+            firstName: `Student${i}`,
+            lastName: school.name.split(" ")[0],
+            phoneNumber: `+2557002${String(studentCount).padStart(5, "0")}`,
+            schoolId,
+            regionId: school.regionId,
+            districtId: school.districtId,
+            gender: i % 2 === 0 ? "male" : "female",
+            gradeLevel: school.type === "primary" ? "Standard 5" : "Form 2",
+            classLevel: school.type === "primary" ? "Primary" : "Secondary",
+            institutionType: i % 2 === 0 ? "government" : "private",
+            registration_type: registrationTypes[i % 4],
+            is_ctm_student: true,
             isActive: true,
-          })
-        );
-      }
-    }
-    console.log(`✅ Created ${talents.length} talents\n`);
-
-    // ============================================
-    // SEED STUDENT TALENTS
-    // ============================================
-    console.log("🎯 Assigning Talents to Students...");
-    const studentTalents = [];
-    const proficiencyLevels = [
-      "beginner",
-      "intermediate",
-      "advanced",
-      "expert",
-    ];
-
-    for (let i = 0; i < Math.min(50, students.length); i++) {
-      const student = students[i];
-      const numTalents = Math.floor(Math.random() * 3) + 1;
-      const selectedTalents = [];
-
-      for (let j = 0; j < numTalents; j++) {
-        const talent = randomElement(talents);
-        if (!selectedTalents.includes(talent._id)) {
-          selectedTalents.push(talent._id);
-          studentTalents.push(
-            await StudentTalent.create({
-              studentId: student._id,
-              talentId: talent._id,
-              schoolId: student.schoolId,
-              teacherId:
-                teachers[Math.floor(Math.random() * teachers.length)]?._id,
-              proficiencyLevel: randomElement(proficiencyLevels),
-              yearsOfExperience: Math.floor(Math.random() * 5),
-              achievements: [
-                `Participated in ${randomElement([
-                  "school",
-                  "district",
-                  "regional",
-                ])} competition`,
-              ],
-              status: "active",
-            })
-          );
+          });
+          studentCount++;
         }
       }
     }
-    console.log(`✅ Assigned ${studentTalents.length} talents to students\n`);
+    console.log(`   ✓ Created ${studentCount} Students`);
 
-    // ============================================
-    // SEED CTM MEMBERSHIPS
-    // ============================================
-    console.log("🎓 Creating CTM Memberships...");
-    const ctmMemberships = [];
-    const ctmStudents = students.filter((s) => s.is_ctm_student);
+    // Sample Entrepreneurs (3 total)
+    let entrepreneurCount = 0;
+    const entrepreneurData = [
+      { firstName: "Fatuma", lastName: "Hassan", business: "Textile Design" },
+      { firstName: "Juma", lastName: "Rajabu", business: "Tech Solutions" },
+      {
+        firstName: "Grace",
+        lastName: "Mwambapa",
+        business: "Catering Services",
+      },
+    ];
 
-    for (let i = 0; i < Math.min(30, ctmStudents.length); i++) {
-      const student = ctmStudents[i];
-      const membershipNumber = `CTM-${Date.now()}-${Math.random()
-        .toString(36)
-        .substring(2, 9)
-        .toUpperCase()}`;
+    for (let i = 0; i < entrepreneurData.length; i++) {
+      const username = `entrepreneur_${i + 1}`;
+      const existing = await User.findOne({ username });
 
-      const studentTalentsList = studentTalents
-        .filter((st) => st.studentId.toString() === student._id.toString())
-        .map((st) => st.talentId);
-
-      ctmMemberships.push(
-        await CTMMembership.create({
-          studentId: student._id,
-          membershipNumber,
-          schoolId: student.schoolId,
-          status: "active",
-          joinDate: student.registration_date,
-          membershipType:
-            student.registration_type === "premier_registration"
-              ? "premium"
-              : "basic",
-          talents: studentTalentsList,
-          participationPoints: Math.floor(Math.random() * 500),
-          achievements: [
-            {
-              title: "First Talent Registered",
-              description: "Successfully registered your first talent",
-              awardedDate: new Date(),
-              category: "milestone",
-            },
-          ],
-        })
-      );
+      if (!existing) {
+        await User.create({
+          username,
+          email: `entrepreneur${i + 1}@econnect.co.tz`,
+          password: hashedPassword,
+          role: "entrepreneur",
+          firstName: entrepreneurData[i].firstName,
+          lastName: entrepreneurData[i].lastName,
+          phoneNumber: `+2557003${String(i).padStart(5, "0")}`,
+          businessName: entrepreneurData[i].business,
+          regionId: dsmRegionId,
+          districtId: ilalaDistrictId,
+          isActive: true,
+        });
+        entrepreneurCount++;
+      }
     }
-    console.log(`✅ Created ${ctmMemberships.length} CTM memberships\n`);
+    console.log(`   ✓ Created ${entrepreneurCount} Entrepreneurs`);
+
+    console.log(
+      `✅ Users: ${
+        headmasterCount + teacherCount + studentCount + entrepreneurCount + 4
+      } total\n`
+    );
 
     // ============================================
-    // SEED BOOKS
+    // 8. SEED BOOKS
     // ============================================
-    console.log("📚 Creating Books...");
-    const books = [];
-    for (const bookData of BOOKS_DATA) {
-      books.push(
-        await Book.create({
-          ...bookData,
-          isbn: `ISBN-${Math.random().toString().substring(2, 15)}`,
-          coverImage: "/uploads/covers/default-book.jpg",
-          pdfFile: `/uploads/pdfs/${bookData.title
-            .toLowerCase()
-            .replace(/\s+/g, "-")}.pdf`,
-          rating: Math.random() * 2 + 3,
-          ratingsCount: Math.floor(Math.random() * 100),
-          soldCount: Math.floor(Math.random() * 200),
-          viewCount: Math.floor(Math.random() * 1000),
-          stockQuantity: Math.floor(Math.random() * 100) + 20,
-          uploadedBy: superAdmin._id,
-          publishedDate: randomDate(new Date(2020, 0, 1), new Date()),
-        })
-      );
+    console.log("📖 8. Seeding Books...");
+    let bookCount = 0;
+
+    for (const bookData of booksData) {
+      const existing = await Book.findOne({ title: bookData.title });
+      if (!existing) {
+        await Book.create(bookData);
+        bookCount++;
+        console.log(`   ✓ Created book: ${bookData.title}`);
+      } else {
+        console.log(`   - Book exists: ${bookData.title}`);
+      }
     }
-    console.log(`✅ Created ${books.length} books\n`);
+    console.log(`✅ Books: ${bookCount} created\n`);
 
     // ============================================
-    // SEED EVENTS
+    // 9. SEED EVENTS
     // ============================================
-    console.log("📅 Creating Events...");
-    const events = [];
-    for (const eventData of EVENTS_DATA) {
-      const startDate = new Date();
-      startDate.setDate(startDate.getDate() + eventData.daysFromNow);
-      const endDate = new Date(startDate);
-      endDate.setDate(endDate.getDate() + (eventData.duration || 1));
+    console.log("📅 9. Seeding Events...");
+    let eventCount = 0;
 
-      events.push(
+    // Get a random school and region for events
+    const randomSchoolId = Array.from(schoolMap.values())[0];
+    const randomSchool = await School.findById(randomSchoolId);
+
+    for (const eventData of eventsData) {
+      const existing = await Event.findOne({ title: eventData.title });
+      if (!existing) {
+        const now = new Date();
+        const startDate = generateRandomDate(
+          now,
+          new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000)
+        ); // Next 90 days
+        const endDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000); // 1 day event
+
         await Event.create({
-          title: eventData.title,
-          description: eventData.description,
-          eventType: eventData.eventType,
+          ...eventData,
           startDate,
           endDate,
-          location: eventData.location,
-          venue: eventData.venue,
-          organizer: randomElement([...officials, ...headmasters, ...teachers])
-            ._id,
-          schoolId: schools[0]._id,
-          regionId: regions[0]._id,
-          districtId: districts[0]._id,
-          maxParticipants: eventData.maxParticipants,
-          currentParticipants: 0,
-          registrationFee: eventData.registrationFee,
-          registrationDeadline: new Date(
-            startDate.getTime() - 7 * 24 * 60 * 60 * 1000
-          ),
-          status: "published",
-          isPublic: true,
-          prizes: eventData.prizes || [],
-          requirements: [
-            "Valid student ID",
-            "Parental consent",
-            "Registration fee payment",
-          ],
-        })
-      );
+          schoolId: randomSchoolId,
+          regionId: randomSchool.regionId,
+        });
+        eventCount++;
+        console.log(`   ✓ Created event: ${eventData.title}`);
+      } else {
+        console.log(`   - Event exists: ${eventData.title}`);
+      }
     }
-    console.log(`✅ Created ${events.length} events\n`);
-
-    // ============================================
-    // SEED BUSINESSES
-    // ============================================
-    console.log("🏢 Creating Businesses...");
-    const businesses = [];
-    const businessTypes = [
-      "Technology",
-      "Retail",
-      "Education",
-      "Hospitality",
-      "Manufacturing",
-    ];
-    const businessCategories = [
-      "E-commerce",
-      "Consulting",
-      "Training",
-      "Software",
-      "Hardware",
-    ];
-
-    for (let i = 0; i < entrepreneurs.length; i++) {
-      const entrepreneur = entrepreneurs[i];
-      businesses.push(
-        await Business.create({
-          ownerId: entrepreneur._id,
-          name: entrepreneur.businessName,
-          businessType: randomElement(businessTypes),
-          registrationNumber: `REG${(i + 1).toString().padStart(8, "0")}`,
-          tinNumber: entrepreneur.tinNumber,
-          description: `Leading provider of ${randomElement([
-            "innovative",
-            "quality",
-            "affordable",
-            "professional",
-          ])} ${randomElement([
-            "products",
-            "services",
-            "solutions",
-          ])} in Tanzania`,
-          address: `${randomElement([
-            "Samora Avenue",
-            "Kisutu Street",
-            "Pugu Road",
-          ])}, ${regions[i % regions.length].name}`,
-          phoneNumber: entrepreneur.phoneNumber,
-          email: `${entrepreneur.businessName
-            .toLowerCase()
-            .replace(/\s+/g, "")}@business.co.tz`,
-          regionId: entrepreneur.regionId,
-          districtId: entrepreneur.districtId,
-          category: randomElement(businessCategories),
-          establishedDate: randomDate(new Date(2015, 0, 1), new Date()),
-          employeesCount: Math.floor(Math.random() * 50) + 5,
-          annualRevenue: Math.floor(Math.random() * 100000000) + 1000000,
-          isVerified: Math.random() > 0.3,
-          status: "active",
-          rating: Math.random() * 2 + 3,
-          reviewsCount: Math.floor(Math.random() * 50),
-        })
-      );
-    }
-    console.log(`✅ Created ${businesses.length} businesses\n`);
-
-    // ============================================
-    // SEED PRODUCTS
-    // ============================================
-    console.log("📦 Creating Products...");
-    const products = [];
-    const productTypes = ["product", "service"];
-    const productNames = {
-      product: [
-        "Laptop",
-        "Smartphone",
-        "Tablet",
-        "Book",
-        "Stationery Set",
-        "School Bag",
-        "Calculator",
-        "Uniform",
-      ],
-      service: [
-        "Web Development",
-        "Mobile App Development",
-        "Graphic Design",
-        "Tutoring",
-        "Consulting",
-        "Training",
-      ],
-    };
-
-    for (let i = 0; i < businesses.length * 3; i++) {
-      const business = businesses[i % businesses.length];
-      const type = randomElement(productTypes);
-      const name = randomElement(productNames[type]);
-
-      products.push(
-        await Product.create({
-          businessId: business._id,
-          name: `${name} ${i + 1}`,
-          description: `High quality ${type} from ${business.name}`,
-          category: business.category,
-          type,
-          price: Math.floor(Math.random() * 500000) + 10000,
-          discountPrice:
-            Math.random() > 0.5
-              ? Math.floor(Math.random() * 400000) + 5000
-              : null,
-          stockQuantity:
-            type === "product" ? Math.floor(Math.random() * 100) + 10 : 0,
-          sku: `SKU${(i + 1).toString().padStart(6, "0")}`,
-          tags: [business.category, type, "quality"],
-          rating: Math.random() * 2 + 3,
-          reviewsCount: Math.floor(Math.random() * 50),
-          soldCount: Math.floor(Math.random() * 100),
-          viewCount: Math.floor(Math.random() * 500),
-          isActive: true,
-          isFeatured: Math.random() > 0.7,
-        })
-      );
-    }
-    console.log(`✅ Created ${products.length} products\n`);
+    console.log(`✅ Events: ${eventCount} created\n`);
 
     // ============================================
     // SUMMARY
     // ============================================
-    console.log("\n═══════════════════════════════════════════════════════");
-    console.log("🎉 DATABASE SEEDING COMPLETED SUCCESSFULLY!");
+    console.log("═══════════════════════════════════════════════════════");
+    console.log("✅ DATABASE SEEDING COMPLETED SUCCESSFULLY!");
     console.log("═══════════════════════════════════════════════════════");
     console.log("\n📊 SUMMARY:");
-    console.log(`   ✅ Regions: ${regions.length}`);
-    console.log(`   ✅ Districts: ${districts.length}`);
-    console.log(`   ✅ Wards: ${wards.length}`);
-    console.log(`   ✅ Schools: ${schools.length}`);
-    console.log(`   ✅ Talents: ${talents.length}`);
-    console.log(`   ✅ Books: ${books.length}`);
-    console.log(`   ✅ Events: ${events.length}`);
-    console.log(`   ✅ Businesses: ${businesses.length}`);
-    console.log(`   ✅ Products: ${products.length}`);
-    console.log("\n👥 USERS:");
-    console.log(`   ✅ Super Admin: 1`);
-    console.log(`   ✅ TAMISEMI & Officials: ${officials.length}`);
-    console.log(`   ✅ Headmasters: ${headmasters.length}`);
-    console.log(`   ✅ Teachers: ${teachers.length}`);
-    console.log(`   ✅ Students: ${students.length}`);
-    console.log(`   ✅ Entrepreneurs: ${entrepreneurs.length}`);
-    console.log(
-      `   ✅ Total Users: ${
-        1 +
-        officials.length +
-        headmasters.length +
-        teachers.length +
-        students.length +
-        entrepreneurs.length
-      }`
-    );
-    console.log("\n🎯 STUDENT DATA:");
-    console.log(`   ✅ Student Talents: ${studentTalents.length}`);
-    console.log(`   ✅ CTM Memberships: ${ctmMemberships.length}`);
-    console.log("\n🔑 DEFAULT CREDENTIALS:");
-    console.log("\n   Super Admin:");
-    console.log("   📧 Email: admin@econnect.co.tz");
-    console.log("   🔑 Password: Admin@123");
-    console.log("\n   TAMISEMI:");
-    console.log("   📧 Email: tamisemi@econnect.co.tz");
-    console.log("   🔑 Password: Tamisemi@123");
+    console.log(`   Regions: ${regionMap.size}`);
+    console.log(`   Districts: ${districtMap.size}`);
+    console.log(`   Wards: ${wardMap.size}`);
+    console.log(`   Schools: ${schoolMap.size}`);
+    console.log(`   Subjects: ${await Subject.countDocuments()}`);
+    console.log(`   Talents: ${await Talent.countDocuments()}`);
+    console.log(`   Users: ${await User.countDocuments()}`);
+    console.log(`   Books: ${await Book.countDocuments()}`);
+    console.log(`   Events: ${await Event.countDocuments()}`);
+    console.log("\n🔑 DEFAULT LOGIN CREDENTIALS:");
+    console.log("   SuperAdmin:");
+    console.log("     Username: superadmin");
+    console.log("     Password: password123");
     console.log("\n   National Official:");
-    console.log("   📧 Email: national@econnect.co.tz");
-    console.log("   🔑 Password: National@123");
-    console.log("\n   Sample Student:");
-    console.log("   📧 Email: student0001@econnect.co.tz");
-    console.log("   🔑 Password: Student@123");
-    console.log("\n   Sample Teacher:");
-    console.log("   📧 Email: teacher001@econnect.co.tz");
-    console.log("   🔑 Password: Teacher@123");
-    console.log("\n   Sample Entrepreneur:");
-    console.log("   📧 Email: entrepreneur1@econnect.co.tz");
-    console.log("   🔑 Password: Entrepreneur@123");
-    console.log("\n💡 NOTE: All passwords follow the same pattern:");
-    console.log("   Format: [Role]@123 (e.g., Student@123, Teacher@123)");
+    console.log("     Username: national_official");
+    console.log("     Password: password123");
+    console.log("\n   Headmaster (example):");
+    console.log("     Username: headmaster_aza_ss_001");
+    console.log("     Password: password123");
+    console.log("\n   Teacher (example):");
+    console.log("     Username: teacher_aza_ss_001_1");
+    console.log("     Password: password123");
+    console.log("\n   Student (example):");
+    console.log("     Username: student_aza_ss_001_1");
+    console.log("     Password: password123");
+    console.log("\n   Entrepreneur:");
+    console.log("     Username: entrepreneur_1");
+    console.log("     Password: password123");
     console.log("═══════════════════════════════════════════════════════\n");
-
-    await mongoose.disconnect();
-    console.log("✅ Disconnected from MongoDB");
-    console.log("\n🚀 You can now start your server!\n");
   } catch (error) {
     console.error("\n❌ SEEDING ERROR:", error);
     console.error(error.stack);
-    process.exit(1);
+  } finally {
+    await mongoose.disconnect();
+    console.log("👋 Disconnected from MongoDB\n");
+    process.exit(0);
   }
 }
 
 // ============================================
 // RUN SEEDER
 // ============================================
-
-// Check if running directly
-if (require.main === module) {
-  console.log("\n═══════════════════════════════════════════════════════");
-  console.log("🌱 ECONNECT DATABASE SEEDER");
-  console.log("═══════════════════════════════════════════════════════\n");
-
-  // Show which database will be seeded
-  const isProduction =
-    MONGODB_URI.includes("mongodb+srv") ||
-    MONGODB_URI.includes("render.com") ||
-    MONGODB_URI.includes("cloud.mongodb.com");
-
-  console.log("📍 TARGET DATABASE:");
-  if (isProduction) {
-    console.log("   🌐 PRODUCTION DATABASE");
-    console.log(`   📌 ${MONGODB_URI.substring(0, 50)}...`);
-  } else {
-    console.log("   💻 LOCAL DATABASE");
-    console.log(`   📌 ${MONGODB_URI}`);
-  }
-  console.log("\n⚠️  WARNING: This will delete ALL existing data!");
-  console.log("⚠️  Make sure you're connected to the correct database!\n");
-
-  // Auto-run in development
-  seedDatabase()
-    .then(() => {
-      process.exit(0);
-    })
-    .catch((error) => {
-      console.error(error);
-      process.exit(1);
-    });
-}
-
-module.exports = seedDatabase;
+seedDatabase();
