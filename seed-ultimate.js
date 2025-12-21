@@ -1,7 +1,15 @@
 // ============================================
 // ECONNECT ULTIMATE DATABASE SEEDER
 // Complete data population for Tanzania
-// Version: 2.0.0
+// Version: 2.0.1 - Updated to match server.js v2.0.0
+// ============================================
+// ✅ Updated with all new fields from server.js:
+//    - Guardian fields (email, occupation, nationalId)
+//    - Parent/Guardian location fields
+//    - Registration fee tracking
+//    - Next billing date for monthly subscriptions
+//    - Email/Phone verification status
+//    - Updated timestamps
 // ============================================
 
 const mongoose = require("mongoose");
@@ -110,29 +118,118 @@ const talentSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
-// User Schema
+// User Schema (Matching server.js exactly)
 const userSchema = new mongoose.Schema({
-  username: { type: String, required: true, unique: true },
-  email: { type: String, required: true, unique: true },
+  username: { type: String, required: true, unique: true, trim: true },
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    lowercase: true,
+    trim: true,
+  },
   password: { type: String, required: true },
-  role: { type: String, required: true },
-  firstName: String,
-  lastName: String,
-  phoneNumber: { type: String, unique: true, sparse: true },
+  role: {
+    type: String,
+    enum: [
+      "student",
+      "entrepreneur",
+      "teacher",
+      "headmaster",
+      "staff",
+      "district_official",
+      "regional_official",
+      "national_official",
+      "tamisemi",
+      "super_admin",
+    ],
+    required: true,
+  },
+  firstName: { type: String, trim: true },
+  lastName: { type: String, trim: true },
+  phoneNumber: { type: String, unique: true, sparse: true, trim: true },
   schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School" },
   regionId: { type: mongoose.Schema.Types.ObjectId, ref: "Region" },
   districtId: { type: mongoose.Schema.Types.ObjectId, ref: "District" },
   wardId: { type: mongoose.Schema.Types.ObjectId, ref: "Ward" },
   isActive: { type: Boolean, default: true },
+  isEmailVerified: { type: Boolean, default: false },
+  isPhoneVerified: { type: Boolean, default: false },
   profileImage: String,
-  dateOfBirth: Date,
-  gender: String,
-  gradeLevel: String,
-  institutionType: String,
-  classLevel: String,
-  registration_type: String,
-  is_ctm_student: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now },
+  lastLogin: Date,
+  dateOfBirth: Date,
+  gender: { type: String, enum: ["male", "female", "other"] },
+  address: String,
+  emergencyContact: String,
+  guardianName: String,
+  guardianPhone: String,
+  guardianRelationship: {
+    type: String,
+    enum: ["father", "mother", "guardian", "sibling", "other"],
+  },
+  course: String,
+  nationalId: String,
+
+  // Student-specific fields
+  studentId: String,
+  gradeLevel: String,
+  enrollmentDate: Date,
+
+  // Teacher-specific fields
+  employeeId: String,
+  qualification: String,
+  specialization: String,
+  yearsOfExperience: Number,
+
+  // Entrepreneur-specific fields
+  businessName: String,
+  businessType: String,
+  businessRegistrationNumber: String,
+  tinNumber: String,
+
+  // Staff-specific fields
+  staffPosition: String,
+  department: String,
+  salary: Number,
+  hireDate: Date,
+
+  // ✅ NEW GUARDIAN FIELDS
+  guardianEmail: String,
+  guardianOccupation: String,
+  guardianNationalId: String,
+
+  // ✅ NEW PARENT/GUARDIAN LOCATION FIELDS
+  parentRegionId: { type: mongoose.Schema.Types.ObjectId, ref: "Region" },
+  parentDistrictId: { type: mongoose.Schema.Types.ObjectId, ref: "District" },
+  parentWardId: { type: mongoose.Schema.Types.ObjectId, ref: "Ward" },
+  parentAddress: String,
+
+  // ✅ NEW STUDENT FIELDS
+  institutionType: { type: String, enum: ["government", "private"] },
+  classLevel: String, // Primary, Secondary, College, University
+
+  // Registration Type (for students)
+  registration_type: {
+    type: String,
+    enum: [
+      "normal_registration", // CTM: 15,000 TZS
+      "premier_registration", // CTM: 70,000 TZS
+      "silver_registration", // Non-CTM: 39,000-59,000 TZS
+      "diamond_registration", // Non-CTM: 45,000-65,000 TZS
+    ],
+  },
+  registration_fee_paid: { type: Number, default: 0 },
+  registration_date: Date,
+  next_billing_date: Date,
+  is_ctm_student: { type: Boolean, default: true },
+
+  // Security
+  twoFactorEnabled: { type: Boolean, default: false },
+  twoFactorSecret: String,
+  passwordResetToken: String,
+  passwordResetExpires: Date,
 });
 
 // Book Schema
@@ -1308,6 +1405,8 @@ async function seedDatabase() {
         lastName: "Administrator",
         phoneNumber: "+255700000001",
         isActive: true,
+        isEmailVerified: true,
+        isPhoneVerified: true,
       });
       console.log("   ✓ Created SuperAdmin");
     } else {
@@ -1327,7 +1426,11 @@ async function seedDatabase() {
         firstName: "Dr. James",
         lastName: "Mwangi",
         phoneNumber: "+255700000002",
+        staffPosition: "National Director",
+        department: "TAMISEMI",
         isActive: true,
+        isEmailVerified: true,
+        isPhoneVerified: true,
       });
       console.log("   ✓ Created National Official");
     } else {
@@ -1347,7 +1450,11 @@ async function seedDatabase() {
         lastName: "Mwakasege",
         phoneNumber: "+255700000003",
         regionId: dsmRegionId,
+        staffPosition: "Regional Education Officer",
+        department: "Education",
         isActive: true,
+        isEmailVerified: true,
+        isPhoneVerified: true,
       });
       console.log("   ✓ Created Regional Official (DSM)");
     } else {
@@ -1368,7 +1475,11 @@ async function seedDatabase() {
         phoneNumber: "+255700000004",
         regionId: dsmRegionId,
         districtId: ilalaDistrictId,
+        staffPosition: "District Education Officer",
+        department: "Education",
         isActive: true,
+        isEmailVerified: true,
+        isPhoneVerified: true,
       });
       console.log("   ✓ Created District Official (Ilala)");
     } else {
@@ -1402,6 +1513,8 @@ async function seedDatabase() {
           regionId: school.regionId,
           districtId: school.districtId,
           isActive: true,
+          isEmailVerified: true,
+          isPhoneVerified: true,
         });
         headmasterCount++;
         console.log(`   ✓ Created Headmaster for ${school.name}`);
@@ -1440,7 +1553,14 @@ async function seedDatabase() {
             regionId: school.regionId,
             districtId: school.districtId,
             specialization: subjects[i % subjects.length],
+            qualification: ["Bachelor's Degree", "Master's Degree", "Diploma"][
+              i % 3
+            ],
+            yearsOfExperience: Math.floor(Math.random() * 20) + 1,
+            employeeId: `EMP-${code}-${String(i).padStart(3, "0")}`,
             isActive: true,
+            isEmailVerified: true,
+            isPhoneVerified: true,
           });
           teacherCount++;
         }
@@ -1467,6 +1587,14 @@ async function seedDatabase() {
         const existing = await User.findOne({ username });
 
         if (!existing) {
+          // Calculate next billing date (30 days from now for premier/diamond)
+          const registrationType = registrationTypes[i % 4];
+          const nextBillingDate =
+            registrationType === "premier_registration" ||
+            registrationType === "diamond_registration"
+              ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+              : null;
+
           await User.create({
             username,
             email: `student${i}@${code.toLowerCase()}.ac.tz`,
@@ -1482,9 +1610,30 @@ async function seedDatabase() {
             gradeLevel: school.type === "primary" ? "Standard 5" : "Form 2",
             classLevel: school.type === "primary" ? "Primary" : "Secondary",
             institutionType: i % 2 === 0 ? "government" : "private",
-            registration_type: registrationTypes[i % 4],
+            registration_type: registrationType,
+            registration_fee_paid:
+              registrationType === "normal_registration"
+                ? 15000
+                : registrationType === "premier_registration"
+                ? 70000
+                : registrationType === "silver_registration"
+                ? 50000
+                : 55000,
+            registration_date: new Date(),
+            next_billing_date: nextBillingDate,
             is_ctm_student: true,
+            // Guardian information
+            guardianName: `Guardian${i}`,
+            guardianPhone: `+2557004${String(studentCount).padStart(5, "0")}`,
+            guardianEmail: `guardian${i}@${code.toLowerCase()}.ac.tz`,
+            guardianOccupation: ["Teacher", "Business Owner", "Farmer", "Nurse"][
+              i % 4
+            ],
+            guardianRelationship: ["father", "mother", "guardian", "father"][i % 4],
+            parentAddress: `Address ${i}, ${school.address || "Tanzania"}`,
             isActive: true,
+            isEmailVerified: true,
+            isPhoneVerified: true,
           });
           studentCount++;
         }
@@ -1518,9 +1667,14 @@ async function seedDatabase() {
           lastName: entrepreneurData[i].lastName,
           phoneNumber: `+2557003${String(i).padStart(5, "0")}`,
           businessName: entrepreneurData[i].business,
+          businessType: ["Retail", "Services", "Technology"][i % 3],
+          businessRegistrationNumber: `REG-${String(i + 1).padStart(6, "0")}`,
+          tinNumber: `TIN-${String(i + 1).padStart(9, "0")}`,
           regionId: dsmRegionId,
           districtId: ilalaDistrictId,
           isActive: true,
+          isEmailVerified: true,
+          isPhoneVerified: true,
         });
         entrepreneurCount++;
       }
