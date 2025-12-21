@@ -23,7 +23,7 @@ services:
       success_threshold: 1
       failure_threshold: 3
     routes:
-      - path: /
+      - path: /api
     envs:
       - key: NODE_ENV
         value: production
