@@ -3,6 +3,7 @@ region: nyc
 
 services:
   - name: api
+    type: web
     source_dir: /
     github:
       repo: EConnectLtd/ECONNECT-BACKEND
