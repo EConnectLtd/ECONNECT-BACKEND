@@ -69,155 +69,243 @@ const io = socketIO(server, {
 // REDIS CONFIGURATION
 // ============================================
 let redis = null;
-let emailQueue, smsQueue, paymentQueue, notificationQueue;
+let emailQueue, smsQueue, paymentQueue, notificationQueue, monthlyBillingQueue;
 
 // Try to connect to Redis, but continue if it fails
-try {
-  if (process.env.REDIS_HOST) {
+if (process.env.REDIS_HOST) {
+  try {
     redis = new Redis({
       host: process.env.REDIS_HOST,
       port: process.env.REDIS_PORT || 6379,
       password: process.env.REDIS_PASSWORD || undefined,
       retryStrategy: (times) => {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
+        // Stop retrying after 3 attempts to prevent crash
+        if (times > 3) {
+          console.warn("⚠️  Redis retry limit reached - disabling Redis");
+          return null; // Stop retrying
+        }
+        return Math.min(times * 50, 2000);
       },
+      maxRetriesPerRequest: 3, // ✅ CRITICAL: Limit retries to prevent crash
+      enableReadyCheck: false,
+      lazyConnect: true, // Don't connect immediately
     });
 
-    redis.on("connect", () => console.log("✅ Redis Connected Successfully"));
+    // Try to connect with timeout
+    Promise.race([
+      redis.connect(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Connection timeout")), 5000)
+      ),
+    ])
+      .then(() => {
+        console.log("✅ Redis Connected Successfully");
+
+        // Initialize Bull Queues only after successful Redis connection
+        try {
+          const queueConfig = {
+            redis: {
+              host: process.env.REDIS_HOST,
+              port: process.env.REDIS_PORT || 6379,
+              maxRetriesPerRequest: 3,
+            },
+          };
+
+          emailQueue = new Queue("email", queueConfig);
+          smsQueue = new Queue("sms", queueConfig);
+          paymentQueue = new Queue("payment", queueConfig);
+          notificationQueue = new Queue("notification", queueConfig);
+          monthlyBillingQueue = new Queue("monthly-billing", queueConfig);
+
+          console.log("✅ Bull Queues initialized successfully");
+
+          // Setup queue processors (only if queues exist)
+          setupQueueProcessors();
+        } catch (queueError) {
+          console.warn(
+            "⚠️  Bull Queues initialization failed:",
+            queueError.message
+          );
+          emailQueue =
+            smsQueue =
+            paymentQueue =
+            notificationQueue =
+            monthlyBillingQueue =
+              null;
+        }
+      })
+      .catch((err) => {
+        console.warn("⚠️  Redis connection failed - continuing without Redis");
+        console.warn(
+          "   → Background jobs (SMS, emails, billing) will be disabled"
+        );
+        redis = null;
+        emailQueue =
+          smsQueue =
+          paymentQueue =
+          notificationQueue =
+          monthlyBillingQueue =
+            null;
+      });
+
     redis.on("error", (err) => {
-      // Completely suppress connection errors (ECONNREFUSED, ETIMEDOUT)
+      // Suppress connection refused errors (already handled)
       if (
-        err.code !== "ECONNREFUSED" &&
-        err.code !== "ETIMEDOUT" &&
-        err.code !== "ENOTFOUND"
+        !err.message.includes("ECONNREFUSED") &&
+        !err.message.includes("ETIMEDOUT") &&
+        !err.message.includes("ENOTFOUND")
       ) {
-        console.warn("⚠️ Redis:", err.message);
+        console.warn("⚠️  Redis warning:", err.message);
       }
     });
-
-    // ============================================
-    // BULL QUEUE CONFIGURATION
-    // ============================================
-    emailQueue = new Queue("email", {
-      redis: {
-        host: process.env.REDIS_HOST,
-        port: process.env.REDIS_PORT || 6379,
-      },
-    });
-    smsQueue = new Queue("sms", {
-      redis: {
-        host: process.env.REDIS_HOST,
-        port: process.env.REDIS_PORT || 6379,
-      },
-    });
-    paymentQueue = new Queue("payment", {
-      redis: {
-        host: process.env.REDIS_HOST,
-        port: process.env.REDIS_PORT || 6379,
-      },
-    });
-    notificationQueue = new Queue("notification", {
-      redis: {
-        host: process.env.REDIS_HOST,
-        port: process.env.REDIS_PORT || 6379,
-      },
-    });
-  } else {
-    console.log("⚠️  Redis not configured - queuing features disabled");
+  } catch (error) {
+    console.warn("⚠️  Redis initialization failed - continuing without Redis");
+    console.warn(
+      "   → Background jobs (SMS, emails, billing) will be disabled"
+    );
+    redis = null;
   }
-} catch (error) {
-  console.log(
-    "⚠️  Redis connection failed - continuing without Redis:",
-    error.message
-  );
+} else {
+  console.log("ℹ️  Redis not configured (REDIS_HOST not set)");
+  console.log("   → Background jobs will be disabled");
+  console.log("   → Set REDIS_HOST in environment variables to enable queues");
 }
 
-// ✅ Monthly Billing Queue
-let monthlyBillingQueue;
-if (redis) {
-  monthlyBillingQueue = new Queue("monthly-billing", {
-    redis: {
-      host: process.env.REDIS_HOST,
-      port: process.env.REDIS_PORT || 6379,
-    },
-  });
+// ============================================
+// BULL QUEUE PROCESSORS (only if Redis available)
+// ============================================
+function setupQueueProcessors() {
+  if (
+    !redis ||
+    !smsQueue ||
+    !emailQueue ||
+    !paymentQueue ||
+    !notificationQueue
+  ) {
+    console.warn("⚠️  Skipping queue processors - Redis not available");
+    return;
+  }
 
-  // Process monthly billing
-  monthlyBillingQueue.process(async (job) => {
-    console.log("💰 Processing monthly billing...");
-
-    const today = new Date();
-    const students = await User.find({
-      role: "student",
-      registration_type: {
-        $in: ["premier_registration", "diamond_registration"],
-      },
-      next_billing_date: { $lte: today },
-      isActive: true,
+  // SMS Queue Processor
+  if (smsQueue) {
+    smsQueue.process(async (job) => {
+      const { phoneNumber, message } = job.data;
+      console.log(`📱 Processing SMS to ${phoneNumber}`);
+      return await sendSMS(phoneNumber, message);
     });
 
-    console.log(`📊 Found ${students.length} students due for billing`);
+    smsQueue.on("completed", (job, result) => {
+      console.log(`✅ SMS job ${job.id} completed`);
+    });
 
-    for (const student of students) {
-      try {
-        const amount =
-          student.registration_type === "premier_registration" ? 70000 : 55000;
-        const invoiceNumber = `INV-${Date.now()}-${Math.random()
-          .toString(36)
-          .substring(2, 9)
-          .toUpperCase()}`;
+    smsQueue.on("failed", (job, err) => {
+      console.error(`❌ SMS job ${job.id} failed:`, err.message);
+    });
+  }
 
-        // Create monthly invoice
-        await Invoice.create({
-          student_id: student._id,
-          invoiceNumber,
-          type: "ctm_membership",
-          description: `Monthly ${student.registration_type
-            .replace("_", " ")
-            .toUpperCase()} Fee`,
-          amount,
-          currency: "TZS",
-          status: "pending",
-          dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-          academicYear: new Date().getFullYear().toString(),
-        });
+  // Email Queue Processor
+  if (emailQueue) {
+    emailQueue.process(async (job) => {
+      const { to, subject, body } = job.data;
+      console.log(`📧 Processing email to ${to}`);
+      return { success: true, message: "Email sent" };
+    });
+  }
 
-        // Update next billing date (30 days from now)
-        student.next_billing_date = new Date(
-          Date.now() + 30 * 24 * 60 * 60 * 1000
-        );
-        await student.save();
+  // Payment Queue Processor
+  if (paymentQueue) {
+    paymentQueue.process(async (job) => {
+      const { transactionId } = job.data;
+      console.log(`💳 Processing payment verification for ${transactionId}`);
+      return { success: true };
+    });
+  }
 
-        // Send notification
-        await createNotification(
-          student._id,
-          "Monthly Invoice Generated",
-          `Your monthly membership fee of ${amount.toLocaleString()} TZS is due`,
-          "info",
-          "/invoices"
-        );
+  // Notification Queue Processor
+  if (notificationQueue) {
+    notificationQueue.process(async (job) => {
+      const { userId, title, message, type } = job.data;
+      console.log(`🔔 Processing notification for user ${userId}`);
+      return { success: true };
+    });
+  }
 
-        console.log(
-          `✅ Generated invoice ${invoiceNumber} for student ${student.username}`
-        );
-      } catch (error) {
-        console.error(`❌ Error billing student ${student.username}:`, error);
+  // Monthly Billing Queue Processor
+  if (monthlyBillingQueue) {
+    monthlyBillingQueue.process(async (job) => {
+      console.log("💰 Processing monthly billing...");
+
+      const today = new Date();
+      const students = await User.find({
+        role: "student",
+        registration_type: {
+          $in: ["premier_registration", "diamond_registration"],
+        },
+        next_billing_date: { $lte: today },
+        isActive: true,
+      });
+
+      console.log(`📊 Found ${students.length} students due for billing`);
+
+      for (const student of students) {
+        try {
+          const amount =
+            student.registration_type === "premier_registration"
+              ? 70000
+              : 55000;
+          const invoiceNumber = `INV-${Date.now()}-${Math.random()
+            .toString(36)
+            .substring(2, 9)
+            .toUpperCase()}`;
+
+          await Invoice.create({
+            student_id: student._id,
+            invoiceNumber,
+            type: "ctm_membership",
+            description: `Monthly ${student.registration_type
+              .replace("_", " ")
+              .toUpperCase()} Fee`,
+            amount,
+            currency: "TZS",
+            status: "pending",
+            dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            academicYear: new Date().getFullYear().toString(),
+          });
+
+          student.next_billing_date = new Date(
+            Date.now() + 30 * 24 * 60 * 60 * 1000
+          );
+          await student.save();
+
+          await createNotification(
+            student._id,
+            "Monthly Invoice Generated",
+            `Your monthly membership fee of ${amount.toLocaleString()} TZS is due`,
+            "info",
+            "/invoices"
+          );
+
+          console.log(
+            `✅ Generated invoice ${invoiceNumber} for student ${student.username}`
+          );
+        } catch (error) {
+          console.error(`❌ Error billing student ${student.username}:`, error);
+        }
       }
-    }
 
-    return { processed: students.length };
-  });
+      return { processed: students.length };
+    });
 
-  // Schedule monthly billing (runs daily at 9 AM)
-  monthlyBillingQueue.add(
-    {},
-    {
-      repeat: { cron: "0 9 * * *" }, // Daily at 9 AM
-    }
-  );
+    // Schedule monthly billing (runs daily at 9 AM)
+    monthlyBillingQueue.add(
+      {},
+      {
+        repeat: { cron: "0 9 * * *" },
+      }
+    );
 
-  console.log("✅ Monthly billing queue configured");
+    console.log("✅ Monthly billing queue configured");
+  }
 }
 
 // ============================================
@@ -2738,52 +2826,6 @@ io.on("connection", (socket) => {
 });
 
 // ============================================
-// BULL QUEUE PROCESSORS
-// ============================================
-
-if (smsQueue) {
-  smsQueue.process(async (job) => {
-    const { phoneNumber, message } = job.data;
-    console.log(`📱 Processing SMS to ${phoneNumber}`);
-    return await sendSMS(phoneNumber, message);
-  });
-
-  smsQueue.on("completed", (job, result) => {
-    console.log(`✅ SMS job ${job.id} completed`);
-  });
-
-  smsQueue.on("failed", (job, err) => {
-    console.error(`❌ SMS job ${job.id} failed:`, err);
-  });
-}
-
-if (emailQueue) {
-  emailQueue.process(async (job) => {
-    const { to, subject, body } = job.data;
-    console.log(`📧 Processing email to ${to}`);
-    return { success: true, message: "Email sent" };
-  });
-}
-
-if (paymentQueue) {
-  paymentQueue.process(async (job) => {
-    const { transactionId } = job.data;
-    console.log(
-      `💳 Processing payment verification for transaction ${transactionId}`
-    );
-    return { success: true };
-  });
-}
-
-if (notificationQueue) {
-  notificationQueue.process(async (job) => {
-    const { userId, title, message, type } = job.data;
-    console.log(`🔔 Processing notification for user ${userId}`);
-    return { success: true };
-  });
-}
-
-// ============================================
 // API ROUTES START HERE
 // ============================================
 
@@ -2820,7 +2862,11 @@ app.get("/api/health", async (req, res) => {
     const dbStatus =
       mongoose.connection.readyState === 1 ? "connected" : "disconnected";
     const redisStatus =
-      redis && redis.status === "ready" ? "connected" : "not configured";
+      redis && redis.status === "ready"
+        ? "connected"
+        : redis
+        ? "connecting"
+        : "disabled";
 
     const [userCount, schoolCount, eventCount] = await Promise.all([
       User.countDocuments(),
@@ -2836,6 +2882,7 @@ app.get("/api/health", async (req, res) => {
         database: dbStatus,
         redis: redisStatus,
         socketio: "active",
+        queues: redis ? "enabled" : "disabled",
       },
       stats: {
         users: userCount,
