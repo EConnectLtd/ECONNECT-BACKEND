@@ -305,13 +305,11 @@ const upload = multer({
 // Response Compression (Gzip) - Reduces response size by 70-90%
 app.use(
   compression({
-    level: 6, // Compression level (1-9), 6 is a good balance
+    level: 6,
     filter: (req, res) => {
-      // Don't compress if client doesn't support it
       if (req.headers["x-no-compression"]) {
         return false;
       }
-      // Use compression for all other requests
       return compression.filter(req, res);
     },
   })
@@ -329,7 +327,7 @@ app.use(
         connectSrc: ["'self'"],
       },
     },
-    crossOriginEmbedderPolicy: false, // Allow Socket.io
+    crossOriginEmbedderPolicy: false,
   })
 );
 
@@ -353,9 +351,7 @@ app.use(
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
-// Data Sanitization - Prevent NoSQL Injection
-// app.use(mongoSanitize());
-// Manual sanitization middleware (more reliable)
+// Data Sanitization - Prevent NoSQL Injection (FIXED)
 app.use((req, res, next) => {
   const sanitize = (obj) => {
     if (obj && typeof obj === "object") {
@@ -371,13 +367,54 @@ app.use((req, res, next) => {
   };
 
   if (req.body) sanitize(req.body);
-  if (req.query) req.query = sanitize({ ...req.query });
+  if (req.query) {
+    const sanitizedQuery = {};
+    Object.keys(req.query).forEach((key) => {
+      if (!key.startsWith("$") && !key.includes(".")) {
+        sanitizedQuery[key] = req.query[key];
+      }
+    });
+    req.query = sanitizedQuery;
+  }
   if (req.params) sanitize(req.params);
 
   next();
 });
-// XSS Protection
-app.use(xss());
+
+// XSS Protection (FIXED)
+app.use((req, res, next) => {
+  const sanitizeValue = (value) => {
+    if (typeof value === "string") {
+      return value
+        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+        .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, "")
+        .replace(/javascript:/gi, "")
+        .replace(/on\w+\s*=/gi, "");
+    }
+    if (typeof value === "object" && value !== null) {
+      Object.keys(value).forEach((key) => {
+        value[key] = sanitizeValue(value[key]);
+      });
+    }
+    return value;
+  };
+
+  if (req.body) {
+    req.body = sanitizeValue(req.body);
+  }
+  if (req.query) {
+    const sanitizedQuery = {};
+    Object.keys(req.query).forEach((key) => {
+      sanitizedQuery[key] = sanitizeValue(req.query[key]);
+    });
+    req.query = sanitizedQuery;
+  }
+  if (req.params) {
+    req.params = sanitizeValue(req.params);
+  }
+
+  next();
+});
 
 // Static Files
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
