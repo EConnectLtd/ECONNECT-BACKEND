@@ -354,8 +354,28 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 // Data Sanitization - Prevent NoSQL Injection
-app.use(mongoSanitize());
+// app.use(mongoSanitize());
+// Manual sanitization middleware (more reliable)
+app.use((req, res, next) => {
+  const sanitize = (obj) => {
+    if (obj && typeof obj === "object") {
+      Object.keys(obj).forEach((key) => {
+        if (key.startsWith("$") || key.includes(".")) {
+          delete obj[key];
+        } else if (typeof obj[key] === "object") {
+          sanitize(obj[key]);
+        }
+      });
+    }
+    return obj;
+  };
 
+  if (req.body) sanitize(req.body);
+  if (req.query) req.query = sanitize({ ...req.query });
+  if (req.params) sanitize(req.params);
+
+  next();
+});
 // XSS Protection
 app.use(xss());
 
@@ -387,15 +407,12 @@ if (!JWT_SECRET) {
 mongoose
   .connect(MONGODB_URI, {
     // Connection timeout settings
-    serverSelectionTimeoutMS: 5000,
+    serverSelectionTimeoutMS: 30000, // Increase from 5000 to 30000
     socketTimeoutMS: 45000,
     // Connection pool optimization
-    maxPoolSize: 10, // Maximum number of connections in the pool
-    minPoolSize: 2, // Minimum number of connections in the pool
-    maxIdleTimeMS: 30000, // Close connections after 30 seconds of inactivity
-    // Performance optimizations
-    bufferCommands: false, // Disable mongoose buffering
-    bufferMaxEntries: 0, // Disable mongoose buffering
+    maxPoolSize: 10,
+    minPoolSize: 2,
+    maxIdleTimeMS: 30000,
   })
   .then(() => {
     console.log("✅ MongoDB Connected Successfully");
@@ -537,9 +554,6 @@ const userSchema = new mongoose.Schema({
 userSchema.index({ schoolId: 1, role: 1 });
 userSchema.index({ regionId: 1, role: 1 });
 userSchema.index({ districtId: 1, role: 1 });
-userSchema.index({ email: 1 }); // Already unique, but explicit index helps
-userSchema.index({ phoneNumber: 1 }); // Sparse index for phone lookups
-userSchema.index({ username: 1 }); // Already unique, but explicit index helps
 userSchema.index({ isActive: 1, role: 1 }); // For filtering active users by role
 userSchema.index({ registration_type: 1, next_billing_date: 1 }); // For monthly billing queries
 userSchema.index({ createdAt: -1 }); // For sorting by creation date
