@@ -11,7 +11,7 @@ const bcrypt = require("bcryptjs");
 // DATABASE CONNECTION
 // ============================================
 const MONGODB_URI =
-  "mongodb://doapps-118b10b4-1363-416e-b566-d6763e31235c:zO4DL7129g30G8wi@econnect-db-mongodb-fra1-99826-a3b6a8c0.mongo.ondigitalocean.com:27017/admin?authSource=admin";
+  "mongodb+srv://econnect-db:Hx3sagw4n9678u12@econnect-db-mongodb-fra1-99826-a3b6a8c0.mongo.ondigitalocean.com/admin?tls=true&authSource=admin&replicaSet=econnect-db-mongodb-fra1-99826";
 
 // ============================================
 // SCHEMAS (matching server.js)
