@@ -1128,14 +1128,37 @@ async function seedDatabase() {
     const regionMap = new Map();
 
     for (const regionData of regionsData) {
-      const existing = await Region.findOne({ code: regionData.code });
-      if (!existing) {
-        const region = await Region.create(regionData);
-        regionMap.set(regionData.code, region._id);
-        console.log(`   ✓ Created region: ${regionData.name}`);
-      } else {
-        regionMap.set(regionData.code, existing._id);
-        console.log(`   - Region exists: ${regionData.name}`);
+      try {
+        // Use updateOne with upsert to avoid duplicate errors
+        const result = await Region.updateOne(
+          { code: regionData.code },
+          { $setOnInsert: regionData },
+          { upsert: true }
+        );
+
+        // Find the region to get its ID
+        const region = await Region.findOne({ code: regionData.code });
+        if (region) {
+          regionMap.set(regionData.code, region._id);
+
+          if (result.upsertedCount > 0) {
+            console.log(`   ✓ Created region: ${regionData.name}`);
+          } else {
+            console.log(`   - Region exists: ${regionData.name}`);
+          }
+        }
+      } catch (error) {
+        console.log(
+          `   ⚠️  Error with region ${regionData.name}:`,
+          error.message
+        );
+        // Try to find existing anyway
+        const existing = await Region.findOne({
+          $or: [{ code: regionData.code }, { name: regionData.name }],
+        });
+        if (existing) {
+          regionMap.set(regionData.code, existing._id);
+        }
       }
     }
     console.log(`✅ Regions: ${regionMap.size} total\n`);
@@ -1153,19 +1176,39 @@ async function seedDatabase() {
         continue;
       }
 
-      const existing = await District.findOne({ code: districtData.code });
-      if (!existing) {
-        const district = await District.create({
-          name: districtData.name,
-          code: districtData.code,
-          regionId,
-          population: districtData.population,
-        });
-        districtMap.set(districtData.code, district._id);
-        console.log(`   ✓ Created district: ${districtData.name}`);
-      } else {
-        districtMap.set(districtData.code, existing._id);
-        console.log(`   - District exists: ${districtData.name}`);
+      try {
+        const result = await District.updateOne(
+          { code: districtData.code },
+          {
+            $setOnInsert: {
+              name: districtData.name,
+              code: districtData.code,
+              regionId,
+              population: districtData.population,
+            },
+          },
+          { upsert: true }
+        );
+
+        const district = await District.findOne({ code: districtData.code });
+        if (district) {
+          districtMap.set(districtData.code, district._id);
+
+          if (result.upsertedCount > 0) {
+            console.log(`   ✓ Created district: ${districtData.name}`);
+          } else {
+            console.log(`   - District exists: ${districtData.name}`);
+          }
+        }
+      } catch (error) {
+        console.log(
+          `   ⚠️  Error with district ${districtData.name}:`,
+          error.message
+        );
+        const existing = await District.findOne({ code: districtData.code });
+        if (existing) {
+          districtMap.set(districtData.code, existing._id);
+        }
       }
     }
     console.log(`✅ Districts: ${districtMap.size} total\n`);
@@ -1183,19 +1226,36 @@ async function seedDatabase() {
         continue;
       }
 
-      const existing = await Ward.findOne({ code: wardData.code });
-      if (!existing) {
-        const ward = await Ward.create({
-          name: wardData.name,
-          code: wardData.code,
-          districtId,
-          population: wardData.population,
-        });
-        wardMap.set(wardData.code, ward._id);
-        console.log(`   ✓ Created ward: ${wardData.name}`);
-      } else {
-        wardMap.set(wardData.code, existing._id);
-        console.log(`   - Ward exists: ${wardData.name}`);
+      try {
+        const result = await Ward.updateOne(
+          { code: wardData.code },
+          {
+            $setOnInsert: {
+              name: wardData.name,
+              code: wardData.code,
+              districtId,
+              population: wardData.population,
+            },
+          },
+          { upsert: true }
+        );
+
+        const ward = await Ward.findOne({ code: wardData.code });
+        if (ward) {
+          wardMap.set(wardData.code, ward._id);
+
+          if (result.upsertedCount > 0) {
+            console.log(`   ✓ Created ward: ${wardData.name}`);
+          } else {
+            console.log(`   - Ward exists: ${wardData.name}`);
+          }
+        }
+      } catch (error) {
+        console.log(`   ⚠️  Error with ward ${wardData.name}:`, error.message);
+        const existing = await Ward.findOne({ code: wardData.code });
+        if (existing) {
+          wardMap.set(wardData.code, existing._id);
+        }
       }
     }
     console.log(`✅ Wards: ${wardMap.size} total\n`);
