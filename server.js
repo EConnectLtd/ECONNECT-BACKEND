@@ -3087,11 +3087,13 @@ app.post(
   "/api/auth/register",
   authLimiter,
   [
-    // ✅ NEW VALIDATION: Match the actual data format being sent from frontend
+    // ✅ Phone validation
     body("phone")
       .trim()
       .matches(/^\+?[1-9]\d{1,14}$/)
       .withMessage("Valid phone number is required"),
+
+    // ✅ Names validation (nested fields)
     body("names.first")
       .trim()
       .isLength({ min: 2, max: 50 })
@@ -3105,6 +3107,8 @@ app.post(
       .trim()
       .isLength({ min: 2, max: 50 })
       .withMessage("Last name must be between 2 and 50 characters"),
+
+    // ✅ Role validation
     body("role")
       .isIn([
         "student",
@@ -3119,17 +3123,27 @@ app.post(
         "tamisemi",
       ])
       .withMessage("Invalid role"),
+
+    // ✅ Email validation (optional)
     body("email")
       .optional()
       .isEmail()
       .normalizeEmail()
       .withMessage("Invalid email address"),
+
+    // ✅ Gender validation (optional)
     body("gender")
       .optional()
       .isIn(["male", "female", "other"])
       .withMessage("Invalid gender"),
-    body("location.region").optional().trim().withMessage("Invalid region"),
-    body("location.district").optional().trim().withMessage("Invalid district"),
+
+    // ✅ Location validation (optional, no custom messages needed)
+    body("location.region").optional().trim().isString(),
+    body("location.district").optional().trim().isString(),
+    body("location.ward").optional().trim().isString(),
+
+    // ✅ School ID validation (optional)
+    body("school_id").optional().isMongoId().withMessage("Invalid school ID"),
   ],
   handleValidationErrors,
   async (req, res) => {
@@ -3194,7 +3208,7 @@ app.post(
         lastName: names.last,
         phoneNumber: phone,
         gender: gender || undefined,
-        isActive: role !== "teacher", // Teachers need approval, others are active immediately
+        isActive: role !== "teacher", // Teachers need approval, students are active immediately
         accepted_terms: accepted_terms || true,
       };
 
@@ -3248,6 +3262,28 @@ app.post(
           userData.guardianOccupation = student.guardian.occupation;
           userData.guardianNationalId = student.guardian.nationalId;
         }
+
+        // Parent location information
+        if (student.parent_location) {
+          if (student.parent_location.region) {
+            let region = await Region.findOne({
+              name: student.parent_location.region,
+            });
+            if (region) userData.parentRegionId = region._id;
+          }
+          if (student.parent_location.district) {
+            let district = await District.findOne({
+              name: student.parent_location.district,
+            });
+            if (district) userData.parentDistrictId = district._id;
+          }
+          if (student.parent_location.ward) {
+            let ward = await Ward.findOne({
+              name: student.parent_location.ward,
+            });
+            if (ward) userData.parentWardId = ward._id;
+          }
+        }
       } else if (role === "teacher" && teacher) {
         userData.specialization = teacher.specialization;
         userData.qualification = teacher.qualification;
@@ -3264,6 +3300,7 @@ app.post(
         id: user._id,
         username: user.username,
         role: user.role,
+        isActive: user.isActive,
       });
 
       // ✅ AUTO-GENERATE INVOICE if registration type requires payment
