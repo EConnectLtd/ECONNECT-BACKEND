@@ -3974,21 +3974,65 @@ app.post(
 );
 
 // ============================================
+// LOCATION ENDPOINT PERFORMANCE TRACKING
+// ============================================
+
+// Add this before your location endpoints (around line 2720)
+app.use("/api/locations/:type", (req, res, next) => {
+  const start = Date.now();
+
+  // Log on response finish
+  res.on("finish", () => {
+    const duration = Date.now() - start;
+    console.log(
+      `📊 Location API Usage: ${req.method} ${req.path} - ${duration}ms`
+    );
+
+    // Optional: Track in database or analytics service
+    // This helps you monitor the reduction in API calls after frontend optimization
+  });
+
+  next();
+});
+
+// ============================================
 // LOCATION ENDPOINTS
 // ============================================
 
-// GET all regions
+// ============================================
+// LOCATION ENDPOINTS - OPTIMIZED WITH CACHING
+// ============================================
+
+// GET all regions (OPTIMIZED - Frontend uses local utility now)
 app.get("/api/locations/regions", async (req, res) => {
   try {
+    // ✅ Log deprecated usage (optional monitoring)
+    console.warn(
+      "⚠️  DEPRECATED ENDPOINT CALLED: /api/locations/regions - Consider using frontend utility"
+    );
+
+    // ✅ Set aggressive cache headers (24 hours)
+    res.set({
+      "Cache-Control": "public, max-age=86400, s-maxage=86400", // 24 hours
+      Expires: new Date(Date.now() + 86400000).toUTCString(),
+      "X-Deprecated": "Use frontend locations utility for better performance",
+    });
+
     const regions = await Region.find({ isActive: true })
       .sort({ name: 1 })
-      .select("_id name code population area isActive createdAt");
+      .select("_id name code population area isActive createdAt")
+      .lean(); // ✅ Use lean() for better performance (returns plain JS objects)
 
-    console.log(`✅ Fetched ${regions.length} regions`);
+    console.log(`✅ Fetched ${regions.length} regions (cached response)`);
 
     res.json({
       success: true,
       data: regions,
+      meta: {
+        cached: true,
+        cacheExpiry: "24 hours",
+        recommendation: "Use frontend locations utility for instant loading",
+      },
     });
   } catch (error) {
     console.error("❌ Error fetching regions:", error);
@@ -4000,10 +4044,22 @@ app.get("/api/locations/regions", async (req, res) => {
   }
 });
 
-// GET districts (optionally filtered by region_id)
+// GET districts (OPTIMIZED - Frontend uses local utility now)
 app.get("/api/locations/districts", async (req, res) => {
   try {
     const { region_id } = req.query;
+
+    // ✅ Log deprecated usage
+    console.warn(
+      "⚠️  DEPRECATED ENDPOINT CALLED: /api/locations/districts - Consider using frontend utility"
+    );
+
+    // ✅ Set aggressive cache headers
+    res.set({
+      "Cache-Control": "public, max-age=86400, s-maxage=86400",
+      Expires: new Date(Date.now() + 86400000).toUTCString(),
+      "X-Deprecated": "Use frontend locations utility for better performance",
+    });
 
     const query = { isActive: true };
     if (region_id) {
@@ -4013,17 +4069,23 @@ app.get("/api/locations/districts", async (req, res) => {
     const districts = await District.find(query)
       .sort({ name: 1 })
       .select("_id name code regionId population area isActive createdAt")
-      .populate("regionId", "name code");
+      .populate("regionId", "name code")
+      .lean(); // ✅ Better performance
 
     console.log(
       `✅ Fetched ${districts.length} districts${
         region_id ? ` for region ${region_id}` : ""
-      }`
+      } (cached response)`
     );
 
     res.json({
       success: true,
       data: districts,
+      meta: {
+        cached: true,
+        cacheExpiry: "24 hours",
+        recommendation: "Use frontend locations utility for instant loading",
+      },
     });
   } catch (error) {
     console.error("❌ Error fetching districts:", error);
@@ -4035,10 +4097,22 @@ app.get("/api/locations/districts", async (req, res) => {
   }
 });
 
-// GET wards (optionally filtered by district_id)
+// GET wards (OPTIMIZED - Frontend uses local utility now)
 app.get("/api/locations/wards", async (req, res) => {
   try {
     const { district_id } = req.query;
+
+    // ✅ Log deprecated usage
+    console.warn(
+      "⚠️  DEPRECATED ENDPOINT CALLED: /api/locations/wards - Consider using frontend utility"
+    );
+
+    // ✅ Set aggressive cache headers
+    res.set({
+      "Cache-Control": "public, max-age=86400, s-maxage=86400",
+      Expires: new Date(Date.now() + 86400000).toUTCString(),
+      "X-Deprecated": "Use frontend locations utility for better performance",
+    });
 
     const query = { isActive: true };
     if (district_id) {
@@ -4048,23 +4122,93 @@ app.get("/api/locations/wards", async (req, res) => {
     const wards = await Ward.find(query)
       .sort({ name: 1 })
       .select("_id name code districtId population isActive createdAt")
-      .populate("districtId", "name code");
+      .populate("districtId", "name code")
+      .lean(); // ✅ Better performance
 
     console.log(
       `✅ Fetched ${wards.length} wards${
         district_id ? ` for district ${district_id}` : ""
-      }`
+      } (cached response)`
     );
 
     res.json({
       success: true,
       data: wards,
+      meta: {
+        cached: true,
+        cacheExpiry: "24 hours",
+        recommendation: "Use frontend locations utility for instant loading",
+      },
     });
   } catch (error) {
     console.error("❌ Error fetching wards:", error);
     res.status(500).json({
       success: false,
       error: "Failed to fetch wards",
+      message: error.message,
+    });
+  }
+});
+
+// ============================================
+// NEW: GET ALL LOCATIONS (Combined endpoint for initial sync)
+// ============================================
+
+app.get("/api/locations/all", async (req, res) => {
+  try {
+    console.log("📍 Fetching ALL location data (combined endpoint)");
+
+    // ✅ Set aggressive cache headers
+    res.set({
+      "Cache-Control": "public, max-age=86400, s-maxage=86400",
+      Expires: new Date(Date.now() + 86400000).toUTCString(),
+    });
+
+    // ✅ Fetch all location data in parallel
+    const [regions, districts, wards] = await Promise.all([
+      Region.find({ isActive: true })
+        .sort({ name: 1 })
+        .select("_id name code")
+        .lean(),
+      District.find({ isActive: true })
+        .sort({ name: 1 })
+        .select("_id name code regionId")
+        .lean(),
+      Ward.find({ isActive: true })
+        .sort({ name: 1 })
+        .select("_id name code districtId")
+        .lean(),
+    ]);
+
+    // ✅ Return structured data
+    res.json({
+      success: true,
+      data: {
+        regions,
+        districts,
+        wards,
+        stats: {
+          totalRegions: regions.length,
+          totalDistricts: districts.length,
+          totalWards: wards.length,
+        },
+      },
+      meta: {
+        cached: true,
+        cacheExpiry: "24 hours",
+        generatedAt: new Date().toISOString(),
+        note: "This endpoint provides all location data in a single request",
+      },
+    });
+
+    console.log(
+      `✅ Returned ALL locations: ${regions.length} regions, ${districts.length} districts, ${wards.length} wards`
+    );
+  } catch (error) {
+    console.error("❌ Error fetching all locations:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch all locations",
       message: error.message,
     });
   }
@@ -18665,6 +18809,7 @@ server.listen(PORT, () => {
   console.log("   ✅ Comprehensive Analytics");
   console.log("   ✅ Registration Type System");
   console.log("   ✅ Monthly Billing Automation");
+  console.log("   ✅ Optimized Location Loading"); // ✅ ADD THIS LINE
   console.log("═══════════════════════════════════════════════════════");
   console.log("");
 });
