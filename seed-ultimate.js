@@ -1,11 +1,10 @@
 // ============================================
 // ECONNECT ULTIMATE SEED SCRIPT
-// Optimized for new location endpoint approach
-// Version: 3.0.0 - Ultra Performance Edition
+// Optimized with Embedded Location Data
+// Version: 3.1.0 - Ultra Performance Edition
 // ============================================
 
 const mongoose = require("mongoose");
-const axios = require("axios");
 const bcrypt = require("bcryptjs");
 require("dotenv").config();
 
@@ -14,7 +13,7 @@ require("dotenv").config();
 // ============================================
 
 const TANZANIA_REGIONS = [
-  { name: "Dar-es-Salaam", code: "DSM" },
+  { name: "Dar es Salaam", code: "DSM" },
   { name: "Dodoma", code: "DOD" },
   { name: "Arusha", code: "ARU" },
   { name: "Mwanza", code: "MWZ" },
@@ -43,7 +42,7 @@ const TANZANIA_REGIONS = [
 ];
 
 const TANZANIA_DISTRICTS = {
-  "Dar-es-Salaam": ["Ilala", "Kinondoni", "Temeke", "Ubungo", "Kigamboni"],
+  "Dar es Salaam": ["Ilala", "Kinondoni", "Temeke", "Ubungo", "Kigamboni"],
   Dodoma: ["Dodoma", "Bahi", "Chamwino", "Kondoa", "Kongwa", "Mpwapwa"],
   Arusha: [
     "Arusha City",
@@ -182,7 +181,6 @@ const TANZANIA_WARDS = {
 // CONFIGURATION
 // ============================================
 
-const API_BASE_URL = process.env.API_BASE_URL || "http://localhost:4000";
 const MONGODB_URI =
   process.env.MONGODB_URI ||
   process.env.DATABASE_URL ||
@@ -301,7 +299,7 @@ const bookSchema = new mongoose.Schema({
   category: String,
   description: String,
   price: { type: Number, default: 0 },
-  language: { type: String, default: "Swahili" },
+  language: { type: String, default: "english" }, // MongoDB text search only supports specific languages
   isActive: { type: Boolean, default: true },
   uploadedBy: mongoose.Schema.Types.ObjectId,
   createdAt: { type: Date, default: Date.now },
@@ -375,14 +373,15 @@ const generatePhoneNumber = () => {
 };
 
 const progressBar = (current, total, label) => {
-  const percentage = Math.round((current / total) * 100);
+  const percentage = Math.min(Math.round((current / total) * 100), 100); // Cap at 100%
   const barLength = 30;
-  const filled = Math.round((barLength * current) / total);
-  const bar = "█".repeat(filled) + "░".repeat(barLength - filled);
+  const filled = Math.min(Math.round((barLength * current) / total), barLength); // Cap at barLength
+  const empty = Math.max(barLength - filled, 0); // Prevent negative
+  const bar = "█".repeat(filled) + "░".repeat(empty);
   process.stdout.write(
     `\r${label}: [${bar}] ${percentage}% (${current}/${total})`
   );
-  if (current === total) console.log();
+  if (current >= total) console.log();
 };
 
 // ============================================
@@ -742,11 +741,22 @@ async function seedSchools(locations) {
     const districtOptions = districts.filter(
       (d) => d.regionId.toString() === region._id.toString()
     );
+
+    if (districtOptions.length === 0) {
+      console.warn(
+        `⚠️  No districts found for region ${region.name}, skipping school ${
+          i + 1
+        }`
+      );
+      continue;
+    }
+
     const district = randomElement(districtOptions);
     const wardOptions = wards.filter(
       (w) => w.districtId.toString() === district._id.toString()
     );
-    const ward = randomElement(wardOptions);
+
+    const ward = wardOptions.length > 0 ? randomElement(wardOptions) : null;
 
     const schoolType = randomElement(SCHOOL_TYPES);
     const schoolNumber = String(i + 1).padStart(3, "0");
@@ -759,7 +769,7 @@ async function seedSchools(locations) {
       type: schoolType,
       regionId: region._id,
       districtId: district._id,
-      wardId: ward._id,
+      wardId: ward ? ward._id : null,
       isActive: true,
       totalStudents: 0,
       totalTeachers: 0,
@@ -780,9 +790,9 @@ async function seedUsers(schools, locations) {
   const { regions, districts } = locations;
 
   const totalUsers =
-    SEED_CONFIG.schools * SEED_CONFIG.studentsPerSchool +
-    SEED_CONFIG.schools * SEED_CONFIG.teachersPerSchool +
-    districts.length * SEED_CONFIG.staffPerDistrict;
+    schools.length * SEED_CONFIG.studentsPerSchool +
+    schools.length * SEED_CONFIG.teachersPerSchool +
+    Math.min(districts.length, 10) * SEED_CONFIG.staffPerDistrict;
 
   let userCount = 0;
 
@@ -870,8 +880,9 @@ async function seedUsers(schools, locations) {
     await school.save();
   }
 
-  // Create staff
-  for (const district of districts) {
+  // Create staff (limit to first 10 districts to avoid too many staff)
+  const limitedDistricts = districts.slice(0, 10);
+  for (const district of limitedDistricts) {
     for (let i = 0; i < SEED_CONFIG.staffPerDistrict; i++) {
       const firstName = randomElement(TANZANIAN_FIRST_NAMES);
       const lastName = randomElement(TANZANIAN_LAST_NAMES);
@@ -907,15 +918,13 @@ async function seedStudentTalents(students, talents) {
   console.log("\n🎯 Assigning talents to students...");
 
   const studentTalents = [];
-  const totalAssignments = students.length * 2; // 2 talents per student
 
-  let assignmentCount = 0;
-
-  for (const student of students) {
+  for (let i = 0; i < students.length; i++) {
+    const student = students[i];
     const numTalents = randomNumber(1, 3);
     const selectedTalents = [];
 
-    for (let i = 0; i < numTalents; i++) {
+    for (let j = 0; j < numTalents; j++) {
       const talent = randomElement(talents);
 
       if (!selectedTalents.includes(talent._id.toString())) {
@@ -933,14 +942,9 @@ async function seedStudentTalents(students, talents) {
         studentTalents.push(studentTalent);
         selectedTalents.push(talent._id.toString());
       }
-
-      assignmentCount++;
-      progressBar(
-        assignmentCount,
-        totalAssignments,
-        "Student-Talent Assignments"
-      );
     }
+
+    progressBar(i + 1, students.length, "Student-Talent Assignments");
   }
 
   console.log(`✅ Created ${studentTalents.length} student-talent assignments`);
@@ -1008,7 +1012,7 @@ async function seedBooks(users) {
       category,
       description: `Comprehensive ${category.toLowerCase()} textbook for students`,
       price: randomNumber(5000, 50000),
-      language: Math.random() > 0.5 ? "Swahili" : "English",
+      language: "english", // MongoDB text search only supports specific languages
       isActive: true,
       uploadedBy: uploader._id,
     });
@@ -1035,6 +1039,14 @@ async function seedBusinesses(users, locations) {
     const districtOptions = districts.filter(
       (d) => d.regionId.toString() === region._id.toString()
     );
+
+    if (districtOptions.length === 0) {
+      console.warn(
+        `⚠️  No districts for region ${region.name}, skipping business ${i + 1}`
+      );
+      continue;
+    }
+
     const district = randomElement(districtOptions);
 
     const business = await Business.create({
@@ -1115,7 +1127,8 @@ async function clearDatabase() {
 async function main() {
   console.log("═══════════════════════════════════════════════════════");
   console.log("🚀 ECONNECT ULTIMATE SEED SCRIPT");
-  console.log("   Optimized for new location endpoint approach");
+  console.log("   Optimized with Embedded Location Data");
+  console.log("   Version 3.1.0 - Ultra Performance Edition");
   console.log("═══════════════════════════════════════════════════════");
 
   try {
@@ -1130,10 +1143,10 @@ async function main() {
     // Clear existing data
     await clearDatabase();
 
-    // Seed locations
+    // Seed locations FIRST (directly to database, no API calls!)
     const locations = await seedLocations();
 
-    // Seed data
+    // Seed all other data
     const superAdmin = await seedSuperAdmin();
     const talents = await seedTalents();
     const subjects = await seedSubjects();
@@ -1176,28 +1189,32 @@ async function main() {
     console.log(`   📖 Books: ${books.length}`);
     console.log(`   🏢 Businesses: ${businesses.length}`);
     console.log(`   🛍️  Products: ${products.length}`);
+    console.log("═══════════════════════════════════════════════════════");
     console.log("\n🔐 DEFAULT CREDENTIALS:");
     console.log("   Super Admin:");
     console.log("      Username: superadmin");
     console.log("      Password: admin123");
-    console.log("   Students:");
-    console.log("      Username: student0001, student0002, ...");
+    console.log("\n   Students:");
+    console.log("      Username: student0001, student0002, etc.");
     console.log("      Password: student123");
-    console.log("   Teachers:");
-    console.log("      Username: teacher0001, teacher0002, ...");
+    console.log("\n   Teachers:");
+    console.log("      Username: teacher0001, teacher0002, etc.");
     console.log("      Password: teacher123");
-    console.log("   Staff:");
-    console.log("      Username: staff0001, staff0002, ...");
+    console.log("\n   Staff:");
+    console.log("      Username: staff0001, staff0002, etc.");
     console.log("      Password: staff123");
     console.log("═══════════════════════════════════════════════════════");
+    console.log("\n🎉 You can now start your backend server!");
+    console.log("   Run: npm start");
+    console.log("═══════════════════════════════════════════════════════\n");
 
     process.exit(0);
   } catch (error) {
-    console.error("\n❌ SEED FAILED:", error.message);
-    console.error(error.stack);
+    console.error("\n❌ SEED FAILED:");
+    console.error(error);
     process.exit(1);
   }
 }
 
-// Run the seed script
+// Run the script
 main();
