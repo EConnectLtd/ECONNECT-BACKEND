@@ -3098,11 +3098,7 @@ app.post(
       .trim()
       .isLength({ min: 2, max: 50 })
       .withMessage("First name must be between 2 and 50 characters"),
-    body("names.middle")
-      .optional()
-      .trim()
-      .isLength({ max: 50 })
-      .withMessage("Middle name must be less than 50 characters"),
+    body("names.middle").optional().trim(),
     body("names.last")
       .trim()
       .isLength({ min: 2, max: 50 })
@@ -3124,9 +3120,9 @@ app.post(
       ])
       .withMessage("Invalid role"),
 
-    // ✅ Email validation (optional)
+    // ✅ Email validation (optional) - allow undefined
     body("email")
-      .optional()
+      .optional({ nullable: true, checkFalsy: true })
       .isEmail()
       .normalizeEmail()
       .withMessage("Invalid email address"),
@@ -3137,13 +3133,13 @@ app.post(
       .isIn(["male", "female", "other"])
       .withMessage("Invalid gender"),
 
-    // ✅ Location validation (optional, no custom messages needed)
+    // ✅ Location validation (optional)
     body("location.region").optional().trim().isString(),
     body("location.district").optional().trim().isString(),
     body("location.ward").optional().trim().isString(),
 
-    // ✅ School ID validation (optional)
-    body("school_id").optional().isMongoId().withMessage("Invalid school ID"),
+    // ✅ School ID validation - REMOVED isMongoId() check since utility uses simple numeric IDs
+    body("school_id").optional().trim(),
   ],
   handleValidationErrors,
   async (req, res) => {
@@ -3168,6 +3164,7 @@ app.post(
         role,
         hasNames: !!names,
         hasLocation: !!location,
+        school_id,
       });
 
       // Validation
@@ -3212,9 +3209,26 @@ app.post(
         accepted_terms: accepted_terms || true,
       };
 
-      // Add school if provided
+      // ✅ Add school if provided (look up school by utility ID)
       if (school_id) {
-        userData.schoolId = school_id;
+        // Try to find school by the utility ID (stored in schoolCode or as string ID)
+        const school = await School.findOne({
+          $or: [
+            { schoolCode: school_id },
+            {
+              _id: mongoose.Types.ObjectId.isValid(school_id)
+                ? school_id
+                : null,
+            },
+          ],
+        });
+
+        if (school) {
+          userData.schoolId = school._id;
+          console.log(`✅ Found school: ${school.name} (ID: ${school._id})`);
+        } else {
+          console.warn(`⚠️ School not found for ID: ${school_id}`);
+        }
       }
 
       // Add location if provided (using names, not IDs)
@@ -3224,6 +3238,7 @@ app.post(
           let region = await Region.findOne({ name: location.region });
           if (region) {
             userData.regionId = region._id;
+            console.log(`✅ Found region: ${location.region}`);
           }
         }
 
@@ -3232,6 +3247,7 @@ app.post(
           let district = await District.findOne({ name: location.district });
           if (district) {
             userData.districtId = district._id;
+            console.log(`✅ Found district: ${location.district}`);
           }
         }
 
@@ -3240,6 +3256,7 @@ app.post(
           let ward = await Ward.findOne({ name: location.ward });
           if (ward) {
             userData.wardId = ward._id;
+            console.log(`✅ Found ward: ${location.ward}`);
           }
         }
       }
@@ -3252,6 +3269,7 @@ app.post(
         userData.is_ctm_student = student.is_ctm_student !== false;
         userData.registration_date = new Date();
         userData.registration_fee_paid = student.registration_fee_paid || 0;
+        userData.institutionType = student.institution_type;
 
         // Guardian information
         if (student.guardian) {
@@ -3283,6 +3301,7 @@ app.post(
             });
             if (ward) userData.parentWardId = ward._id;
           }
+          userData.parentAddress = student.parent_location.address;
         }
       } else if (role === "teacher" && teacher) {
         userData.specialization = teacher.specialization;
@@ -3296,7 +3315,7 @@ app.post(
       // Create user
       const user = await User.create(userData);
 
-      console.log("✅ User created:", {
+      console.log("✅ User created successfully:", {
         id: user._id,
         username: user.username,
         role: user.role,
@@ -3337,7 +3356,7 @@ app.post(
             academicYear: new Date().getFullYear().toString(),
           });
 
-          console.log(`💰 Created invoice ${invoiceNumber} for ${amount} TZS`);
+          console.log(`💰 Invoice created: ${invoiceNumber} for ${amount} TZS`);
 
           // Set next billing date for monthly subscriptions
           if (
@@ -3369,8 +3388,6 @@ app.post(
         req
       );
 
-      console.log("✅ Registration successful:", user.username);
-
       res.status(201).json({
         success: true,
         message: phone
@@ -3400,7 +3417,6 @@ app.post(
     }
   }
 );
-
 // Verify OTP
 app.post("/api/auth/verify-otp", authenticateToken, async (req, res) => {
   try {
