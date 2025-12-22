@@ -3087,25 +3087,24 @@ app.post(
   "/api/auth/register",
   authLimiter,
   [
-    body("username")
+    // ✅ NEW VALIDATION: Match the actual data format being sent from frontend
+    body("phone")
       .trim()
-      .isLength({ min: 3, max: 30 })
-      .withMessage("Username must be between 3 and 30 characters")
-      .matches(/^[a-zA-Z0-9_]+$/)
-      .withMessage(
-        "Username can only contain letters, numbers, and underscores"
-      ),
-    body("email")
-      .isEmail()
-      .normalizeEmail()
-      .withMessage("Invalid email address"),
-    body("password")
-      .isLength({ min: 8 })
-      .withMessage("Password must be at least 8 characters")
-      .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
-      .withMessage(
-        "Password must contain at least one uppercase letter, one lowercase letter, and one number"
-      ),
+      .matches(/^\+?[1-9]\d{1,14}$/)
+      .withMessage("Valid phone number is required"),
+    body("names.first")
+      .trim()
+      .isLength({ min: 2, max: 50 })
+      .withMessage("First name must be between 2 and 50 characters"),
+    body("names.middle")
+      .optional()
+      .trim()
+      .isLength({ max: 50 })
+      .withMessage("Middle name must be less than 50 characters"),
+    body("names.last")
+      .trim()
+      .isLength({ min: 2, max: 50 })
+      .withMessage("Last name must be between 2 and 50 characters"),
     body("role")
       .isIn([
         "student",
@@ -3120,105 +3119,166 @@ app.post(
         "tamisemi",
       ])
       .withMessage("Invalid role"),
-    body("phoneNumber")
+    body("email")
       .optional()
-      .matches(/^\+?[1-9]\d{1,14}$/)
-      .withMessage("Invalid phone number format"),
+      .isEmail()
+      .normalizeEmail()
+      .withMessage("Invalid email address"),
+    body("gender")
+      .optional()
+      .isIn(["male", "female", "other"])
+      .withMessage("Invalid gender"),
+    body("location.region").optional().trim().withMessage("Invalid region"),
+    body("location.district").optional().trim().withMessage("Invalid district"),
   ],
   handleValidationErrors,
   async (req, res) => {
     try {
       const {
-        username,
-        email,
+        phone,
         password,
+        names,
+        email,
         role,
-        firstName,
-        lastName,
-        phoneNumber,
-        schoolId,
-        regionId,
-        districtId,
-        wardId,
-        registration_type,
-        is_ctm_student,
-
-        // ✅ NEW FIELDS
-        institutionType,
-        classLevel,
-        gradeLevel,
-        guardianEmail,
-        guardianOccupation,
-        guardianNationalId,
-        parentRegionId,
-        parentDistrictId,
-        parentWardId,
-        parentAddress,
+        school_id,
+        gender,
+        accepted_terms,
+        student,
+        teacher,
+        entrepreneur,
+        location,
       } = req.body;
 
+      console.log("📥 Registration request received:", {
+        phone,
+        role,
+        hasNames: !!names,
+        hasLocation: !!location,
+      });
+
       // Validation
-      if (!username || !email || !password || !role) {
+      if (!phone || !names || !names.first || !names.last || !role) {
         return res.status(400).json({
           success: false,
-          error: "Username, email, password, and role are required",
+          error: "Phone, names (first & last), and role are required",
         });
       }
 
       // Check if user already exists
       const existingUser = await User.findOne({
-        $or: [{ username }, { email }, { phoneNumber }],
+        $or: [
+          { phoneNumber: phone },
+          { username: phone },
+          ...(email ? [{ email }] : []),
+        ],
       });
 
       if (existingUser) {
         return res.status(409).json({
           success: false,
-          error: "Username, email, or phone number already exists",
+          error: "Phone number or email already exists",
         });
       }
 
-      // Hash password
-      const hashedPassword = await hashPassword(password);
+      // Hash password (use phone as password if not provided)
+      const hashedPassword = await hashPassword(password || phone);
 
-      // Create user
-      const user = await User.create({
-        username,
-        email,
+      // Build user object
+      const userData = {
+        username: phone,
+        email: email || `${phone.replace(/[^0-9]/g, "")}@econnect.temp`,
         password: hashedPassword,
         role,
-        firstName,
-        lastName,
-        phoneNumber,
-        schoolId,
-        regionId,
-        districtId,
-        wardId,
-        isActive: true,
-        registration_type,
-        is_ctm_student,
-        registration_date: new Date(),
+        firstName: names.first,
+        middleName: names.middle || "",
+        lastName: names.last,
+        phoneNumber: phone,
+        gender: gender || undefined,
+        isActive: role !== "teacher", // Teachers need approval, others are active immediately
+        accepted_terms: accepted_terms || true,
+      };
 
-        // ✅ NEW FIELDS
-        institutionType,
-        classLevel,
-        gradeLevel,
-        guardianEmail,
-        guardianOccupation,
-        guardianNationalId,
-        parentRegionId,
-        parentDistrictId,
-        parentWardId,
-        parentAddress,
+      // Add school if provided
+      if (school_id) {
+        userData.schoolId = school_id;
+      }
+
+      // Add location if provided (using names, not IDs)
+      if (location) {
+        // Find region by name
+        if (location.region) {
+          let region = await Region.findOne({ name: location.region });
+          if (region) {
+            userData.regionId = region._id;
+          }
+        }
+
+        // Find district by name
+        if (location.district) {
+          let district = await District.findOne({ name: location.district });
+          if (district) {
+            userData.districtId = district._id;
+          }
+        }
+
+        // Find ward by name
+        if (location.ward) {
+          let ward = await Ward.findOne({ name: location.ward });
+          if (ward) {
+            userData.wardId = ward._id;
+          }
+        }
+      }
+
+      // Add role-specific data
+      if (role === "student" && student) {
+        userData.gradeLevel = student.class_level || student.classLevel;
+        userData.course = student.course;
+        userData.registration_type = student.registration_type;
+        userData.is_ctm_student = student.is_ctm_student !== false;
+        userData.registration_date = new Date();
+        userData.registration_fee_paid = student.registration_fee_paid || 0;
+
+        // Guardian information
+        if (student.guardian) {
+          userData.guardianName = student.guardian.name;
+          userData.guardianPhone = student.guardian.phone;
+          userData.guardianRelationship = student.guardian.relationship;
+          userData.guardianEmail = student.guardian.email;
+          userData.guardianOccupation = student.guardian.occupation;
+          userData.guardianNationalId = student.guardian.nationalId;
+        }
+      } else if (role === "teacher" && teacher) {
+        userData.specialization = teacher.specialization;
+        userData.qualification = teacher.qualification;
+        userData.yearsOfExperience = teacher.years_of_experience || 0;
+      } else if (role === "entrepreneur" && entrepreneur) {
+        userData.businessName = entrepreneur.business_name;
+        userData.businessType = entrepreneur.business_type;
+      }
+
+      // Create user
+      const user = await User.create(userData);
+
+      console.log("✅ User created:", {
+        id: user._id,
+        username: user.username,
+        role: user.role,
       });
 
       // ✅ AUTO-GENERATE INVOICE if registration type requires payment
-      if (registration_type && registration_type !== "normal_registration") {
+      if (
+        role === "student" &&
+        student?.registration_type &&
+        student.registration_type !== "normal_registration"
+      ) {
         const registrationFees = {
           premier_registration: 70000,
           silver_registration: 49000,
           diamond_registration: 55000,
         };
 
-        const amount = registrationFees[registration_type];
+        const amount = registrationFees[student.registration_type];
 
         if (amount) {
           const invoiceNumber = `INV-${Date.now()}-${Math.random()
@@ -3230,20 +3290,22 @@ app.post(
             student_id: user._id,
             invoiceNumber,
             type: "ctm_membership",
-            description: `${registration_type
+            description: `${student.registration_type
               .replace("_", " ")
               .toUpperCase()} Fee`,
             amount,
             currency: "TZS",
             status: "pending",
-            dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+            dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
             academicYear: new Date().getFullYear().toString(),
           });
+
+          console.log(`💰 Created invoice ${invoiceNumber} for ${amount} TZS`);
 
           // Set next billing date for monthly subscriptions
           if (
             ["premier_registration", "diamond_registration"].includes(
-              registration_type
+              student.registration_type
             )
           ) {
             user.next_billing_date = new Date(
@@ -3254,9 +3316,9 @@ app.post(
         }
       }
 
-      // Send OTP for phone verification (if phone number provided)
-      if (phoneNumber) {
-        await sendOTP(phoneNumber, "registration");
+      // Send OTP for phone verification
+      if (phone) {
+        await sendOTP(phone, "registration");
       }
 
       // Generate token
@@ -3270,9 +3332,11 @@ app.post(
         req
       );
 
+      console.log("✅ Registration successful:", user.username);
+
       res.status(201).json({
         success: true,
-        message: phoneNumber
+        message: phone
           ? "User registered. Please verify your phone number."
           : "User registered successfully.",
         data: {
