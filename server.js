@@ -622,13 +622,15 @@ const userSchema = new mongoose.Schema({
 
   // Teacher-specific fields
   employeeId: String,
-  qualification: String,
-  specialization: String,
-  yearsOfExperience: Number,
+  subjects: [String], // Array of subject names
+  otherSubjects: String, // Custom subjects if "Others" selected
 
   // Entrepreneur-specific fields
   businessName: String,
   businessType: String,
+  businessStatus: String, // "Registered" or "Not Registered"
+  businessWebsite: String,
+  businessCategories: [String], // Array of categories,
   businessRegistrationNumber: String,
   tinNumber: String,
 
@@ -3304,12 +3306,34 @@ app.post(
           userData.parentAddress = student.parent_location.address;
         }
       } else if (role === "teacher" && teacher) {
-        userData.specialization = teacher.specialization;
-        userData.qualification = teacher.qualification;
-        userData.yearsOfExperience = teacher.years_of_experience || 0;
+        userData.subjects = teacher.subjects || [];
+        userData.otherSubjects =
+          teacher.other_subjects || teacher.otherSubjects;
+        userData.employeeId = teacher.employee_id;
+
+        // ✅ ADD THESE TWO LINES:
+        userData.institutionType = teacher.institution_type;
+        userData.classLevel = teacher.teaching_level;
+
+        console.log(
+          `✅ Teacher subjects saved: ${userData.subjects.join(", ")}`
+        );
+        if (userData.otherSubjects) {
+          console.log(`✅ Other subjects: ${userData.otherSubjects}`);
+        }
+        if (userData.institutionType) {
+          console.log(`✅ Institution type: ${userData.institutionType}`);
+        }
+        if (userData.classLevel) {
+          console.log(`✅ Teaching level: ${userData.classLevel}`);
+        }
       } else if (role === "entrepreneur" && entrepreneur) {
-        userData.businessName = entrepreneur.business_name;
+        userData.businessName =
+          entrepreneur.business_name || entrepreneur.company_name;
         userData.businessType = entrepreneur.business_type;
+        userData.businessStatus = entrepreneur.business_status;
+        userData.businessWebsite = entrepreneur.business_website;
+        userData.businessCategories = entrepreneur.business_categories || [];
       }
 
       // Create user
