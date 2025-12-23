@@ -595,6 +595,9 @@ const userSchema = new mongoose.Schema({
   regionId: { type: mongoose.Schema.Types.ObjectId, ref: "Region" },
   districtId: { type: mongoose.Schema.Types.ObjectId, ref: "District" },
   wardId: { type: mongoose.Schema.Types.ObjectId, ref: "Ward" },
+  regionName: { type: String, trim: true },
+  districtName: { type: String, trim: true },
+  wardName: { type: String, trim: true },
   isActive: { type: Boolean, default: true },
   isEmailVerified: { type: Boolean, default: false },
   isPhoneVerified: { type: Boolean, default: false },
@@ -650,7 +653,12 @@ const userSchema = new mongoose.Schema({
   parentDistrictId: { type: mongoose.Schema.Types.ObjectId, ref: "District" },
   parentWardId: { type: mongoose.Schema.Types.ObjectId, ref: "Ward" },
   parentAddress: String,
-
+  // ✅ NEW: Parent location as embedded document
+  parentLocation: {
+    regionName: String,
+    districtName: String,
+    wardName: String,
+  },
   // ✅ NEW STUDENT FIELDS
   institutionType: { type: String, enum: ["government", "private"] },
   classLevel: String, // Primary, Secondary, College, University
@@ -3233,33 +3241,46 @@ app.post(
         }
       }
 
-      // Add location if provided (using names, not IDs)
+      // ✅ UPDATED: Store location names directly from frontend (no database lookup)
       if (location) {
-        // Find region by name
+        // Store location names directly
         if (location.region) {
-          let region = await Region.findOne({ name: location.region });
-          if (region) {
-            userData.regionId = region._id;
-            console.log(`✅ Found region: ${location.region}`);
-          }
+          userData.regionName = location.region;
+          console.log(`✅ Stored region name: ${location.region}`);
         }
 
-        // Find district by name
         if (location.district) {
-          let district = await District.findOne({ name: location.district });
-          if (district) {
-            userData.districtId = district._id;
-            console.log(`✅ Found district: ${location.district}`);
-          }
+          userData.districtName = location.district;
+          console.log(`✅ Stored district name: ${location.district}`);
         }
 
-        // Find ward by name
         if (location.ward) {
-          let ward = await Ward.findOne({ name: location.ward });
-          if (ward) {
-            userData.wardId = ward._id;
-            console.log(`✅ Found ward: ${location.ward}`);
+          userData.wardName = location.ward;
+          console.log(`✅ Stored ward name: ${location.ward}`);
+        }
+
+        // Optional: Still try to find ObjectIds for backward compatibility (non-blocking)
+        try {
+          if (location.region) {
+            const region = await Region.findOne({ name: location.region });
+            if (region) userData.regionId = region._id;
           }
+          if (location.district) {
+            const district = await District.findOne({
+              name: location.district,
+            });
+            if (district) userData.districtId = district._id;
+          }
+          if (location.ward) {
+            const ward = await Ward.findOne({ name: location.ward });
+            if (ward) userData.wardId = ward._id;
+          }
+        } catch (err) {
+          // Silent fail - location names are already stored
+          console.warn(
+            "⚠️ Location ObjectId lookup failed (non-critical):",
+            err.message
+          );
         }
       }
 
@@ -3283,27 +3304,49 @@ app.post(
           userData.guardianNationalId = student.guardian.nationalId;
         }
 
-        // Parent location information
+        // ✅ UPDATED: Parent location information - store names directly
         if (student.parent_location) {
+          // Store parent location names directly
+          if (!userData.parentLocation) userData.parentLocation = {};
+
           if (student.parent_location.region) {
-            let region = await Region.findOne({
-              name: student.parent_location.region,
-            });
-            if (region) userData.parentRegionId = region._id;
+            userData.parentLocation.regionName = student.parent_location.region;
           }
           if (student.parent_location.district) {
-            let district = await District.findOne({
-              name: student.parent_location.district,
-            });
-            if (district) userData.parentDistrictId = district._id;
+            userData.parentLocation.districtName =
+              student.parent_location.district;
           }
           if (student.parent_location.ward) {
-            let ward = await Ward.findOne({
-              name: student.parent_location.ward,
-            });
-            if (ward) userData.parentWardId = ward._id;
+            userData.parentLocation.wardName = student.parent_location.ward;
           }
+
           userData.parentAddress = student.parent_location.address;
+
+          // Optional: Still try ObjectId lookups (non-blocking)
+          try {
+            if (student.parent_location.region) {
+              const region = await Region.findOne({
+                name: student.parent_location.region,
+              });
+              if (region) userData.parentRegionId = region._id;
+            }
+            if (student.parent_location.district) {
+              const district = await District.findOne({
+                name: student.parent_location.district,
+              });
+              if (district) userData.parentDistrictId = district._id;
+            }
+            if (student.parent_location.ward) {
+              const ward = await Ward.findOne({
+                name: student.parent_location.ward,
+              });
+              if (ward) userData.parentWardId = ward._id;
+            }
+          } catch (err) {
+            console.warn(
+              "⚠️ Parent location ObjectId lookup failed (non-critical)"
+            );
+          }
         }
       } else if (role === "teacher" && teacher) {
         userData.subjects = teacher.subjects || [];
