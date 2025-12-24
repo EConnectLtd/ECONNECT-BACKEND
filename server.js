@@ -25,8 +25,6 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const http = require("http");
 const socketIO = require("socket.io");
-const Redis = require("ioredis");
-const Queue = require("bull");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
@@ -64,262 +62,6 @@ const io = socketIO(server, {
     credentials: true,
   },
 });
-
-// ============================================
-// REDIS CONFIGURATION
-// ============================================
-let redis = null;
-let emailQueue, smsQueue, paymentQueue, notificationQueue, monthlyBillingQueue;
-
-// Check if Redis is disabled via environment variable
-if (process.env.DISABLE_REDIS === "true") {
-  console.log("ℹ️  Redis disabled via DISABLE_REDIS=true");
-  console.log("   → Background jobs (SMS, emails, billing) will be disabled");
-  console.log("   → Set DISABLE_REDIS=false to enable Redis queues");
-  redis = null;
-  emailQueue =
-    smsQueue =
-    paymentQueue =
-    notificationQueue =
-    monthlyBillingQueue =
-      null;
-}
-// Try to connect to Redis, but continue if it fails
-else if (process.env.REDIS_HOST) {
-  try {
-    redis = new Redis({
-      host: process.env.REDIS_HOST,
-      port: process.env.REDIS_PORT || 6379,
-      password: process.env.REDIS_PASSWORD || undefined,
-      retryStrategy: (times) => {
-        // Stop retrying after 3 attempts to prevent crash
-        if (times > 3) {
-          console.warn("⚠️  Redis retry limit reached - disabling Redis");
-          return null; // Stop retrying
-        }
-        return Math.min(times * 50, 2000);
-      },
-      maxRetriesPerRequest: 3, // ✅ CRITICAL: Limit retries to prevent crash
-      enableReadyCheck: false,
-      lazyConnect: true, // Don't connect immediately
-    });
-
-    // Try to connect with timeout
-    Promise.race([
-      redis.connect(),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Connection timeout")), 5000)
-      ),
-    ])
-      .then(() => {
-        console.log("✅ Redis Connected Successfully");
-
-        // Initialize Bull Queues only after successful Redis connection
-        try {
-          const queueConfig = {
-            redis: {
-              host: process.env.REDIS_HOST,
-              port: process.env.REDIS_PORT || 6379,
-              maxRetriesPerRequest: 3,
-            },
-          };
-
-          emailQueue = new Queue("email", queueConfig);
-          smsQueue = new Queue("sms", queueConfig);
-          paymentQueue = new Queue("payment", queueConfig);
-          notificationQueue = new Queue("notification", queueConfig);
-          monthlyBillingQueue = new Queue("monthly-billing", queueConfig);
-
-          console.log("✅ Bull Queues initialized successfully");
-
-          // Setup queue processors (only if queues exist)
-          setupQueueProcessors();
-        } catch (queueError) {
-          console.warn(
-            "⚠️  Bull Queues initialization failed:",
-            queueError.message
-          );
-          emailQueue =
-            smsQueue =
-            paymentQueue =
-            notificationQueue =
-            monthlyBillingQueue =
-              null;
-        }
-      })
-      .catch((err) => {
-        console.warn("⚠️  Redis connection failed - continuing without Redis");
-        console.warn(
-          "   → Background jobs (SMS, emails, billing) will be disabled"
-        );
-        redis = null;
-        emailQueue =
-          smsQueue =
-          paymentQueue =
-          notificationQueue =
-          monthlyBillingQueue =
-            null;
-      });
-
-    redis.on("error", (err) => {
-      // Suppress connection refused errors (already handled)
-      if (
-        !err.message.includes("ECONNREFUSED") &&
-        !err.message.includes("ETIMEDOUT") &&
-        !err.message.includes("ENOTFOUND")
-      ) {
-        console.warn("⚠️  Redis warning:", err.message);
-      }
-    });
-  } catch (error) {
-    console.warn("⚠️  Redis initialization failed - continuing without Redis");
-    console.warn(
-      "   → Background jobs (SMS, emails, billing) will be disabled"
-    );
-    redis = null;
-  }
-} else {
-  console.log("ℹ️  Redis not configured (REDIS_HOST not set)");
-  console.log("   → Background jobs will be disabled");
-  console.log("   → Set REDIS_HOST in environment variables to enable queues");
-}
-
-// ============================================
-// BULL QUEUE PROCESSORS (only if Redis available)
-// ============================================
-function setupQueueProcessors() {
-  if (
-    !redis ||
-    !smsQueue ||
-    !emailQueue ||
-    !paymentQueue ||
-    !notificationQueue
-  ) {
-    console.warn("⚠️  Skipping queue processors - Redis not available");
-    return;
-  }
-
-  // SMS Queue Processor
-  if (smsQueue) {
-    smsQueue.process(async (job) => {
-      const { phoneNumber, message } = job.data;
-      console.log(`📱 Processing SMS to ${phoneNumber}`);
-      return await sendSMS(phoneNumber, message);
-    });
-
-    smsQueue.on("completed", (job, result) => {
-      console.log(`✅ SMS job ${job.id} completed`);
-    });
-
-    smsQueue.on("failed", (job, err) => {
-      console.error(`❌ SMS job ${job.id} failed:`, err.message);
-    });
-  }
-
-  // Email Queue Processor
-  if (emailQueue) {
-    emailQueue.process(async (job) => {
-      const { to, subject, body } = job.data;
-      console.log(`📧 Processing email to ${to}`);
-      return { success: true, message: "Email sent" };
-    });
-  }
-
-  // Payment Queue Processor
-  if (paymentQueue) {
-    paymentQueue.process(async (job) => {
-      const { transactionId } = job.data;
-      console.log(`💳 Processing payment verification for ${transactionId}`);
-      return { success: true };
-    });
-  }
-
-  // Notification Queue Processor
-  if (notificationQueue) {
-    notificationQueue.process(async (job) => {
-      const { userId, title, message, type } = job.data;
-      console.log(`🔔 Processing notification for user ${userId}`);
-      return { success: true };
-    });
-  }
-
-  // Monthly Billing Queue Processor
-  if (monthlyBillingQueue) {
-    monthlyBillingQueue.process(async (job) => {
-      console.log("💰 Processing monthly billing...");
-
-      const today = new Date();
-      const students = await User.find({
-        role: "student",
-        registration_type: {
-          $in: ["premier_registration", "diamond_registration"],
-        },
-        next_billing_date: { $lte: today },
-        isActive: true,
-      });
-
-      console.log(`📊 Found ${students.length} students due for billing`);
-
-      for (const student of students) {
-        try {
-          const amount =
-            student.registration_type === "premier_registration"
-              ? 70000
-              : 55000;
-          const invoiceNumber = `INV-${Date.now()}-${Math.random()
-            .toString(36)
-            .substring(2, 9)
-            .toUpperCase()}`;
-
-          await Invoice.create({
-            student_id: student._id,
-            invoiceNumber,
-            type: "ctm_membership",
-            description: `Monthly ${student.registration_type
-              .replace("_", " ")
-              .toUpperCase()} Fee`,
-            amount,
-            currency: "TZS",
-            status: "pending",
-            dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-            academicYear: new Date().getFullYear().toString(),
-          });
-
-          student.next_billing_date = new Date(
-            Date.now() + 30 * 24 * 60 * 60 * 1000
-          );
-          await student.save();
-
-          await createNotification(
-            student._id,
-            "Monthly Invoice Generated",
-            `Your monthly membership fee of ${amount.toLocaleString()} TZS is due`,
-            "info",
-            "/invoices"
-          );
-
-          console.log(
-            `✅ Generated invoice ${invoiceNumber} for student ${student.username}`
-          );
-        } catch (error) {
-          console.error(`❌ Error billing student ${student.username}:`, error);
-        }
-      }
-
-      return { processed: students.length };
-    });
-
-    // Schedule monthly billing (runs daily at 9 AM)
-    monthlyBillingQueue.add(
-      {},
-      {
-        repeat: { cron: "0 9 * * *" },
-      }
-    );
-
-    console.log("✅ Monthly billing queue configured");
-  }
-}
 
 // ============================================
 // MULTER CONFIGURATION FOR FILE UPLOADS
@@ -2403,15 +2145,7 @@ async function createNotification(
     // Emit real-time notification via Socket.io
     io.to(userId.toString()).emit("notification", notification);
 
-    // Queue for push notification if queue exists
-    if (notificationQueue) {
-      await notificationQueue.add({
-        userId,
-        title,
-        message,
-        type,
-      });
-    }
+    // Push notification functionality removed (Redis queues disabled)
 
     return notification;
   } catch (error) {
@@ -2473,13 +2207,8 @@ async function sendOTP(phoneNumber, purpose = "verification") {
 
     const message = `Your ECONNECT verification code is: ${otp}. Valid for 10 minutes. Do not share this code with anyone.`;
 
-    // Queue SMS only if queue exists
-    if (smsQueue) {
-      await smsQueue.add({ phoneNumber, message });
-    } else {
-      // Direct send without queue
-      await sendSMS(phoneNumber, message);
-    }
+    // Direct send SMS (Redis queues disabled)
+    await sendSMS(phoneNumber, message);
 
     return { success: true, message: "OTP sent successfully" };
   } catch (error) {
@@ -2884,12 +2613,6 @@ app.get("/api/health", async (req, res) => {
   try {
     const dbStatus =
       mongoose.connection.readyState === 1 ? "connected" : "disconnected";
-    const redisStatus =
-      redis && redis.status === "ready"
-        ? "connected"
-        : redis
-        ? "connecting"
-        : "disabled";
 
     const [userCount, schoolCount, eventCount] = await Promise.all([
       User.countDocuments(),
@@ -2903,9 +2626,7 @@ app.get("/api/health", async (req, res) => {
       timestamp: new Date().toISOString(),
       services: {
         database: dbStatus,
-        redis: redisStatus,
         socketio: "active",
-        queues: redis ? "enabled" : "disabled",
       },
       stats: {
         users: userCount,
@@ -2987,100 +2708,6 @@ const sanitizeError = (error, isDevelopment = false) => {
   }
   // In production, return generic messages
   return "An error occurred. Please try again later.";
-};
-
-// ============================================
-// REDIS CACHING HELPERS
-// ============================================
-
-// Cache helper functions
-const cache = {
-  // Get cached data
-  get: async (key) => {
-    if (!redis) return null;
-    try {
-      const data = await redis.get(key);
-      return data ? JSON.parse(data) : null;
-    } catch (error) {
-      console.error("❌ Cache get error:", error);
-      return null;
-    }
-  },
-
-  // Set cached data with TTL (Time To Live)
-  set: async (key, data, ttlSeconds = 300) => {
-    if (!redis) return false;
-    try {
-      await redis.setex(key, ttlSeconds, JSON.stringify(data));
-      return true;
-    } catch (error) {
-      console.error("❌ Cache set error:", error);
-      return false;
-    }
-  },
-
-  // Delete cached data
-  del: async (key) => {
-    if (!redis) return false;
-    try {
-      await redis.del(key);
-      return true;
-    } catch (error) {
-      console.error("❌ Cache delete error:", error);
-      return false;
-    }
-  },
-
-  // Delete multiple keys matching a pattern
-  delPattern: async (pattern) => {
-    if (!redis) return false;
-    try {
-      const keys = await redis.keys(pattern);
-      if (keys.length > 0) {
-        await redis.del(...keys);
-      }
-      return true;
-    } catch (error) {
-      console.error("❌ Cache delete pattern error:", error);
-      return false;
-    }
-  },
-};
-
-// Cache middleware for GET requests
-const cacheMiddleware = (ttlSeconds = 300) => {
-  return async (req, res, next) => {
-    // Only cache GET requests
-    if (req.method !== "GET") {
-      return next();
-    }
-
-    const cacheKey = `cache:${req.originalUrl || req.url}`;
-
-    try {
-      const cachedData = await cache.get(cacheKey);
-      if (cachedData) {
-        return res.json(cachedData);
-      }
-
-      // Store original json function
-      const originalJson = res.json.bind(res);
-
-      // Override json function to cache response
-      res.json = function (data) {
-        // Cache successful responses
-        if (res.statusCode === 200) {
-          cache.set(cacheKey, data, ttlSeconds).catch(() => {});
-        }
-        return originalJson(data);
-      };
-
-      next();
-    } catch (error) {
-      console.error("❌ Cache middleware error:", error);
-      next();
-    }
-  };
 };
 
 // Validate MongoDB ObjectId
@@ -3933,7 +3560,6 @@ app.post("/api/auth/logout", authenticateToken, async (req, res) => {
     await logActivity(req.user.id, "USER_LOGOUT", "User logged out", req);
 
     // In a more advanced setup, you might want to blacklist the token
-    // or store logout events in Redis
 
     res.json({
       success: true,
@@ -19586,9 +19212,6 @@ process.on("SIGTERM", () => {
   console.log("SIGTERM: Closing server...");
   server.close(() => {
     mongoose.connection.close();
-    if (redis) {
-      redis.quit();
-    }
     process.exit(0);
   });
 });
@@ -19597,9 +19220,6 @@ process.on("SIGINT", () => {
   console.log("SIGINT: Closing server...");
   server.close(() => {
     mongoose.connection.close();
-    if (redis) {
-      redis.quit();
-    }
     process.exit(0);
   });
 });
