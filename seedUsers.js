@@ -928,45 +928,6 @@ async function seedDatabase() {
     }
     console.log(`✅ Created ${assignments.length} assignments\n`);
 
-    // ============================================
-    // 10. SEED BOOKS
-    // ============================================
-    console.log("📚 Seeding Books...");
-    const books = [];
-
-    for (let i = 0; i < 50; i++) {
-      const uploader = randomElement([
-        ...teachers,
-        ...headmasters,
-        ...entrepreneurs,
-      ]);
-      const category = randomElement(BOOK_CATEGORIES);
-      const title = randomElement(BOOK_TITLES);
-
-      const book = await Book.create({
-        title: `${title} ${i > 25 ? "Volume " + randomInt(1, 3) : ""}`,
-        author: `${randomElement(TANZANIAN_FIRST_NAMES.male)} ${randomElement(
-          TANZANIAN_LAST_NAMES
-        )}`,
-        isbn: `978-${randomInt(1000000000, 9999999999)}`,
-        category,
-        description: `A comprehensive guide to ${title.toLowerCase()} for students and educators.`,
-        price: randomInt(5000, 80000),
-        publisher: randomElement([
-          "Oxford Tanzania",
-          "Macmillan East Africa",
-          "Tanzania Publishing House",
-          "East African Publishers",
-        ]),
-        language: randomElement(["English", "Swahili"]), // ✅ FIXED: Only valid languages
-        rating: randomInt(3, 5),
-        isActive: true,
-        uploadedBy: uploader._id,
-        createdAt: randomDate(new Date("2024-01-01"), new Date()),
-      });
-      books.push(book);
-    }
-    console.log(`✅ Created ${books.length} books\n`);
 
     // ============================================
     // 11. SEED NOTIFICATIONS
@@ -1046,7 +1007,6 @@ async function seedDatabase() {
     console.log(`📊 Grades:            ${grades.length}`);
     console.log(`📅 Attendance:        ${attendanceRecords.length}`);
     console.log(`📝 Assignments:       ${assignments.length}`);
-    console.log(`📚 Books:             ${books.length}`);
     console.log(`🔔 Notifications:     ${notifications.length}`);
     console.log(
       `🏆 CTM Memberships:   ${students.filter((s) => s.is_ctm_student).length}`
