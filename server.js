@@ -3821,9 +3821,6 @@ app.use("/api/locations/:type", (req, res, next) => {
 // ============================================
 // LOCATION ENDPOINTS
 // ============================================
-// ============================================
-// LOCATION ENDPOINTS
-// ============================================
 
 // ✅ ADD THIS DEBUG ENDPOINT HERE
 app.get("/api/debug/check-regions", async (req, res) => {
@@ -13346,52 +13343,65 @@ app.post(
     try {
       const schoolData = { ...req.body };
 
-      // Convert location codes to ObjectIds if they are strings
-      if (schoolData.regionCode && typeof schoolData.regionCode === "string") {
+      // ✅ UPDATED: Convert location codes/names to ObjectIds
+      if (schoolData.regionCode) {
+        // Try finding by code first, then by name
         const region = await Region.findOne({
-          code: { $regex: new RegExp(`^${schoolData.regionCode}$`, "i") },
+          $or: [
+            { code: { $regex: new RegExp(`^${schoolData.regionCode}$`, "i") } },
+            { name: { $regex: new RegExp(`^${schoolData.regionCode}$`, "i") } },
+          ],
         });
-        if (!region) {
-          // Log what regions exist to help debug
-          const allRegions = await Region.find({}).select("name code").limit(5);
-          console.log("❌ Region not found. Available regions:", allRegions);
 
+        if (!region) {
           return res.status(400).json({
             success: false,
-            error: `Region not found with code: ${schoolData.regionCode}`,
-            availableRegions: allRegions.map((r) => ({
-              name: r.name,
-              code: r.code,
-            })),
+            error: `Region not found: ${schoolData.regionCode}`,
           });
         }
+
         schoolData.regionId = region._id;
         delete schoolData.regionCode;
+        console.log(`✅ Found region: ${region.name} (${region.code})`);
       }
 
-      if (
-        schoolData.districtCode &&
-        typeof schoolData.districtCode === "string"
-      ) {
+      if (schoolData.districtCode) {
         const district = await District.findOne({
-          code: schoolData.districtCode,
+          $or: [
+            {
+              code: { $regex: new RegExp(`^${schoolData.districtCode}$`, "i") },
+            },
+            {
+              name: { $regex: new RegExp(`^${schoolData.districtCode}$`, "i") },
+            },
+          ],
         });
+
         if (!district) {
           return res.status(400).json({
             success: false,
-            error: `District not found with code: ${schoolData.districtCode}`,
+            error: `District not found: ${schoolData.districtCode}`,
           });
         }
+
         schoolData.districtId = district._id;
         delete schoolData.districtCode;
+        console.log(`✅ Found district: ${district.name} (${district.code})`);
       }
 
-      if (schoolData.wardCode && typeof schoolData.wardCode === "string") {
-        const ward = await Ward.findOne({ code: schoolData.wardCode });
+      if (schoolData.wardCode) {
+        const ward = await Ward.findOne({
+          $or: [
+            { code: { $regex: new RegExp(`^${schoolData.wardCode}$`, "i") } },
+            { name: { $regex: new RegExp(`^${schoolData.wardCode}$`, "i") } },
+          ],
+        });
+
         if (ward) {
           schoolData.wardId = ward._id;
+          delete schoolData.wardCode;
+          console.log(`✅ Found ward: ${ward.name} (${ward.code})`);
         }
-        delete schoolData.wardCode;
       }
 
       // Create the school with ObjectIds
@@ -13426,6 +13436,7 @@ app.post(
     }
   }
 );
+
 // SUSPEND School
 app.post(
   "/api/superadmin/schools/:schoolId/suspend",
@@ -15772,52 +15783,61 @@ app.put(
       const { schoolId } = req.params;
       const updateData = { ...req.body };
 
-      // Convert location codes to ObjectIds if they are strings
-      if (schoolData.regionCode && typeof schoolData.regionCode === "string") {
+      // ✅ UPDATED: Convert location codes/names to ObjectIds
+      if (updateData.regionCode) {
         const region = await Region.findOne({
-          code: { $regex: new RegExp(`^${schoolData.regionCode}$`, "i") },
+          $or: [
+            { code: { $regex: new RegExp(`^${updateData.regionCode}$`, "i") } },
+            { name: { $regex: new RegExp(`^${updateData.regionCode}$`, "i") } },
+          ],
         });
-        if (!region) {
-          // Log what regions exist to help debug
-          const allRegions = await Region.find({}).select("name code").limit(5);
-          console.log("❌ Region not found. Available regions:", allRegions);
 
+        if (!region) {
           return res.status(400).json({
             success: false,
-            error: `Region not found with code: ${schoolData.regionCode}`,
-            availableRegions: allRegions.map((r) => ({
-              name: r.name,
-              code: r.code,
-            })),
+            error: `Region not found: ${updateData.regionCode}`,
           });
         }
-        schoolData.regionId = region._id;
-        delete schoolData.regionCode;
+
+        updateData.regionId = region._id;
+        delete updateData.regionCode;
       }
 
-      if (
-        updateData.districtCode &&
-        typeof updateData.districtCode === "string"
-      ) {
+      if (updateData.districtCode) {
         const district = await District.findOne({
-          code: updateData.districtCode,
+          $or: [
+            {
+              code: { $regex: new RegExp(`^${updateData.districtCode}$`, "i") },
+            },
+            {
+              name: { $regex: new RegExp(`^${updateData.districtCode}$`, "i") },
+            },
+          ],
         });
+
         if (!district) {
           return res.status(400).json({
             success: false,
-            error: `District not found with code: ${updateData.districtCode}`,
+            error: `District not found: ${updateData.districtCode}`,
           });
         }
+
         updateData.districtId = district._id;
         delete updateData.districtCode;
       }
 
-      if (updateData.wardCode && typeof updateData.wardCode === "string") {
-        const ward = await Ward.findOne({ code: updateData.wardCode });
+      if (updateData.wardCode) {
+        const ward = await Ward.findOne({
+          $or: [
+            { code: { $regex: new RegExp(`^${updateData.wardCode}$`, "i") } },
+            { name: { $regex: new RegExp(`^${updateData.wardCode}$`, "i") } },
+          ],
+        });
+
         if (ward) {
           updateData.wardId = ward._id;
+          delete updateData.wardCode;
         }
-        delete updateData.wardCode;
       }
 
       // Update timestamp
@@ -15825,8 +15845,8 @@ app.put(
 
       // Find and update the school
       const school = await School.findByIdAndUpdate(schoolId, updateData, {
-        new: true, // Return updated document
-        runValidators: true, // Run schema validators
+        new: true,
+        runValidators: true,
       })
         .populate("regionId", "name code")
         .populate("districtId", "name code")
