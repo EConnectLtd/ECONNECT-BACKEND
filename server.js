@@ -6,7 +6,6 @@
 // ✅ 7+ User Roles (Student, Entrepreneur, Teacher, Headmaster, Staff, TAMISEMI, SuperAdmin)
 // ✅ Beem OTP & SMS Integration
 // ✅ AzamPay Payment Integration
-// ✅ Redis + Bull Queues
 // ✅ Socket.io Real-time Messaging
 // ✅ Multi-School Data Isolation
 // ✅ File Uploads (Avatars, Books, Certificates)
@@ -54,7 +53,6 @@ const io = socketIO(server, {
       : [
           "http://localhost:3000",
           "http://localhost:5173",
-          "https://econnectz.netlify.app",
           "https://econnect.co.tz",
           "https://www.econnect.co.tz",
         ],
@@ -2145,8 +2143,6 @@ async function createNotification(
     // Emit real-time notification via Socket.io
     io.to(userId.toString()).emit("notification", notification);
 
-    // Push notification functionality removed (Redis queues disabled)
-
     return notification;
   } catch (error) {
     console.error("Error creating notification:", error);
@@ -2591,7 +2587,6 @@ app.get("/", (req, res) => {
       "7+ User Roles",
       "Beem OTP & SMS",
       "AzamPay Payments",
-      "Redis + Bull Queues",
       "Socket.io Messaging",
       "Multi-School Isolation",
       "File Uploads",
@@ -19233,7 +19228,6 @@ server.listen(PORT, () => {
   console.log("   ✅ 7+ User Roles");
   console.log("   ✅ Beem OTP & SMS");
   console.log("   ✅ AzamPay Payments");
-  console.log("   ✅ Redis + Bull Queues");
   console.log("   ✅ Socket.io Messaging");
   console.log("   ✅ Multi-School Isolation");
   console.log("   ✅ File Uploads");
