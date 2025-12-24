@@ -71,8 +71,21 @@ const io = socketIO(server, {
 let redis = null;
 let emailQueue, smsQueue, paymentQueue, notificationQueue, monthlyBillingQueue;
 
+// Check if Redis is disabled via environment variable
+if (process.env.DISABLE_REDIS === "true") {
+  console.log("ℹ️  Redis disabled via DISABLE_REDIS=true");
+  console.log("   → Background jobs (SMS, emails, billing) will be disabled");
+  console.log("   → Set DISABLE_REDIS=false to enable Redis queues");
+  redis = null;
+  emailQueue =
+    smsQueue =
+    paymentQueue =
+    notificationQueue =
+    monthlyBillingQueue =
+      null;
+}
 // Try to connect to Redis, but continue if it fails
-if (process.env.REDIS_HOST) {
+else if (process.env.REDIS_HOST) {
   try {
     redis = new Redis({
       host: process.env.REDIS_HOST,
@@ -16042,7 +16055,61 @@ app.delete(
     }
   }
 );
+// UPDATE School (SuperAdmin)
+app.put(
+  "/api/superadmin/schools/:schoolId",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { schoolId } = req.params;
+      const updateData = req.body;
 
+      // Find and update the school
+      const school = await School.findByIdAndUpdate(
+        schoolId,
+        {
+          ...updateData,
+          updatedAt: new Date(),
+        },
+        {
+          new: true, // Return updated document
+          runValidators: true, // Run schema validators
+        }
+      )
+        .populate("regionId", "name code")
+        .populate("districtId", "name code")
+        .populate("wardId", "name code");
+
+      if (!school) {
+        return res.status(404).json({
+          success: false,
+          error: "School not found",
+        });
+      }
+
+      await logActivity(
+        req.user.id,
+        "SCHOOL_UPDATED",
+        `Updated school: ${school.name}`,
+        req
+      );
+
+      res.json({
+        success: true,
+        message: "School updated successfully",
+        data: school,
+      });
+    } catch (error) {
+      console.error("❌ Error updating school:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to update school",
+        message: error.message,
+      });
+    }
+  }
+);
 // ============================================
 // TEACHER ENDPOINTS (18 ENDPOINTS)
 // ============================================
