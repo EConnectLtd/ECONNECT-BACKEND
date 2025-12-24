@@ -16024,24 +16024,26 @@ app.put(
       const { schoolId } = req.params;
       const updateData = { ...req.body };
 
-      // ✅ UPDATED: Convert location codes/names to ObjectIds
+      // ✅ ENHANCED: Convert location codes/names to ObjectIds
       if (updateData.regionCode) {
         const region = await Region.findOne({
           $or: [
             { code: { $regex: new RegExp(`^${updateData.regionCode}$`, "i") } },
             { name: { $regex: new RegExp(`^${updateData.regionCode}$`, "i") } },
+            // ✅ ADDED: Also try exact match for names with spaces
+            { code: updateData.regionCode.replace(/\s+/g, "_").toUpperCase() },
           ],
         });
 
-        if (!region) {
-          return res.status(400).json({
-            success: false,
-            error: `Region not found: ${updateData.regionCode}`,
-          });
+        if (region) {
+          updateData.regionId = region._id;
+          delete updateData.regionCode;
+          console.log(`✅ Found region: ${region.name} (${region.code})`);
+        } else {
+          console.warn(`⚠️ Region not found: ${updateData.regionCode}`);
+          // Don't fail - just leave it as-is
+          delete updateData.regionCode;
         }
-
-        updateData.regionId = region._id;
-        delete updateData.regionCode;
       }
 
       if (updateData.districtCode) {
@@ -16053,18 +16055,26 @@ app.put(
             {
               name: { $regex: new RegExp(`^${updateData.districtCode}$`, "i") },
             },
+            // ✅ ADDED: Try converting spaces to underscores (e.g., "ILALA CBD" → "ILALA_CBD")
+            {
+              code: updateData.districtCode.replace(/\s+/g, "_").toUpperCase(),
+            },
+            // ✅ ADDED: Try removing spaces (e.g., "ILALA CBD" → "ILALACBD")
+            { code: updateData.districtCode.replace(/\s+/g, "").toUpperCase() },
           ],
         });
 
-        if (!district) {
+        if (district) {
+          updateData.districtId = district._id;
+          delete updateData.districtCode;
+          console.log(`✅ Found district: ${district.name} (${district.code})`);
+        } else {
+          console.warn(`⚠️ District not found: ${updateData.districtCode}`);
           return res.status(400).json({
             success: false,
-            error: `District not found: ${updateData.districtCode}`,
+            error: `District not found: ${updateData.districtCode}. Please select a valid district.`,
           });
         }
-
-        updateData.districtId = district._id;
-        delete updateData.districtCode;
       }
 
       if (updateData.wardCode) {
@@ -16072,11 +16082,16 @@ app.put(
           $or: [
             { code: { $regex: new RegExp(`^${updateData.wardCode}$`, "i") } },
             { name: { $regex: new RegExp(`^${updateData.wardCode}$`, "i") } },
+            { code: updateData.wardCode.replace(/\s+/g, "_").toUpperCase() },
           ],
         });
 
         if (ward) {
           updateData.wardId = ward._id;
+          delete updateData.wardCode;
+          console.log(`✅ Found ward: ${ward.name} (${ward.code})`);
+        } else {
+          console.warn(`⚠️ Ward not found: ${updateData.wardCode}`);
           delete updateData.wardCode;
         }
       }
@@ -16107,6 +16122,8 @@ app.put(
         req
       );
 
+      console.log(`✅ Successfully updated school: ${school.name}`);
+
       res.json({
         success: true,
         message: "School updated successfully",
@@ -16122,6 +16139,7 @@ app.put(
     }
   }
 );
+
 // ============================================
 // TEACHER ENDPOINTS (18 ENDPOINTS)
 // ============================================
