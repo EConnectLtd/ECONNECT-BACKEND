@@ -13465,7 +13465,7 @@ app.get(
   }
 );
 
-// CREATE School (SuperAdmin)
+// CREATE School (SuperAdmin) - UPDATED to handle embedded location data
 app.post(
   "/api/superadmin/schools",
   authenticateToken,
@@ -13474,9 +13474,35 @@ app.post(
     try {
       const schoolData = { ...req.body };
 
-      // ✅ UPDATED: Convert location codes/names to ObjectIds
-      if (schoolData.regionCode) {
-        // Try finding by code first, then by name
+      console.log("📍 Received school data:", schoolData);
+
+      // ✅ NEW: Handle embedded location objects from frontend
+      // Frontend now sends: { regionId: { name: "...", code: "..." } }
+
+      // Process regionId
+      if (schoolData.regionId && typeof schoolData.regionId === "object") {
+        // Frontend sent embedded object
+        const regionData = schoolData.regionId;
+
+        // Try to find or create region
+        let region = await Region.findOne({
+          $or: [{ code: regionData.code }, { name: regionData.name }],
+        });
+
+        if (!region) {
+          // Create region if it doesn't exist
+          console.log(`📍 Creating new region: ${regionData.name}`);
+          region = await Region.create({
+            name: regionData.name,
+            code: regionData.code,
+            isActive: true,
+          });
+        }
+
+        schoolData.regionId = region._id;
+        console.log(`✅ Region resolved: ${region.name} (${region._id})`);
+      } else if (schoolData.regionCode) {
+        // Fallback: Handle old format (just code/name string)
         const region = await Region.findOne({
           $or: [
             { code: { $regex: new RegExp(`^${schoolData.regionCode}$`, "i") } },
@@ -13484,19 +13510,42 @@ app.post(
           ],
         });
 
-        if (!region) {
-          return res.status(400).json({
-            success: false,
-            error: `Region not found: ${schoolData.regionCode}`,
+        if (region) {
+          schoolData.regionId = region._id;
+          console.log(`✅ Found region: ${region.name}`);
+        } else {
+          console.warn(`⚠️ Region not found: ${schoolData.regionCode}`);
+          // Don't fail - just skip
+        }
+        delete schoolData.regionCode;
+      }
+
+      // Process districtId
+      if (schoolData.districtId && typeof schoolData.districtId === "object") {
+        const districtData = schoolData.districtId;
+
+        let district = await District.findOne({
+          $or: [{ code: districtData.code }, { name: districtData.name }],
+        });
+
+        if (!district && schoolData.regionId) {
+          // Create district if it doesn't exist
+          console.log(`📍 Creating new district: ${districtData.name}`);
+          district = await District.create({
+            name: districtData.name,
+            code: districtData.code,
+            regionId: schoolData.regionId,
+            isActive: true,
           });
         }
 
-        schoolData.regionId = region._id;
-        delete schoolData.regionCode;
-        console.log(`✅ Found region: ${region.name} (${region.code})`);
-      }
-
-      if (schoolData.districtCode) {
+        if (district) {
+          schoolData.districtId = district._id;
+          console.log(
+            `✅ District resolved: ${district.name} (${district._id})`
+          );
+        }
+      } else if (schoolData.districtCode) {
         const district = await District.findOne({
           $or: [
             {
@@ -13508,19 +13557,37 @@ app.post(
           ],
         });
 
-        if (!district) {
-          return res.status(400).json({
-            success: false,
-            error: `District not found: ${schoolData.districtCode}`,
+        if (district) {
+          schoolData.districtId = district._id;
+          console.log(`✅ Found district: ${district.name}`);
+        }
+        delete schoolData.districtCode;
+      }
+
+      // Process wardId
+      if (schoolData.wardId && typeof schoolData.wardId === "object") {
+        const wardData = schoolData.wardId;
+
+        let ward = await Ward.findOne({
+          $or: [{ code: wardData.code }, { name: wardData.name }],
+        });
+
+        if (!ward && schoolData.districtId) {
+          // Create ward if it doesn't exist
+          console.log(`📍 Creating new ward: ${wardData.name}`);
+          ward = await Ward.create({
+            name: wardData.name,
+            code: wardData.code,
+            districtId: schoolData.districtId,
+            isActive: true,
           });
         }
 
-        schoolData.districtId = district._id;
-        delete schoolData.districtCode;
-        console.log(`✅ Found district: ${district.name} (${district.code})`);
-      }
-
-      if (schoolData.wardCode) {
+        if (ward) {
+          schoolData.wardId = ward._id;
+          console.log(`✅ Ward resolved: ${ward.name} (${ward._id})`);
+        }
+      } else if (schoolData.wardCode) {
         const ward = await Ward.findOne({
           $or: [
             { code: { $regex: new RegExp(`^${schoolData.wardCode}$`, "i") } },
@@ -13530,12 +13597,34 @@ app.post(
 
         if (ward) {
           schoolData.wardId = ward._id;
-          delete schoolData.wardCode;
-          console.log(`✅ Found ward: ${ward.name} (${ward.code})`);
+          console.log(`✅ Found ward: ${ward.name}`);
         }
+        delete schoolData.wardCode;
       }
 
-      // Create the school with ObjectIds
+      // ✅ Validate required fields
+      if (!schoolData.regionId) {
+        return res.status(400).json({
+          success: false,
+          error: "Region is required",
+        });
+      }
+
+      if (!schoolData.districtId) {
+        return res.status(400).json({
+          success: false,
+          error: "District is required",
+        });
+      }
+
+      console.log("💾 Creating school with data:", {
+        name: schoolData.name,
+        regionId: schoolData.regionId,
+        districtId: schoolData.districtId,
+        wardId: schoolData.wardId,
+      });
+
+      // Create the school
       const school = await School.create(schoolData);
 
       // Populate the references for the response
@@ -13551,6 +13640,8 @@ app.post(
         `Created school: ${school.name}`,
         req
       );
+
+      console.log(`✅ School created successfully: ${school.name}`);
 
       res.status(201).json({
         success: true,
@@ -16014,7 +16105,8 @@ app.delete(
     }
   }
 );
-// UPDATE School (SuperAdmin)
+
+// UPDATE School (SuperAdmin) - UPDATED to handle embedded location data
 app.put(
   "/api/superadmin/schools/:schoolId",
   authenticateToken,
@@ -16024,29 +16116,60 @@ app.put(
       const { schoolId } = req.params;
       const updateData = { ...req.body };
 
-      // ✅ ENHANCED: Convert location codes/names to ObjectIds
-      if (updateData.regionCode) {
+      console.log("📍 Received update data:", updateData);
+
+      // ✅ Process regionId (same logic as create)
+      if (updateData.regionId && typeof updateData.regionId === "object") {
+        const regionData = updateData.regionId;
+
+        let region = await Region.findOne({
+          $or: [{ code: regionData.code }, { name: regionData.name }],
+        });
+
+        if (!region) {
+          region = await Region.create({
+            name: regionData.name,
+            code: regionData.code,
+            isActive: true,
+          });
+        }
+
+        updateData.regionId = region._id;
+      } else if (updateData.regionCode) {
         const region = await Region.findOne({
           $or: [
             { code: { $regex: new RegExp(`^${updateData.regionCode}$`, "i") } },
             { name: { $regex: new RegExp(`^${updateData.regionCode}$`, "i") } },
-            // ✅ ADDED: Also try exact match for names with spaces
-            { code: updateData.regionCode.replace(/\s+/g, "_").toUpperCase() },
           ],
         });
 
         if (region) {
           updateData.regionId = region._id;
-          delete updateData.regionCode;
-          console.log(`✅ Found region: ${region.name} (${region.code})`);
-        } else {
-          console.warn(`⚠️ Region not found: ${updateData.regionCode}`);
-          // Don't fail - just leave it as-is
-          delete updateData.regionCode;
         }
+        delete updateData.regionCode;
       }
 
-      if (updateData.districtCode) {
+      // ✅ Process districtId
+      if (updateData.districtId && typeof updateData.districtId === "object") {
+        const districtData = updateData.districtId;
+
+        let district = await District.findOne({
+          $or: [{ code: districtData.code }, { name: districtData.name }],
+        });
+
+        if (!district && updateData.regionId) {
+          district = await District.create({
+            name: districtData.name,
+            code: districtData.code,
+            regionId: updateData.regionId,
+            isActive: true,
+          });
+        }
+
+        if (district) {
+          updateData.districtId = district._id;
+        }
+      } else if (updateData.districtCode) {
         const district = await District.findOne({
           $or: [
             {
@@ -16055,45 +16178,47 @@ app.put(
             {
               name: { $regex: new RegExp(`^${updateData.districtCode}$`, "i") },
             },
-            // ✅ ADDED: Try converting spaces to underscores (e.g., "ILALA CBD" → "ILALA_CBD")
-            {
-              code: updateData.districtCode.replace(/\s+/g, "_").toUpperCase(),
-            },
-            // ✅ ADDED: Try removing spaces (e.g., "ILALA CBD" → "ILALACBD")
-            { code: updateData.districtCode.replace(/\s+/g, "").toUpperCase() },
           ],
         });
 
         if (district) {
           updateData.districtId = district._id;
-          delete updateData.districtCode;
-          console.log(`✅ Found district: ${district.name} (${district.code})`);
-        } else {
-          console.warn(`⚠️ District not found: ${updateData.districtCode}`);
-          return res.status(400).json({
-            success: false,
-            error: `District not found: ${updateData.districtCode}. Please select a valid district.`,
-          });
         }
+        delete updateData.districtCode;
       }
 
-      if (updateData.wardCode) {
+      // ✅ Process wardId
+      if (updateData.wardId && typeof updateData.wardId === "object") {
+        const wardData = updateData.wardId;
+
+        let ward = await Ward.findOne({
+          $or: [{ code: wardData.code }, { name: wardData.name }],
+        });
+
+        if (!ward && updateData.districtId) {
+          ward = await Ward.create({
+            name: wardData.name,
+            code: wardData.code,
+            districtId: updateData.districtId,
+            isActive: true,
+          });
+        }
+
+        if (ward) {
+          updateData.wardId = ward._id;
+        }
+      } else if (updateData.wardCode) {
         const ward = await Ward.findOne({
           $or: [
             { code: { $regex: new RegExp(`^${updateData.wardCode}$`, "i") } },
             { name: { $regex: new RegExp(`^${updateData.wardCode}$`, "i") } },
-            { code: updateData.wardCode.replace(/\s+/g, "_").toUpperCase() },
           ],
         });
 
         if (ward) {
           updateData.wardId = ward._id;
-          delete updateData.wardCode;
-          console.log(`✅ Found ward: ${ward.name} (${ward.code})`);
-        } else {
-          console.warn(`⚠️ Ward not found: ${updateData.wardCode}`);
-          delete updateData.wardCode;
         }
+        delete updateData.wardCode;
       }
 
       // Update timestamp
