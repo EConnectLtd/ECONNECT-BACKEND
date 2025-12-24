@@ -4293,7 +4293,71 @@ app.post(
   authorizeRoles("super_admin", "national_official", "tamisemi"),
   async (req, res) => {
     try {
-      const school = await School.create(req.body);
+      const schoolData = { ...req.body };
+
+      // ✅ ADDED: Convert location codes/names to ObjectIds
+      if (schoolData.regionCode) {
+        const region = await Region.findOne({
+          $or: [
+            { code: { $regex: new RegExp(`^${schoolData.regionCode}$`, "i") } },
+            { name: { $regex: new RegExp(`^${schoolData.regionCode}$`, "i") } },
+          ],
+        });
+
+        if (region) {
+          schoolData.regionId = region._id;
+          delete schoolData.regionCode;
+          console.log(`✅ Found region: ${region.name} (${region.code})`);
+        } else {
+          console.warn(`⚠️ Region not found: ${schoolData.regionCode}`);
+        }
+      }
+
+      if (schoolData.districtCode) {
+        const district = await District.findOne({
+          $or: [
+            {
+              code: { $regex: new RegExp(`^${schoolData.districtCode}$`, "i") },
+            },
+            {
+              name: { $regex: new RegExp(`^${schoolData.districtCode}$`, "i") },
+            },
+          ],
+        });
+
+        if (district) {
+          schoolData.districtId = district._id;
+          delete schoolData.districtCode;
+          console.log(`✅ Found district: ${district.name} (${district.code})`);
+        } else {
+          console.warn(`⚠️ District not found: ${schoolData.districtCode}`);
+        }
+      }
+
+      if (schoolData.wardCode) {
+        const ward = await Ward.findOne({
+          $or: [
+            { code: { $regex: new RegExp(`^${schoolData.wardCode}$`, "i") } },
+            { name: { $regex: new RegExp(`^${schoolData.wardCode}$`, "i") } },
+          ],
+        });
+
+        if (ward) {
+          schoolData.wardId = ward._id;
+          delete schoolData.wardCode;
+          console.log(`✅ Found ward: ${ward.name} (${ward.code})`);
+        }
+      }
+
+      // Create the school with ObjectIds
+      const school = await School.create(schoolData);
+
+      // Populate the references for the response
+      await school.populate([
+        { path: "regionId", select: "name code" },
+        { path: "districtId", select: "name code" },
+        { path: "wardId", select: "name code" },
+      ]);
 
       await logActivity(
         req.user.id,
@@ -4317,7 +4381,6 @@ app.post(
     }
   }
 );
-
 // UPDATE school
 app.put(
   "/api/schools/:id",
@@ -13336,19 +13399,49 @@ app.get(
   authorizeRoles("super_admin"),
   async (req, res) => {
     try {
-      const { page = 1, limit = 50, status } = req.query;
+      const { page = 1, limit = 50, status, type, q } = req.query;
 
       const query = {};
-      if (status) query.isActive = status === "active";
+
+      // ✅ IMPROVED: Better status filtering
+      if (status === "active") {
+        query.isActive = true;
+      } else if (status === "inactive") {
+        query.isActive = false;
+      }
+      // If status === "all" or undefined, don't filter by isActive
+
+      // ✅ ADDED: Filter by school type (primary, secondary, etc.)
+      if (type) {
+        query.type = type;
+      }
+
+      // ✅ ADDED: Search functionality
+      if (q) {
+        query.$or = [
+          { name: { $regex: q, $options: "i" } },
+          { schoolCode: { $regex: q, $options: "i" } },
+        ];
+      }
 
       const schools = await School.find(query)
         .sort({ createdAt: -1 })
         .limit(parseInt(limit))
         .skip((parseInt(page) - 1) * parseInt(limit))
         .populate("regionId", "name code")
-        .populate("districtId", "name code");
+        .populate("districtId", "name code")
+        .populate("wardId", "name code"); // ✅ ADDED: Also populate wardId
 
       const total = await School.countDocuments(query);
+
+      // ✅ ADDED: Statistics by status
+      const stats = {
+        total: await School.countDocuments(),
+        active: await School.countDocuments({ isActive: true }),
+        inactive: await School.countDocuments({ isActive: false }),
+      };
+
+      console.log(`✅ Fetched ${schools.length} schools (total: ${total})`);
 
       res.json({
         success: true,
@@ -13358,13 +13451,16 @@ app.get(
           page: parseInt(page),
           limit: parseInt(limit),
           pages: Math.ceil(total / parseInt(limit)),
+          stats, // ✅ ADDED: Include stats in response
         },
       });
     } catch (error) {
       console.error("❌ Error fetching schools:", error);
-      res
-        .status(500)
-        .json({ success: false, error: "Failed to fetch schools" });
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch schools",
+        message: error.message,
+      });
     }
   }
 );
@@ -13550,6 +13646,116 @@ app.post(
       res
         .status(500)
         .json({ success: false, error: "Failed to activate school" });
+    }
+  }
+);
+
+// ============================================
+// COLLEGES & UNIVERSITIES ENDPOINTS
+// ============================================
+
+// GET All Colleges (SuperAdmin)
+app.get(
+  "/api/superadmin/colleges",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 50, status } = req.query;
+
+      const query = {
+        type: { $in: ["vocational", "technical", "college"] }, // College types
+      };
+
+      if (status === "active") {
+        query.isActive = true;
+      } else if (status === "inactive") {
+        query.isActive = false;
+      }
+
+      const colleges = await School.find(query)
+        .sort({ createdAt: -1 })
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .populate("regionId", "name code")
+        .populate("districtId", "name code")
+        .populate("wardId", "name code");
+
+      const total = await School.countDocuments(query);
+
+      console.log(`✅ Fetched ${colleges.length} colleges (total: ${total})`);
+
+      res.json({
+        success: true,
+        data: colleges,
+        meta: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit)),
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error fetching colleges:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch colleges",
+        message: error.message,
+      });
+    }
+  }
+);
+
+// GET All Universities (SuperAdmin)
+app.get(
+  "/api/superadmin/universities",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 50, status } = req.query;
+
+      const query = {
+        type: { $in: ["university", "tertiary"] }, // University types
+      };
+
+      if (status === "active") {
+        query.isActive = true;
+      } else if (status === "inactive") {
+        query.isActive = false;
+      }
+
+      const universities = await School.find(query)
+        .sort({ createdAt: -1 })
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .populate("regionId", "name code")
+        .populate("districtId", "name code")
+        .populate("wardId", "name code");
+
+      const total = await School.countDocuments(query);
+
+      console.log(
+        `✅ Fetched ${universities.length} universities (total: ${total})`
+      );
+
+      res.json({
+        success: true,
+        data: universities,
+        meta: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit)),
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error fetching universities:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch universities",
+        message: error.message,
+      });
     }
   }
 );
@@ -18931,7 +19137,6 @@ app.delete(
     }
   }
 );
-
 
 // User growth report
 app.get(
