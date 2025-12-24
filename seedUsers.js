@@ -958,7 +958,7 @@ async function seedDatabase() {
           "Tanzania Publishing House",
           "East African Publishers",
         ]),
-        language: randomElement(["English", "Kiswahili"]), // ✅ FIXED: Only valid languages
+        language: randomElement(["English", "Swahili"]), // ✅ FIXED: Only valid languages
         rating: randomInt(3, 5),
         isActive: true,
         uploadedBy: uploader._id,
