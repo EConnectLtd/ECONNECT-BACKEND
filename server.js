@@ -15631,6 +15631,419 @@ app.delete(
 );
 
 // ============================================
+// SUPERADMIN MESSAGING ENDPOINTS
+// ============================================
+
+// GET SuperAdmin Inbox
+app.get(
+  "/api/superadmin/messages/inbox",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 20, filter = "all" } = req.query;
+
+      const query = {
+        recipientId: req.user.id,
+        isDeleted: false,
+      };
+
+      if (filter === "unread") {
+        query.isRead = false;
+      }
+
+      const messages = await Message.find(query)
+        .sort({ createdAt: -1 })
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .populate(
+          "senderId",
+          "firstName lastName email role profileImage schoolId"
+        )
+        .populate({
+          path: "senderId",
+          populate: { path: "schoolId", select: "name schoolCode" },
+        });
+
+      const total = await Message.countDocuments(query);
+      const unreadCount = await Message.countDocuments({
+        recipientId: req.user.id,
+        isRead: false,
+        isDeleted: false,
+      });
+
+      res.json({
+        success: true,
+        data: messages,
+        meta: {
+          total,
+          unreadCount,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit)),
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error fetching inbox:", error);
+      res.status(500).json({ success: false, error: "Failed to fetch inbox" });
+    }
+  }
+);
+
+// GET SuperAdmin Outbox
+app.get(
+  "/api/superadmin/messages/outbox",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 20 } = req.query;
+
+      const messages = await Message.find({
+        senderId: req.user.id,
+        isDeleted: false,
+      })
+        .sort({ createdAt: -1 })
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .populate(
+          "recipientId",
+          "firstName lastName email role profileImage schoolId"
+        )
+        .populate({
+          path: "recipientId",
+          populate: { path: "schoolId", select: "name schoolCode" },
+        });
+
+      const total = await Message.countDocuments({
+        senderId: req.user.id,
+        isDeleted: false,
+      });
+
+      res.json({
+        success: true,
+        data: messages,
+        meta: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit)),
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error fetching outbox:", error);
+      res.status(500).json({ success: false, error: "Failed to fetch outbox" });
+    }
+  }
+);
+
+// POST Send Message (Individual)
+app.post(
+  "/api/superadmin/messages/send",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { recipientId, subject, content, messageType = "text" } = req.body;
+
+      if (!recipientId || !content) {
+        return res.status(400).json({
+          success: false,
+          error: "Recipient and content are required",
+        });
+      }
+
+      const message = await Message.create({
+        senderId: req.user.id,
+        recipientId,
+        content,
+        messageType,
+        conversationId: [req.user.id, recipientId].sort().join("_"),
+      });
+
+      await message.populate([
+        { path: "senderId", select: "firstName lastName profileImage" },
+        { path: "recipientId", select: "firstName lastName profileImage" },
+      ]);
+
+      // Create notification
+      await createNotification(
+        recipientId,
+        subject || "New Message from SuperAdmin",
+        content.substring(0, 100),
+        "message",
+        `/messages`
+      );
+
+      // Emit real-time via Socket.io
+      if (io) {
+        io.to(recipientId).emit("new_message", message);
+      }
+
+      await logActivity(
+        req.user.id,
+        "SUPERADMIN_MESSAGE_SENT",
+        `Sent message to user ${recipientId}`,
+        req
+      );
+
+      res.status(201).json({
+        success: true,
+        message: "Message sent successfully",
+        data: message,
+      });
+    } catch (error) {
+      console.error("❌ Error sending message:", error);
+      res.status(500).json({ success: false, error: "Failed to send message" });
+    }
+  }
+);
+
+// POST Bulk Message
+app.post(
+  "/api/superadmin/messages/bulk",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const {
+        recipientType, // 'all', 'role', 'school', 'region', 'district', 'individual'
+        recipientIds,
+        role,
+        schoolId,
+        regionId,
+        districtId,
+        subject,
+        content,
+      } = req.body;
+
+      if (!content) {
+        return res.status(400).json({
+          success: false,
+          error: "Content is required",
+        });
+      }
+
+      let recipients = [];
+
+      // Build recipient list based on type
+      if (recipientType === "individual" && recipientIds) {
+        recipients = recipientIds;
+      } else if (recipientType === "role" && role) {
+        const users = await User.find({ role, isActive: true }).distinct("_id");
+        recipients = users;
+      } else if (recipientType === "school" && schoolId) {
+        const users = await User.find({ schoolId, isActive: true }).distinct(
+          "_id"
+        );
+        recipients = users;
+      } else if (recipientType === "region" && regionId) {
+        const users = await User.find({ regionId, isActive: true }).distinct(
+          "_id"
+        );
+        recipients = users;
+      } else if (recipientType === "district" && districtId) {
+        const users = await User.find({ districtId, isActive: true }).distinct(
+          "_id"
+        );
+        recipients = users;
+      } else if (recipientType === "all") {
+        const users = await User.find({
+          isActive: true,
+          _id: { $ne: req.user.id },
+        }).distinct("_id");
+        recipients = users;
+      }
+
+      if (recipients.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "No recipients found",
+        });
+      }
+
+      // Create messages and notifications
+      const messages = [];
+      for (const recipientId of recipients) {
+        const message = await Message.create({
+          senderId: req.user.id,
+          recipientId,
+          content,
+          messageType: "text",
+          conversationId: [req.user.id, recipientId].sort().join("_"),
+        });
+        messages.push(message);
+
+        // Create notification
+        await createNotification(
+          recipientId,
+          subject || "New Message from SuperAdmin",
+          content.substring(0, 100),
+          "message",
+          `/messages`
+        );
+
+        // Emit real-time
+        if (io) {
+          io.to(recipientId.toString()).emit("new_message", message);
+        }
+      }
+
+      await logActivity(
+        req.user.id,
+        "SUPERADMIN_BULK_MESSAGE_SENT",
+        `Sent bulk message to ${recipients.length} recipients`,
+        req,
+        { recipientType, recipientCount: recipients.length }
+      );
+
+      res.status(201).json({
+        success: true,
+        message: `Message sent to ${recipients.length} recipient(s)`,
+        data: { sentCount: recipients.length },
+      });
+    } catch (error) {
+      console.error("❌ Error sending bulk message:", error);
+      res
+        .status(500)
+        .json({ success: false, error: "Failed to send bulk message" });
+    }
+  }
+);
+
+// GET Users Search (for recipient autocomplete)
+app.get(
+  "/api/superadmin/users/search",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { q, role, schoolId, limit = 20 } = req.query;
+
+      if (!q || q.length < 2) {
+        return res.status(400).json({
+          success: false,
+          error: "Search query must be at least 2 characters",
+        });
+      }
+
+      const query = {
+        $or: [
+          { firstName: { $regex: q, $options: "i" } },
+          { lastName: { $regex: q, $options: "i" } },
+          { username: { $regex: q, $options: "i" } },
+          { email: { $regex: q, $options: "i" } },
+        ],
+        isActive: true,
+        _id: { $ne: req.user.id }, // Exclude self
+      };
+
+      if (role) query.role = role;
+      if (schoolId) query.schoolId = schoolId;
+
+      const users = await User.find(query)
+        .select("firstName lastName email username role profileImage schoolId")
+        .populate("schoolId", "name schoolCode")
+        .limit(parseInt(limit))
+        .sort({ firstName: 1 });
+
+      res.json({
+        success: true,
+        data: users.map((user) => ({
+          id: user._id,
+          name:
+            `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
+            user.username,
+          email: user.email,
+          role: user.role,
+          school: user.schoolId?.name,
+          avatar: user.profileImage,
+        })),
+      });
+    } catch (error) {
+      console.error("❌ Error searching users:", error);
+      res.status(500).json({ success: false, error: "Failed to search users" });
+    }
+  }
+);
+
+// PATCH Mark Message as Read
+app.patch(
+  "/api/superadmin/messages/:messageId/read",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const message = await Message.findOneAndUpdate(
+        {
+          _id: req.params.messageId,
+          recipientId: req.user.id,
+        },
+        {
+          isRead: true,
+          readAt: new Date(),
+        },
+        { new: true }
+      );
+
+      if (!message) {
+        return res.status(404).json({
+          success: false,
+          error: "Message not found",
+        });
+      }
+
+      res.json({
+        success: true,
+        message: "Message marked as read",
+        data: message,
+      });
+    } catch (error) {
+      console.error("❌ Error marking message as read:", error);
+      res
+        .status(500)
+        .json({ success: false, error: "Failed to mark message as read" });
+    }
+  }
+);
+
+// DELETE Message
+app.delete(
+  "/api/superadmin/messages/:messageId",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const message = await Message.findOneAndUpdate(
+        {
+          _id: req.params.messageId,
+          $or: [{ senderId: req.user.id }, { recipientId: req.user.id }],
+        },
+        { isDeleted: true, deletedAt: new Date() },
+        { new: true }
+      );
+
+      if (!message) {
+        return res.status(404).json({
+          success: false,
+          error: "Message not found",
+        });
+      }
+
+      res.json({
+        success: true,
+        message: "Message deleted successfully",
+      });
+    } catch (error) {
+      console.error("❌ Error deleting message:", error);
+      res
+        .status(500)
+        .json({ success: false, error: "Failed to delete message" });
+    }
+  }
+);
+
+// ============================================
 // TEACHER ENDPOINTS (18 ENDPOINTS)
 // ============================================
 
