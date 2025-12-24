@@ -3821,6 +3821,28 @@ app.use("/api/locations/:type", (req, res, next) => {
 // ============================================
 // LOCATION ENDPOINTS
 // ============================================
+// ============================================
+// LOCATION ENDPOINTS
+// ============================================
+
+// ✅ ADD THIS DEBUG ENDPOINT HERE
+app.get("/api/debug/check-regions", async (req, res) => {
+  try {
+    const regions = await Region.find({}).select("name code").limit(20);
+    const regionCount = await Region.countDocuments();
+
+    console.log("📍 Regions in database:", regions);
+
+    res.json({
+      success: true,
+      total: regionCount,
+      data: regions,
+      message: "Check console for details",
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 // ============================================
 // LOCATION ENDPOINTS - OPTIMIZED WITH CACHING
