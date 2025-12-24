@@ -13700,11 +13700,21 @@ app.post(
 
       // Convert location codes to ObjectIds if they are strings
       if (schoolData.regionCode && typeof schoolData.regionCode === "string") {
-        const region = await Region.findOne({ code: schoolData.regionCode });
+        const region = await Region.findOne({
+          code: { $regex: new RegExp(`^${schoolData.regionCode}$`, "i") },
+        });
         if (!region) {
+          // Log what regions exist to help debug
+          const allRegions = await Region.find({}).select("name code").limit(5);
+          console.log("❌ Region not found. Available regions:", allRegions);
+
           return res.status(400).json({
             success: false,
             error: `Region not found with code: ${schoolData.regionCode}`,
+            availableRegions: allRegions.map((r) => ({
+              name: r.name,
+              code: r.code,
+            })),
           });
         }
         schoolData.regionId = region._id;
@@ -16115,16 +16125,26 @@ app.put(
       const updateData = { ...req.body };
 
       // Convert location codes to ObjectIds if they are strings
-      if (updateData.regionCode && typeof updateData.regionCode === "string") {
-        const region = await Region.findOne({ code: updateData.regionCode });
+      if (schoolData.regionCode && typeof schoolData.regionCode === "string") {
+        const region = await Region.findOne({
+          code: { $regex: new RegExp(`^${schoolData.regionCode}$`, "i") },
+        });
         if (!region) {
+          // Log what regions exist to help debug
+          const allRegions = await Region.find({}).select("name code").limit(5);
+          console.log("❌ Region not found. Available regions:", allRegions);
+
           return res.status(400).json({
             success: false,
-            error: `Region not found with code: ${updateData.regionCode}`,
+            error: `Region not found with code: ${schoolData.regionCode}`,
+            availableRegions: allRegions.map((r) => ({
+              name: r.name,
+              code: r.code,
+            })),
           });
         }
-        updateData.regionId = region._id;
-        delete updateData.regionCode;
+        schoolData.regionId = region._id;
+        delete schoolData.regionCode;
       }
 
       if (
