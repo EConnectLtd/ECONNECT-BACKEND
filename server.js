@@ -13696,7 +13696,55 @@ app.post(
   authorizeRoles("super_admin"),
   async (req, res) => {
     try {
-      const school = await School.create(req.body);
+      const schoolData = { ...req.body };
+
+      // Convert location codes to ObjectIds if they are strings
+      if (schoolData.regionCode && typeof schoolData.regionCode === "string") {
+        const region = await Region.findOne({ code: schoolData.regionCode });
+        if (!region) {
+          return res.status(400).json({
+            success: false,
+            error: `Region not found with code: ${schoolData.regionCode}`,
+          });
+        }
+        schoolData.regionId = region._id;
+        delete schoolData.regionCode;
+      }
+
+      if (
+        schoolData.districtCode &&
+        typeof schoolData.districtCode === "string"
+      ) {
+        const district = await District.findOne({
+          code: schoolData.districtCode,
+        });
+        if (!district) {
+          return res.status(400).json({
+            success: false,
+            error: `District not found with code: ${schoolData.districtCode}`,
+          });
+        }
+        schoolData.districtId = district._id;
+        delete schoolData.districtCode;
+      }
+
+      if (schoolData.wardCode && typeof schoolData.wardCode === "string") {
+        const ward = await Ward.findOne({ code: schoolData.wardCode });
+        if (ward) {
+          schoolData.wardId = ward._id;
+        }
+        delete schoolData.wardCode;
+      }
+
+      // Create the school with ObjectIds
+      const school = await School.create(schoolData);
+
+      // Populate the references for the response
+      await school.populate([
+        { path: "regionId", select: "name code" },
+        { path: "districtId", select: "name code" },
+        { path: "wardId", select: "name code" },
+      ]);
 
       await logActivity(
         req.user.id,
@@ -13712,13 +13760,14 @@ app.post(
       });
     } catch (error) {
       console.error("❌ Error creating school:", error);
-      res
-        .status(500)
-        .json({ success: false, error: "Failed to create school" });
+      res.status(500).json({
+        success: false,
+        error: "Failed to create school",
+        message: error.message,
+      });
     }
   }
 );
-
 // SUSPEND School
 app.post(
   "/api/superadmin/schools/:schoolId/suspend",
@@ -16063,20 +16112,54 @@ app.put(
   async (req, res) => {
     try {
       const { schoolId } = req.params;
-      const updateData = req.body;
+      const updateData = { ...req.body };
+
+      // Convert location codes to ObjectIds if they are strings
+      if (updateData.regionCode && typeof updateData.regionCode === "string") {
+        const region = await Region.findOne({ code: updateData.regionCode });
+        if (!region) {
+          return res.status(400).json({
+            success: false,
+            error: `Region not found with code: ${updateData.regionCode}`,
+          });
+        }
+        updateData.regionId = region._id;
+        delete updateData.regionCode;
+      }
+
+      if (
+        updateData.districtCode &&
+        typeof updateData.districtCode === "string"
+      ) {
+        const district = await District.findOne({
+          code: updateData.districtCode,
+        });
+        if (!district) {
+          return res.status(400).json({
+            success: false,
+            error: `District not found with code: ${updateData.districtCode}`,
+          });
+        }
+        updateData.districtId = district._id;
+        delete updateData.districtCode;
+      }
+
+      if (updateData.wardCode && typeof updateData.wardCode === "string") {
+        const ward = await Ward.findOne({ code: updateData.wardCode });
+        if (ward) {
+          updateData.wardId = ward._id;
+        }
+        delete updateData.wardCode;
+      }
+
+      // Update timestamp
+      updateData.updatedAt = new Date();
 
       // Find and update the school
-      const school = await School.findByIdAndUpdate(
-        schoolId,
-        {
-          ...updateData,
-          updatedAt: new Date(),
-        },
-        {
-          new: true, // Return updated document
-          runValidators: true, // Run schema validators
-        }
-      )
+      const school = await School.findByIdAndUpdate(schoolId, updateData, {
+        new: true, // Return updated document
+        runValidators: true, // Run schema validators
+      })
         .populate("regionId", "name code")
         .populate("districtId", "name code")
         .populate("wardId", "name code");
