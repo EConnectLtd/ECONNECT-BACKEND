@@ -4138,7 +4138,7 @@ app.post(
 // ============================================
 
 // GET all schools (with caching)
-app.get("/api/schools", cacheMiddleware(600), async (req, res) => {
+app.get("/api/schools", async (req, res) => {
   try {
     const {
       page = 1,
