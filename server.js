@@ -521,6 +521,13 @@ const schoolSchema = new mongoose.Schema({
     ],
     required: true,
   },
+  // ✅ ADD THIS FIELD
+  ownership: {
+    type: String,
+    required: true,
+    enum: ["government", "private"],
+    default: "government",
+  },
   regionId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Region",
