@@ -498,7 +498,6 @@ const otpSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now, expires: 600 }, // Auto-delete after 10 minutes
 });
 
-// School Schema
 const schoolSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   schoolCode: {
@@ -510,7 +509,16 @@ const schoolSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ["primary", "secondary", "high_school", "vocational", "special"],
+    enum: [
+      "primary",
+      "secondary",
+      "vocational",
+      "special",
+      "technical",
+      "college",
+      "university",
+      "tertiary",
+    ],
     required: true,
   },
   regionId: {
@@ -525,17 +533,23 @@ const schoolSchema = new mongoose.Schema({
     required: true,
     index: true,
   },
-  wardId: { type: mongoose.Schema.Types.ObjectId, ref: "Ward" },
-  address: String,
-  phoneNumber: String,
-  email: { type: String, lowercase: true },
-  principalName: String,
+  wardId: {
+    // ✅ UPDATED
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Ward",
+    required: true, // ✅ NOW REQUIRED
+    index: true, // ✅ INDEXED FOR PERFORMANCE
+  },
+  address: String, // Optional
+  phoneNumber: String, // Optional
+  email: { type: String, lowercase: true }, // Optional
+  principalName: String, // ✅ Optional (removed from form but kept in schema)
+  establishedYear: Number, // ✅ Optional (removed from form but kept in schema)
   totalStudents: { type: Number, default: 0 },
   totalTeachers: { type: Number, default: 0 },
   isActive: { type: Boolean, default: true, index: true },
   logo: String,
   website: String,
-  establishedYear: Number,
   accreditationStatus: {
     type: String,
     enum: ["accredited", "provisional", "not_accredited"],
@@ -548,7 +562,6 @@ const schoolSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 });
-
 schoolSchema.index({ name: "text", schoolCode: "text" });
 
 // Region Schema
@@ -13737,6 +13750,71 @@ app.post(
       res
         .status(500)
         .json({ success: false, error: "Failed to activate school" });
+    }
+  }
+);
+
+// DELETE School (SuperAdmin) - PERMANENT DELETE
+app.delete(
+  "/api/superadmin/schools/:schoolId",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { schoolId } = req.params;
+
+      const school = await School.findById(schoolId);
+
+      if (!school) {
+        return res.status(404).json({
+          success: false,
+          error: "School not found",
+        });
+      }
+
+      // ⚠️ OPTION 1: SOFT DELETE (Recommended for production)
+      // Just mark as inactive
+      school.isActive = false;
+      school.updatedAt = new Date();
+      await school.save();
+
+      await logActivity(
+        req.user.id,
+        "SCHOOL_DELETED",
+        `Deleted school: ${school.name}`,
+        req
+      );
+
+      res.json({
+        success: true,
+        message: "School deleted successfully",
+      });
+
+      /* ⚠️ OPTION 2: HARD DELETE (Use with EXTREME caution!)
+      // This permanently removes the school from database
+      // WARNING: This will break references in other collections!
+      
+      await School.findByIdAndDelete(schoolId);
+
+      await logActivity(
+        req.user.id,
+        "SCHOOL_PERMANENTLY_DELETED",
+        `Permanently deleted school: ${school.name}`,
+        req
+      );
+
+      res.json({
+        success: true,
+        message: "School permanently deleted",
+      });
+      */
+    } catch (error) {
+      console.error("❌ Error deleting school:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to delete school",
+        message: error.message,
+      });
     }
   }
 );
