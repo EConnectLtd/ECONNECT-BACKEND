@@ -2467,7 +2467,13 @@ const enforceSchoolIsolation = async (req, res, next) => {
     next();
   }
 };
-
+// Shorthand middleware for SuperAdmin authentication
+const authenticateSuperAdmin = (req, res, next) => {
+  authenticateToken(req, res, (err) => {
+    if (err) return next(err);
+    authorizeRoles("super_admin")(req, res, next);
+  });
+};
 // ============================================
 // SOCKET.IO REAL-TIME MESSAGING
 // ============================================
