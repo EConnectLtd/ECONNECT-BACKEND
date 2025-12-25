@@ -13754,17 +13754,16 @@ app.post(
   }
 );
 
-// DELETE School (SuperAdmin) - PERMANENT DELETE
+// DELETE /api/superadmin/schools/:schoolId - Delete School
 app.delete(
   "/api/superadmin/schools/:schoolId",
-  authenticateToken,
-  authorizeRoles("super_admin"),
+  authenticateSuperAdmin,
   async (req, res) => {
     try {
       const { schoolId } = req.params;
 
+      // 1️⃣ Find the school
       const school = await School.findById(schoolId);
-
       if (!school) {
         return res.status(404).json({
           success: false,
@@ -13772,48 +13771,56 @@ app.delete(
         });
       }
 
-      // ⚠️ OPTION 1: SOFT DELETE (Recommended for production)
-      // Just mark as inactive
-      school.isActive = false;
-      school.updatedAt = new Date();
-      await school.save();
-
-      await logActivity(
-        req.user.id,
-        "SCHOOL_DELETED",
-        `Deleted school: ${school.name}`,
-        req
-      );
-
-      res.json({
-        success: true,
-        message: "School deleted successfully",
+      // 2️⃣ Check if school has students or teachers (optional safety check)
+      const hasStudents = await User.exists({
+        schoolId: schoolId,
+        role: "student",
+      });
+      const hasTeachers = await User.exists({
+        schoolId: schoolId,
+        role: "teacher",
       });
 
-      /* ⚠️ OPTION 2: HARD DELETE (Use with EXTREME caution!)
-      // This permanently removes the school from database
-      // WARNING: This will break references in other collections!
-      
+      if (hasStudents || hasTeachers) {
+        // OPTION A: Prevent deletion if has users
+        return res.status(400).json({
+          success: false,
+          error:
+            "Cannot delete school with existing students or teachers. Please transfer them first.",
+        });
+
+        // OR OPTION B: Just soft delete
+        // school.isActive = false;
+        // school.deletedAt = new Date();
+        // await school.save();
+        // return res.json({ success: true, message: 'School deactivated successfully' });
+      }
+
+      // 3️⃣ Permanently delete the school
       await School.findByIdAndDelete(schoolId);
 
-      await logActivity(
-        req.user.id,
-        "SCHOOL_PERMANENTLY_DELETED",
-        `Permanently deleted school: ${school.name}`,
-        req
-      );
+      // 4️⃣ Log the deletion (if you have audit logs)
+      if (AuditLog) {
+        await AuditLog.create({
+          action: "SCHOOL_DELETED",
+          userId: req.user._id,
+          targetId: schoolId,
+          targetType: "School",
+          details: { schoolName: school.name },
+        });
+      }
+
+      console.log(`✅ School deleted: ${school.name} by ${req.user.name}`);
 
       res.json({
         success: true,
-        message: "School permanently deleted",
+        message: `${school.name} deleted successfully`,
       });
-      */
     } catch (error) {
       console.error("❌ Error deleting school:", error);
       res.status(500).json({
         success: false,
-        error: "Failed to delete school",
-        message: error.message,
+        error: "Failed to delete school. Please try again.",
       });
     }
   }
