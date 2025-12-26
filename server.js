@@ -15543,6 +15543,123 @@ app.get(
   }
 );
 
+// ============================================
+// 🧪 DEBUG: Test Ownership Analytics
+// ============================================
+app.get(
+  "/api/debug/school-analytics",
+  authenticateToken,
+  authorizeRoles(
+    "super_admin",
+    "national_official",
+    "regional_official",
+    "district_official",
+    "tamisemi"
+  ),
+  async (req, res) => {
+    try {
+      console.log("🧪 Testing school analytics...");
+
+      // Get admin user
+      const admin = await User.findById(req.user.id);
+
+      // Build query based on admin level (same as your analytics endpoint)
+      let schoolQuery = {};
+      if (admin.districtId) {
+        schoolQuery.districtId = admin.districtId;
+      } else if (admin.regionId) {
+        schoolQuery.regionId = admin.regionId;
+      }
+
+      console.log("📍 schoolQuery:", JSON.stringify(schoolQuery));
+
+      // Test all queries
+      const totalSchools = await School.countDocuments({
+        ...schoolQuery,
+        isActive: true,
+      });
+      const governmentSchools = await School.countDocuments({
+        ...schoolQuery,
+        ownership: "government",
+      });
+      const privateSchools = await School.countDocuments({
+        ...schoolQuery,
+        ownership: "private",
+      });
+      const activeSchools = await School.countDocuments({
+        ...schoolQuery,
+        isActive: true,
+      });
+      const suspendedSchools = await School.countDocuments({
+        ...schoolQuery,
+        isActive: false,
+      });
+      const noOwnership = await School.countDocuments({
+        ...schoolQuery,
+        ownership: { $exists: false },
+      });
+      const allSchools = await School.countDocuments(schoolQuery);
+
+      // Get sample schools
+      const samples = await School.find(schoolQuery)
+        .limit(5)
+        .select("name ownership isActive regionId districtId");
+
+      // Get breakdown by ownership
+      const ownershipBreakdown = await School.aggregate([
+        { $match: schoolQuery },
+        {
+          $group: {
+            _id: "$ownership",
+            count: { $sum: 1 },
+          },
+        },
+      ]);
+
+      res.json({
+        success: true,
+        debug: {
+          adminRole: admin.role,
+          hasRegionId: !!admin.regionId,
+          hasDistrictId: !!admin.districtId,
+          schoolQuery,
+
+          counts: {
+            allSchools,
+            totalSchools,
+            governmentSchools,
+            privateSchools,
+            activeSchools,
+            suspendedSchools,
+            noOwnership,
+          },
+
+          ownershipBreakdown,
+          sampleSchools: samples,
+
+          analysis: {
+            problem:
+              noOwnership > 0
+                ? `${noOwnership} schools missing ownership field!`
+                : "All schools have ownership field ✅",
+            governmentMatch:
+              governmentSchools === 137
+                ? "✅ Government count correct"
+                : `❌ Expected 137, got ${governmentSchools}`,
+          },
+        },
+      });
+    } catch (error) {
+      console.error("❌ Debug endpoint error:", error);
+      res.status(500).json({
+        success: false,
+        error: error.message,
+        stack: error.stack,
+      });
+    }
+  }
+);
+
 // GET All Users (Admin)
 app.get(
   "/api/admin/users",
