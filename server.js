@@ -15211,6 +15211,10 @@ app.get(
       const [
         // Basic counts
         totalSchools,
+        governmentSchools,
+        privateSchools,
+        activeSchools,
+        suspendedSchools,
         totalStudents,
         totalTeachers,
         totalHeadmasters,
@@ -15247,6 +15251,11 @@ app.get(
       ] = await Promise.all([
         // Basic counts
         School.countDocuments({ ...schoolQuery, isActive: true }),
+        School.countDocuments({ ...schoolQuery, ownership: "government" }),
+        School.countDocuments({ ...schoolQuery, ownership: "private" }),
+        School.countDocuments({ ...schoolQuery, isActive: true }),
+        School.countDocuments({ ...schoolQuery, isActive: false }),
+
         User.countDocuments({ ...userQuery, role: "student", isActive: true }),
         User.countDocuments({ ...userQuery, role: "teacher", isActive: true }),
         User.countDocuments({
@@ -15421,6 +15430,10 @@ app.get(
       const analyticsData = {
         // Top Stats (6 cards)
         totalSchools,
+        governmentSchools,
+        privateSchools,
+        activeSchools,
+        suspendedSchools,
         totalStudents,
         totalTeachers,
         totalHeadmasters,
