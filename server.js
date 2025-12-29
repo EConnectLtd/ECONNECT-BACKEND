@@ -1629,6 +1629,141 @@ const Invoice = mongoose.model("Invoice", invoiceSchema);
 module.exports = Invoice;
 
 // ============================================
+// PAYMENT HISTORY SCHEMA (ADD AFTER INVOICE SCHEMA)
+// ============================================
+
+const paymentHistorySchema = new mongoose.Schema(
+  {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+    invoiceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Invoice",
+      index: true,
+    },
+    transactionType: {
+      type: String,
+      enum: [
+        "registration_fee",
+        "monthly_subscription",
+        "certificate_fee",
+        "event_fee",
+        "book_purchase",
+        "other",
+      ],
+      required: true,
+    },
+    amount: {
+      type: Number,
+      required: true,
+    },
+    currency: {
+      type: String,
+      default: "TZS",
+    },
+    paymentMethod: {
+      type: String,
+      enum: ["crdb_bank", "vodacom_lipa", "azampay", "cash", "other"],
+    },
+    paymentReference: String,
+    status: {
+      type: String,
+      enum: ["pending", "submitted", "verified", "rejected", "cancelled"],
+      default: "pending",
+      index: true,
+    },
+    statusHistory: [
+      {
+        status: String,
+        changedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        changedAt: { type: Date, default: Date.now },
+        reason: String,
+      },
+    ],
+    submittedAt: Date,
+    verifiedAt: Date,
+    verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    rejectedAt: Date,
+    rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    rejectionReason: String,
+    metadata: {
+      registrationType: String,
+      packageName: String,
+      notes: String,
+      ipAddress: String,
+      userAgent: String,
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+paymentHistorySchema.index({ userId: 1, createdAt: -1 });
+paymentHistorySchema.index({ status: 1, createdAt: -1 });
+paymentHistorySchema.index({ invoiceId: 1 });
+
+const PaymentHistory = mongoose.model("PaymentHistory", paymentHistorySchema);
+
+// ============================================
+// PAYMENT REMINDER SCHEMA
+// ============================================
+
+const paymentReminderSchema = new mongoose.Schema(
+  {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+    invoiceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Invoice",
+      required: true,
+      index: true,
+    },
+    reminderType: {
+      type: String,
+      enum: ["first_reminder", "second_reminder", "final_notice", "overdue"],
+      required: true,
+    },
+    sentAt: {
+      type: Date,
+      default: Date.now,
+    },
+    sentVia: {
+      type: String,
+      enum: ["email", "sms", "notification", "all"],
+      default: "notification",
+    },
+    dueDate: Date,
+    amount: Number,
+    message: String,
+    opened: {
+      type: Boolean,
+      default: false,
+    },
+    openedAt: Date,
+  },
+  {
+    timestamps: true,
+  }
+);
+
+paymentReminderSchema.index({ userId: 1, sentAt: -1 });
+paymentReminderSchema.index({ invoiceId: 1 });
+
+const PaymentReminder = mongoose.model(
+  "PaymentReminder",
+  paymentReminderSchema
+);
+
+// ============================================
 // MODELS
 // ============================================
 const User = mongoose.model("User", userSchema);
@@ -2845,6 +2980,7 @@ app.post(
         teacher,
         entrepreneur,
         location,
+        payment,
       } = req.body;
 
       console.log("📥 Registration request received:", {
@@ -3096,7 +3232,7 @@ app.post(
             .substring(2, 9)
             .toUpperCase()}`;
 
-          await Invoice.create({
+          const invoice = await Invoice.create({
             student_id: user._id,
             invoiceNumber,
             type: "ctm_membership",
@@ -3108,7 +3244,6 @@ app.post(
             status: payment && payment.reference ? "verification" : "pending",
             dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
             academicYear: new Date().getFullYear().toString(),
-            // ✅ ADD payment proof if provided
             ...(payment &&
               payment.reference && {
                 paymentProof: {
@@ -3121,6 +3256,36 @@ app.post(
 
           console.log(`💰 Invoice created: ${invoiceNumber} for ${amount} TZS`);
 
+          // ✅ NEW: Create payment history entry
+          await PaymentHistory.create({
+            userId: user._id,
+            invoiceId: invoice._id,
+            transactionType: "registration_fee",
+            amount,
+            currency: "TZS",
+            paymentMethod: payment?.method || null,
+            paymentReference: payment?.reference || null,
+            status: payment && payment.reference ? "submitted" : "pending",
+            submittedAt: payment && payment.reference ? new Date() : null,
+            statusHistory: [
+              {
+                status: payment && payment.reference ? "submitted" : "pending",
+                changedAt: new Date(),
+                reason: "Initial registration",
+              },
+            ],
+            metadata: {
+              registrationType: student.registration_type,
+              packageName: student.registration_type
+                .replace("_", " ")
+                .toUpperCase(),
+              ipAddress: req.ip || req.connection?.remoteAddress,
+              userAgent: req.get("user-agent"),
+            },
+          });
+
+          console.log(`📊 Payment history entry created for user ${user._id}`);
+
           // Set next billing date for monthly subscriptions
           if (
             ["premier_registration", "diamond_registration"].includes(
@@ -3132,30 +3297,13 @@ app.post(
             );
             await user.save();
           }
-        }
-      }
+        } // ✅ Closes if (amount)
+      } // ✅ Closes outer IF (student registration check)
 
-      // Send OTP for phone verification
-      if (phone) {
-        await sendOTP(phone, "registration");
-      }
-
-      // Generate token
-      const token = generateToken(user);
-
-      // Log activity
-      await logActivity(
-        user._id,
-        "USER_REGISTERED",
-        `New ${role} account created`,
-        req
-      );
-
+      // ✅ SEND SUCCESS RESPONSE (THIS WAS MISSING!)
       res.status(201).json({
         success: true,
-        message: phone
-          ? "User registered. Please verify your phone number."
-          : "User registered successfully.",
+        message: "Registration successful",
         data: {
           user: {
             id: user._id,
@@ -3165,9 +3313,8 @@ app.post(
             firstName: user.firstName,
             lastName: user.lastName,
             phoneNumber: user.phoneNumber,
-            isPhoneVerified: user.isPhoneVerified,
+            isActive: user.isActive,
           },
-          token,
         },
       });
     } catch (error) {
@@ -3179,7 +3326,7 @@ app.post(
       });
     }
   }
-);
+); // ✅ This closes app.post()
 
 // ============================================
 // ADMIN: VERIFY STUDENT PAYMENT
@@ -3192,10 +3339,9 @@ app.patch(
   async (req, res) => {
     try {
       const { studentId } = req.params;
-      const { action, rejectionReason } = req.body; // action: 'approve' or 'reject'
+      const { action, rejectionReason } = req.body;
       const adminId = req.user.id;
 
-      // Validate action
       if (!["approve", "reject"].includes(action)) {
         return res.status(400).json({
           success: false,
@@ -3203,7 +3349,6 @@ app.patch(
         });
       }
 
-      // Find student
       const student = await User.findById(studentId);
 
       if (!student || student.role !== "student") {
@@ -3213,7 +3358,6 @@ app.patch(
         });
       }
 
-      // Check if payment info exists
       if (!student.payment_reference) {
         return res.status(400).json({
           success: false,
@@ -3222,16 +3366,15 @@ app.patch(
       }
 
       if (action === "approve") {
-        // Approve payment
         student.payment_status = "verified";
         student.payment_verified_by = adminId;
         student.payment_verified_at = new Date();
-        student.isActive = true; // Activate student account
+        student.isActive = true;
 
         await student.save();
 
-        // Update related invoice
-        await Invoice.updateOne(
+        // Update invoice
+        const invoice = await Invoice.findOneAndUpdate(
           { student_id: studentId, status: "verification" },
           {
             status: "paid",
@@ -3239,10 +3382,30 @@ app.patch(
             "paymentProof.status": "verified",
             "paymentProof.verifiedBy": adminId,
             "paymentProof.verifiedAt": new Date(),
-          }
+          },
+          { new: true }
         );
 
-        // Notify student
+        // ✅ NEW: Update payment history
+        if (invoice) {
+          await PaymentHistory.findOneAndUpdate(
+            { invoiceId: invoice._id, status: "submitted" },
+            {
+              status: "verified",
+              verifiedAt: new Date(),
+              verifiedBy: adminId,
+              $push: {
+                statusHistory: {
+                  status: "verified",
+                  changedBy: adminId,
+                  changedAt: new Date(),
+                  reason: "Payment verified by admin",
+                },
+              },
+            }
+          );
+        }
+
         await createNotification(
           studentId,
           "Payment Verified",
@@ -3250,7 +3413,6 @@ app.patch(
           "success"
         );
 
-        // Log activity
         await logActivity(
           adminId,
           "PAYMENT_VERIFIED",
@@ -3271,7 +3433,6 @@ app.patch(
           data: { student },
         });
       } else if (action === "reject") {
-        // Reject payment
         if (!rejectionReason || !rejectionReason.trim()) {
           return res.status(400).json({
             success: false,
@@ -3282,12 +3443,11 @@ app.patch(
         student.payment_status = "rejected";
         student.payment_verified_by = adminId;
         student.payment_verified_at = new Date();
-        // Keep account inactive
 
         await student.save();
 
         // Update invoice
-        await Invoice.updateOne(
+        const invoice = await Invoice.findOneAndUpdate(
           { student_id: studentId, status: "verification" },
           {
             status: "pending",
@@ -3295,10 +3455,31 @@ app.patch(
             "paymentProof.verifiedBy": adminId,
             "paymentProof.verifiedAt": new Date(),
             "paymentProof.rejectionReason": rejectionReason.trim(),
-          }
+          },
+          { new: true }
         );
 
-        // Notify student
+        // ✅ NEW: Update payment history
+        if (invoice) {
+          await PaymentHistory.findOneAndUpdate(
+            { invoiceId: invoice._id, status: "submitted" },
+            {
+              status: "rejected",
+              rejectedAt: new Date(),
+              rejectedBy: adminId,
+              rejectionReason: rejectionReason.trim(),
+              $push: {
+                statusHistory: {
+                  status: "rejected",
+                  changedBy: adminId,
+                  changedAt: new Date(),
+                  reason: rejectionReason.trim(),
+                },
+              },
+            }
+          );
+        }
+
         await createNotification(
           studentId,
           "Payment Rejected",
@@ -3306,7 +3487,6 @@ app.patch(
           "warning"
         );
 
-        // Log activity
         await logActivity(
           adminId,
           "PAYMENT_REJECTED",
@@ -3335,6 +3515,211 @@ app.patch(
     }
   }
 );
+
+// ============================================
+// PAYMENT HISTORY ENDPOINTS
+// ============================================
+
+// GET Student Payment History
+app.get(
+  "/api/student/payment-history",
+  authenticateToken,
+  authorizeRoles("student", "entrepreneur"),
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 20, status } = req.query;
+      const userId = req.user.id;
+
+      const query = { userId };
+      if (status) {
+        query.status = status;
+      }
+
+      const paymentHistory = await PaymentHistory.find(query)
+        .sort({ createdAt: -1 })
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .populate("invoiceId", "invoiceNumber amount currency dueDate")
+        .populate("verifiedBy", "firstName lastName")
+        .populate("rejectedBy", "firstName lastName");
+
+      const total = await PaymentHistory.countDocuments(query);
+
+      // Get summary statistics
+      const [totalPaid, totalPending, totalRejected] = await Promise.all([
+        PaymentHistory.aggregate([
+          {
+            $match: {
+              userId: new mongoose.Types.ObjectId(userId),
+              status: "verified",
+            },
+          },
+          { $group: { _id: null, total: { $sum: "$amount" } } },
+        ]),
+        PaymentHistory.countDocuments({
+          userId,
+          status: { $in: ["pending", "submitted"] },
+        }),
+        PaymentHistory.countDocuments({ userId, status: "rejected" }),
+      ]);
+
+      res.json({
+        success: true,
+        data: paymentHistory,
+        meta: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit)),
+          summary: {
+            totalPaid: totalPaid[0]?.total || 0,
+            totalPending,
+            totalRejected,
+          },
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error fetching payment history:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch payment history",
+        message: error.message,
+      });
+    }
+  }
+);
+
+// GET Admin Payment History (All Students)
+app.get(
+  "/api/admin/payment-history",
+  authenticateToken,
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  async (req, res) => {
+    try {
+      const {
+        page = 1,
+        limit = 20,
+        status,
+        transactionType,
+        startDate,
+        endDate,
+      } = req.query;
+      const admin = await User.findById(req.user.id);
+
+      const query = {};
+
+      if (status) query.status = status;
+      if (transactionType) query.transactionType = transactionType;
+
+      // Date range filter
+      if (startDate || endDate) {
+        query.createdAt = {};
+        if (startDate) query.createdAt.$gte = new Date(startDate);
+        if (endDate) query.createdAt.$lte = new Date(endDate);
+      }
+
+      // Filter by school for headmasters
+      if (req.user.role === "headmaster" && admin.schoolId) {
+        const schoolStudents = await User.find({
+          schoolId: admin.schoolId,
+          role: "student",
+        }).distinct("_id");
+
+        query.userId = { $in: schoolStudents };
+      }
+
+      const paymentHistory = await PaymentHistory.find(query)
+        .sort({ createdAt: -1 })
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .populate("userId", "firstName lastName email username phoneNumber")
+        .populate("invoiceId", "invoiceNumber amount currency dueDate")
+        .populate("verifiedBy", "firstName lastName")
+        .populate("rejectedBy", "firstName lastName");
+
+      const total = await PaymentHistory.countDocuments(query);
+
+      // Get summary statistics
+      const summaryStats = await PaymentHistory.aggregate([
+        { $match: query },
+        {
+          $group: {
+            _id: "$status",
+            count: { $sum: 1 },
+            totalAmount: { $sum: "$amount" },
+          },
+        },
+      ]);
+
+      res.json({
+        success: true,
+        data: paymentHistory,
+        meta: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit)),
+          summary: summaryStats,
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error fetching payment history:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch payment history",
+        message: error.message,
+      });
+    }
+  }
+);
+
+// GET Payment History Details (Single Transaction)
+app.get("/api/payment-history/:id", authenticateToken, async (req, res) => {
+  try {
+    const paymentHistory = await PaymentHistory.findById(req.params.id)
+      .populate("userId", "firstName lastName email phoneNumber")
+      .populate("invoiceId")
+      .populate("verifiedBy", "firstName lastName email")
+      .populate("rejectedBy", "firstName lastName email")
+      .populate({
+        path: "statusHistory.changedBy",
+        select: "firstName lastName role",
+      });
+
+    if (!paymentHistory) {
+      return res.status(404).json({
+        success: false,
+        error: "Payment history not found",
+      });
+    }
+
+    // Check permissions
+    const canView =
+      req.user.role === "super_admin" ||
+      paymentHistory.userId._id.toString() === req.user.id ||
+      req.user.role === "headmaster" ||
+      req.user.role === "national_official";
+
+    if (!canView) {
+      return res.status(403).json({
+        success: false,
+        error: "You do not have permission to view this payment history",
+      });
+    }
+
+    res.json({
+      success: true,
+      data: paymentHistory,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching payment details:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch payment details",
+      message: error.message,
+    });
+  }
+});
 
 // ============================================
 // ADMIN: GET PENDING PAYMENTS
@@ -3479,6 +3864,390 @@ app.post("/api/auth/resend-otp", authenticateToken, async (req, res) => {
     });
   }
 });
+
+// ============================================
+// PAYMENT REMINDER HELPER FUNCTIONS
+// ============================================
+
+// Helper: Send payment reminder
+async function sendPaymentReminder(userId, invoiceId, reminderType) {
+  try {
+    const invoice = await Invoice.findById(invoiceId).populate(
+      "student_id",
+      "firstName lastName email phoneNumber"
+    );
+
+    if (!invoice) {
+      console.error(`Invoice ${invoiceId} not found`);
+      return { success: false, error: "Invoice not found" };
+    }
+
+    const student = invoice.student_id;
+    const daysUntilDue = Math.ceil(
+      (new Date(invoice.dueDate) - new Date()) / (1000 * 60 * 60 * 24)
+    );
+
+    let message = "";
+    let title = "";
+
+    switch (reminderType) {
+      case "first_reminder":
+        title = "Payment Reminder";
+        message = `Your payment of ${invoice.amount.toLocaleString()} ${
+          invoice.currency
+        } for ${invoice.description} is due in ${daysUntilDue} days (${new Date(
+          invoice.dueDate
+        ).toLocaleDateString()}). Please make payment to avoid service interruption.`;
+        break;
+
+      case "second_reminder":
+        title = "Payment Reminder - Urgent";
+        message = `REMINDER: Your payment of ${invoice.amount.toLocaleString()} ${
+          invoice.currency
+        } for ${
+          invoice.description
+        } is due in ${daysUntilDue} days. Please pay as soon as possible.`;
+        break;
+
+      case "final_notice":
+        title = "Final Payment Notice";
+        message = `FINAL NOTICE: Your payment of ${invoice.amount.toLocaleString()} ${
+          invoice.currency
+        } is due ${
+          daysUntilDue > 0 ? `in ${daysUntilDue} days` : "TODAY"
+        }. Failure to pay may result in account suspension.`;
+        break;
+
+      case "overdue":
+        title = "Payment Overdue";
+        message = `Your payment of ${invoice.amount.toLocaleString()} ${
+          invoice.currency
+        } is now OVERDUE by ${Math.abs(
+          daysUntilDue
+        )} days. Please pay immediately to avoid account suspension.`;
+        break;
+
+      default:
+        message = `Payment reminder for invoice ${invoice.invoiceNumber}`;
+    }
+
+    // Create notification
+    await createNotification(
+      userId,
+      title,
+      message,
+      "warning",
+      `/invoices/${invoiceId}`
+    );
+
+    // Send SMS if available
+    if (student.phoneNumber && process.env.BEEM_API_KEY) {
+      const smsMessage = `${title}: ${message.substring(
+        0,
+        150
+      )}... Reference: ${invoice.invoiceNumber}`;
+      await sendSMS(student.phoneNumber, smsMessage);
+    }
+
+    // Create reminder record
+    await PaymentReminder.create({
+      userId,
+      invoiceId,
+      reminderType,
+      sentVia: student.phoneNumber ? "all" : "notification",
+      dueDate: invoice.dueDate,
+      amount: invoice.amount,
+      message,
+    });
+
+    console.log(`📧 Payment reminder sent: ${reminderType} to user ${userId}`);
+
+    return { success: true, message: "Reminder sent successfully" };
+  } catch (error) {
+    console.error("❌ Error sending payment reminder:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Helper: Send bulk reminders for pending invoices
+async function sendBulkPaymentReminders() {
+  try {
+    const now = new Date();
+    const sevenDaysFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const threeDaysFromNow = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
+    const oneDayFromNow = new Date(now.getTime() + 1 * 24 * 60 * 60 * 1000);
+
+    // Find pending invoices
+    const pendingInvoices = await Invoice.find({
+      status: { $in: ["pending", "verification"] },
+      dueDate: { $exists: true },
+    });
+
+    let sentCount = 0;
+
+    for (const invoice of pendingInvoices) {
+      const dueDate = new Date(invoice.dueDate);
+
+      // Check if reminder already sent today
+      const reminderSentToday = await PaymentReminder.findOne({
+        invoiceId: invoice._id,
+        sentAt: { $gte: new Date(now.setHours(0, 0, 0, 0)) },
+      });
+
+      if (reminderSentToday) {
+        continue; // Skip if already sent today
+      }
+
+      let reminderType = null;
+
+      if (dueDate < now) {
+        // Overdue
+        reminderType = "overdue";
+      } else if (dueDate <= oneDayFromNow) {
+        // 1 day before due
+        reminderType = "final_notice";
+      } else if (dueDate <= threeDaysFromNow) {
+        // 3 days before due
+        reminderType = "second_reminder";
+      } else if (dueDate <= sevenDaysFromNow) {
+        // 7 days before due
+        reminderType = "first_reminder";
+      }
+
+      if (reminderType) {
+        await sendPaymentReminder(
+          invoice.student_id,
+          invoice._id,
+          reminderType
+        );
+        sentCount++;
+      }
+    }
+
+    console.log(`✅ Bulk payment reminders sent: ${sentCount} reminders`);
+
+    return { success: true, sentCount };
+  } catch (error) {
+    console.error("❌ Error sending bulk reminders:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+// ============================================
+// PAYMENT REMINDER ENDPOINTS
+// ============================================
+
+// POST Send Manual Payment Reminder
+app.post(
+  "/api/admin/send-payment-reminder",
+  authenticateToken,
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  async (req, res) => {
+    try {
+      const { userId, invoiceId, reminderType } = req.body;
+
+      if (!userId || !invoiceId || !reminderType) {
+        return res.status(400).json({
+          success: false,
+          error: "User ID, Invoice ID, and reminder type are required",
+        });
+      }
+
+      const result = await sendPaymentReminder(userId, invoiceId, reminderType);
+
+      await logActivity(
+        req.user.id,
+        "PAYMENT_REMINDER_SENT",
+        `Sent ${reminderType} reminder to user ${userId}`,
+        req,
+        { userId, invoiceId, reminderType }
+      );
+
+      if (result.success) {
+        res.json({
+          success: true,
+          message: "Payment reminder sent successfully",
+        });
+      } else {
+        res.status(400).json(result);
+      }
+    } catch (error) {
+      console.error("❌ Error sending reminder:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to send reminder",
+        message: error.message,
+      });
+    }
+  }
+);
+
+// POST Send Bulk Payment Reminders (Manual Trigger)
+app.post(
+  "/api/admin/send-bulk-reminders",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const result = await sendBulkPaymentReminders();
+
+      await logActivity(
+        req.user.id,
+        "BULK_REMINDERS_SENT",
+        `Sent ${result.sentCount || 0} bulk payment reminders`,
+        req
+      );
+
+      res.json({
+        success: true,
+        message: `Sent ${result.sentCount || 0} payment reminders`,
+        data: result,
+      });
+    } catch (error) {
+      console.error("❌ Error sending bulk reminders:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to send bulk reminders",
+        message: error.message,
+      });
+    }
+  }
+);
+
+// GET Student Payment Reminders
+app.get(
+  "/api/student/payment-reminders",
+  authenticateToken,
+  authorizeRoles("student", "entrepreneur"),
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 20 } = req.query;
+      const userId = req.user.id;
+
+      const reminders = await PaymentReminder.find({ userId })
+        .sort({ sentAt: -1 })
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .populate("invoiceId", "invoiceNumber amount currency dueDate status");
+
+      const total = await PaymentReminder.countDocuments({ userId });
+
+      res.json({
+        success: true,
+        data: reminders,
+        meta: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit)),
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error fetching reminders:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch reminders",
+        message: error.message,
+      });
+    }
+  }
+);
+
+// PATCH Mark Reminder as Opened
+app.patch(
+  "/api/payment-reminders/:id/mark-opened",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const reminder = await PaymentReminder.findOneAndUpdate(
+        { _id: req.params.id, userId: req.user.id },
+        { opened: true, openedAt: new Date() },
+        { new: true }
+      );
+
+      if (!reminder) {
+        return res.status(404).json({
+          success: false,
+          error: "Reminder not found",
+        });
+      }
+
+      res.json({
+        success: true,
+        message: "Reminder marked as opened",
+        data: reminder,
+      });
+    } catch (error) {
+      console.error("❌ Error marking reminder as opened:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to mark reminder as opened",
+        message: error.message,
+      });
+    }
+  }
+);
+
+// GET Payment Reminder Statistics (Admin)
+app.get(
+  "/api/admin/payment-reminders/stats",
+  authenticateToken,
+  authorizeRoles("super_admin", "national_official"),
+  async (req, res) => {
+    try {
+      const [remindersByType, openRate, recentReminders] = await Promise.all([
+        PaymentReminder.aggregate([
+          {
+            $group: {
+              _id: "$reminderType",
+              count: { $sum: 1 },
+              opened: { $sum: { $cond: ["$opened", 1, 0] } },
+            },
+          },
+        ]),
+        PaymentReminder.aggregate([
+          {
+            $group: {
+              _id: null,
+              total: { $sum: 1 },
+              opened: { $sum: { $cond: ["$opened", 1, 0] } },
+            },
+          },
+        ]),
+        PaymentReminder.find()
+          .sort({ sentAt: -1 })
+          .limit(10)
+          .populate("userId", "firstName lastName email")
+          .populate("invoiceId", "invoiceNumber amount"),
+      ]);
+
+      const openRatePercentage =
+        openRate[0]?.total > 0
+          ? ((openRate[0].opened / openRate[0].total) * 100).toFixed(2)
+          : 0;
+
+      res.json({
+        success: true,
+        data: {
+          remindersByType,
+          openRate: {
+            total: openRate[0]?.total || 0,
+            opened: openRate[0]?.opened || 0,
+            percentage: openRatePercentage,
+          },
+          recentReminders,
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error fetching reminder stats:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch reminder statistics",
+        message: error.message,
+      });
+    }
+  }
+);
 
 // Login
 app.post(
@@ -20233,6 +21002,27 @@ app.use((err, req, res, next) => {
     ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
   });
 });
+
+// ============================================
+// AUTOMATED PAYMENT REMINDER CRON JOB
+// ============================================
+
+// Run daily at 9:00 AM to send payment reminders
+const cron = require("node-cron"); // Install: npm install node-cron
+
+// Schedule task to run daily at 9:00 AM
+cron.schedule("0 9 * * *", async () => {
+  console.log("🕐 Running automated payment reminder job...");
+
+  try {
+    const result = await sendBulkPaymentReminders();
+    console.log(`✅ Automated reminders completed: ${result.sentCount} sent`);
+  } catch (error) {
+    console.error("❌ Automated reminder job failed:", error);
+  }
+});
+
+console.log("✅ Payment reminder cron job scheduled (daily at 9:00 AM)");
 
 // Start server
 server.listen(PORT, () => {
