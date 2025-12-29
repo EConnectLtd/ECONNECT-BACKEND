@@ -430,6 +430,18 @@ const userSchema = new mongoose.Schema({
   registration_date: Date,
   next_billing_date: Date,
   is_ctm_student: { type: Boolean, default: true },
+  payment_method: {
+    type: String,
+    enum: ["crdb_bank", "vodacom_lipa", ""],
+  },
+  payment_reference: String,
+  payment_status: {
+    type: String,
+    enum: ["pending", "verified", "rejected"],
+    default: "pending",
+  },
+  payment_verified_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  payment_verified_at: Date,
 
   // Security
   twoFactorEnabled: { type: Boolean, default: false },
@@ -512,11 +524,16 @@ const schoolSchema = new mongoose.Schema({
     enum: [
       "primary",
       "secondary",
+      "vocational training center", // ✅ NEW
+      "technical college", // ✅ NEW
+      "general college", // ✅ NEW
+      "university",
+      "non-university high learning institutions", // ✅ NEW
+      // Backward compatibility
       "vocational",
       "special",
       "technical",
       "college",
-      "university",
       "tertiary",
     ],
     required: true,
@@ -2954,6 +2971,15 @@ app.post(
         userData.registration_date = new Date();
         userData.registration_fee_paid = student.registration_fee_paid || 0;
         userData.institutionType = student.institution_type;
+        // ✅ NEW: Save payment information
+        if (payment && payment.method && payment.reference) {
+          userData.payment_method = payment.method;
+          userData.payment_reference = payment.reference;
+          userData.payment_status = "pending"; // Will be verified by admin
+          console.log(
+            `💳 Payment info saved: ${payment.method} - ${payment.reference}`
+          );
+        }
 
         // Guardian information
         if (student.guardian) {
@@ -3079,9 +3105,18 @@ app.post(
               .toUpperCase()} Fee`,
             amount,
             currency: "TZS",
-            status: "pending",
+            status: payment && payment.reference ? "verification" : "pending",
             dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
             academicYear: new Date().getFullYear().toString(),
+            // ✅ ADD payment proof if provided
+            ...(payment &&
+              payment.reference && {
+                paymentProof: {
+                  transactionReference: payment.reference,
+                  status: "pending",
+                  uploadedAt: new Date(),
+                },
+              }),
           });
 
           console.log(`💰 Invoice created: ${invoiceNumber} for ${amount} TZS`);
@@ -3145,6 +3180,222 @@ app.post(
     }
   }
 );
+
+// ============================================
+// ADMIN: VERIFY STUDENT PAYMENT
+// ============================================
+
+app.patch(
+  "/api/admin/students/:studentId/verify-payment",
+  authenticateToken,
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  async (req, res) => {
+    try {
+      const { studentId } = req.params;
+      const { action, rejectionReason } = req.body; // action: 'approve' or 'reject'
+      const adminId = req.user.id;
+
+      // Validate action
+      if (!["approve", "reject"].includes(action)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Action must be either "approve" or "reject"',
+        });
+      }
+
+      // Find student
+      const student = await User.findById(studentId);
+
+      if (!student || student.role !== "student") {
+        return res.status(404).json({
+          success: false,
+          error: "Student not found",
+        });
+      }
+
+      // Check if payment info exists
+      if (!student.payment_reference) {
+        return res.status(400).json({
+          success: false,
+          error: "No payment information submitted for this student",
+        });
+      }
+
+      if (action === "approve") {
+        // Approve payment
+        student.payment_status = "verified";
+        student.payment_verified_by = adminId;
+        student.payment_verified_at = new Date();
+        student.isActive = true; // Activate student account
+
+        await student.save();
+
+        // Update related invoice
+        await Invoice.updateOne(
+          { student_id: studentId, status: "verification" },
+          {
+            status: "paid",
+            paidDate: new Date(),
+            "paymentProof.status": "verified",
+            "paymentProof.verifiedBy": adminId,
+            "paymentProof.verifiedAt": new Date(),
+          }
+        );
+
+        // Notify student
+        await createNotification(
+          studentId,
+          "Payment Verified",
+          "Your payment has been verified. Your account is now active!",
+          "success"
+        );
+
+        // Log activity
+        await logActivity(
+          adminId,
+          "PAYMENT_VERIFIED",
+          `Verified payment for student ${student.firstName} ${student.lastName}`,
+          req,
+          {
+            student_id: studentId,
+            payment_reference: student.payment_reference,
+            payment_method: student.payment_method,
+          }
+        );
+
+        console.log(`✅ Payment verified for student: ${student.username}`);
+
+        res.json({
+          success: true,
+          message: "Payment verified successfully",
+          data: { student },
+        });
+      } else if (action === "reject") {
+        // Reject payment
+        if (!rejectionReason || !rejectionReason.trim()) {
+          return res.status(400).json({
+            success: false,
+            error: "Rejection reason is required",
+          });
+        }
+
+        student.payment_status = "rejected";
+        student.payment_verified_by = adminId;
+        student.payment_verified_at = new Date();
+        // Keep account inactive
+
+        await student.save();
+
+        // Update invoice
+        await Invoice.updateOne(
+          { student_id: studentId, status: "verification" },
+          {
+            status: "pending",
+            "paymentProof.status": "rejected",
+            "paymentProof.verifiedBy": adminId,
+            "paymentProof.verifiedAt": new Date(),
+            "paymentProof.rejectionReason": rejectionReason.trim(),
+          }
+        );
+
+        // Notify student
+        await createNotification(
+          studentId,
+          "Payment Rejected",
+          `Your payment was rejected: ${rejectionReason}. Please resubmit with correct information.`,
+          "warning"
+        );
+
+        // Log activity
+        await logActivity(
+          adminId,
+          "PAYMENT_REJECTED",
+          `Rejected payment for student ${student.firstName} ${student.lastName}`,
+          req,
+          {
+            student_id: studentId,
+            rejection_reason: rejectionReason.trim(),
+          }
+        );
+
+        console.log(`❌ Payment rejected for student: ${student.username}`);
+
+        res.json({
+          success: true,
+          message: "Payment proof rejected",
+          data: { student, rejectionReason },
+        });
+      }
+    } catch (error) {
+      console.error("❌ Error verifying payment:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to verify payment",
+      });
+    }
+  }
+);
+
+// ============================================
+// ADMIN: GET PENDING PAYMENTS
+// ============================================
+
+app.get(
+  "/api/admin/students/pending-payments",
+  authenticateToken,
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 20 } = req.query;
+      const admin = await User.findById(req.user.id);
+
+      const query = {
+        role: "student",
+        payment_status: "pending",
+        payment_reference: { $exists: true, $ne: "" },
+      };
+
+      // Filter by school for headmasters
+      if (req.user.role === "headmaster" && admin.schoolId) {
+        query.schoolId = admin.schoolId;
+      }
+
+      const students = await User.find(query)
+        .sort({ createdAt: -1 })
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .select(
+          "firstName lastName email username phoneNumber payment_method payment_reference registration_type createdAt schoolId"
+        )
+        .populate("schoolId", "name schoolCode");
+
+      const total = await User.countDocuments(query);
+
+      console.log(
+        `✅ Admin fetched ${students.length} pending payments (total: ${total})`
+      );
+
+      res.json({
+        success: true,
+        data: students,
+        meta: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit)),
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error fetching pending payments:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch pending payments",
+        message: error.message,
+      });
+    }
+  }
+);
+
 // Verify OTP
 app.post("/api/auth/verify-otp", authenticateToken, async (req, res) => {
   try {
