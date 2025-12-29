@@ -1705,7 +1705,6 @@ const paymentHistorySchema = new mongoose.Schema(
 
 paymentHistorySchema.index({ userId: 1, createdAt: -1 });
 paymentHistorySchema.index({ status: 1, createdAt: -1 });
-paymentHistorySchema.index({ invoiceId: 1 });
 
 const PaymentHistory = mongoose.model("PaymentHistory", paymentHistorySchema);
 
@@ -1756,7 +1755,6 @@ const paymentReminderSchema = new mongoose.Schema(
 );
 
 paymentReminderSchema.index({ userId: 1, sentAt: -1 });
-paymentReminderSchema.index({ invoiceId: 1 });
 
 const PaymentReminder = mongoose.model(
   "PaymentReminder",
