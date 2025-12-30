@@ -2942,7 +2942,7 @@ app.post(
       ])
       .withMessage("Invalid role"),
 
-    // ✅ Email validation (optional) - allow undefined
+    // ✅ Email validation (optional)
     body("email")
       .optional({ nullable: true, checkFalsy: true })
       .isEmail()
@@ -2960,7 +2960,7 @@ app.post(
     body("location.district").optional().trim().isString(),
     body("location.ward").optional().trim().isString(),
 
-    // ✅ School ID validation - REMOVED isMongoId() check since utility uses simple numeric IDs
+    // ✅ School ID validation
     body("school_id").optional().trim(),
   ],
   handleValidationErrors,
@@ -2988,6 +2988,7 @@ app.post(
         hasNames: !!names,
         hasLocation: !!location,
         school_id,
+        hasTalents: !!student?.talents,
       });
 
       // Validation
@@ -3032,9 +3033,8 @@ app.post(
         accepted_terms: accepted_terms || true,
       };
 
-      // ✅ Add school if provided (look up school by utility ID)
+      // ✅ Add school if provided
       if (school_id) {
-        // Try to find school by the utility ID (stored in schoolCode or as string ID)
         const school = await School.findOne({
           $or: [
             { schoolCode: school_id },
@@ -3054,9 +3054,8 @@ app.post(
         }
       }
 
-      // ✅ UPDATED: Store location names directly from frontend (no database lookup)
+      // ✅ Store location names directly from frontend
       if (location) {
-        // Store location names directly
         if (location.region) {
           userData.regionName = location.region;
           console.log(`✅ Stored region name: ${location.region}`);
@@ -3089,7 +3088,6 @@ app.post(
             if (ward) userData.wardId = ward._id;
           }
         } catch (err) {
-          // Silent fail - location names are already stored
           console.warn(
             "⚠️ Location ObjectId lookup failed (non-critical):",
             err.message
@@ -3106,11 +3104,12 @@ app.post(
         userData.registration_date = new Date();
         userData.registration_fee_paid = student.registration_fee_paid || 0;
         userData.institutionType = student.institution_type;
-        // ✅ NEW: Save payment information
+
+        // ✅ Save payment information
         if (payment && payment.method && payment.reference) {
           userData.payment_method = payment.method;
           userData.payment_reference = payment.reference;
-          userData.payment_status = "pending"; // Will be verified by admin
+          userData.payment_status = "pending";
           console.log(
             `💳 Payment info saved: ${payment.method} - ${payment.reference}`
           );
@@ -3126,9 +3125,8 @@ app.post(
           userData.guardianNationalId = student.guardian.nationalId;
         }
 
-        // ✅ UPDATED: Parent location information - store names directly
+        // Parent location information
         if (student.parent_location) {
-          // Store parent location names directly
           if (!userData.parentLocation) userData.parentLocation = {};
 
           if (student.parent_location.region) {
@@ -3175,8 +3173,6 @@ app.post(
         userData.otherSubjects =
           teacher.other_subjects || teacher.otherSubjects;
         userData.employeeId = teacher.employee_id;
-
-        // ✅ ADD THESE TWO LINES:
         userData.institutionType = teacher.institution_type;
         userData.classLevel = teacher.teaching_level;
 
@@ -3185,12 +3181,6 @@ app.post(
         );
         if (userData.otherSubjects) {
           console.log(`✅ Other subjects: ${userData.otherSubjects}`);
-        }
-        if (userData.institutionType) {
-          console.log(`✅ Institution type: ${userData.institutionType}`);
-        }
-        if (userData.classLevel) {
-          console.log(`✅ Teaching level: ${userData.classLevel}`);
         }
       } else if (role === "entrepreneur" && entrepreneur) {
         userData.businessName =
@@ -3210,6 +3200,70 @@ app.post(
         role: user.role,
         isActive: user.isActive,
       });
+
+      // ✅ ✅ ✅ FIX: SAVE STUDENT TALENTS TO StudentTalent COLLECTION
+      if (
+        role === "student" &&
+        student?.talents &&
+        Array.isArray(student.talents)
+      ) {
+        console.log(
+          `🎯 Processing ${student.talents.length} talents for student ${user._id}`
+        );
+
+        try {
+          let savedTalentsCount = 0;
+
+          for (const talentName of student.talents) {
+            // Skip empty talent names
+            if (!talentName || talentName.trim() === "") {
+              continue;
+            }
+
+            // Find talent by name (case-insensitive)
+            const talent = await Talent.findOne({
+              name: { $regex: new RegExp(`^${talentName.trim()}$`, "i") },
+              isActive: true,
+            });
+
+            if (talent) {
+              // Check if already exists
+              const exists = await StudentTalent.findOne({
+                studentId: user._id,
+                talentId: talent._id,
+              });
+
+              if (!exists) {
+                await StudentTalent.create({
+                  studentId: user._id,
+                  talentId: talent._id,
+                  schoolId: user.schoolId,
+                  proficiencyLevel: "beginner",
+                  yearsOfExperience: 0,
+                  status: "active",
+                  registeredAt: new Date(),
+                  updatedAt: new Date(),
+                });
+                savedTalentsCount++;
+                console.log(
+                  `✅ Created StudentTalent: ${talentName} for student ${user._id}`
+                );
+              } else {
+                console.log(`⚠️ StudentTalent already exists: ${talentName}`);
+              }
+            } else {
+              console.warn(`⚠️ Talent not found in database: "${talentName}"`);
+            }
+          }
+
+          console.log(
+            `✅ Successfully saved ${savedTalentsCount}/${student.talents.length} talents for student ${user._id}`
+          );
+        } catch (talentError) {
+          console.error("❌ Error saving student talents:", talentError);
+          // Don't fail registration if talents fail - just log it
+        }
+      }
 
       // ✅ AUTO-GENERATE INVOICE if registration type requires payment
       if (
@@ -3255,7 +3309,7 @@ app.post(
 
           console.log(`💰 Invoice created: ${invoiceNumber} for ${amount} TZS`);
 
-          // ✅ NEW: Create payment history entry
+          // ✅ Create payment history entry
           await PaymentHistory.create({
             userId: user._id,
             invoiceId: invoice._id,
@@ -3296,10 +3350,10 @@ app.post(
             );
             await user.save();
           }
-        } // ✅ Closes if (amount)
-      } // ✅ Closes outer IF (student registration check)
+        }
+      }
 
-      // ✅ SEND SUCCESS RESPONSE (THIS WAS MISSING!)
+      // ✅ SEND SUCCESS RESPONSE
       res.status(201).json({
         success: true,
         message: "Registration successful",
@@ -3325,7 +3379,7 @@ app.post(
       });
     }
   }
-); // ✅ This closes app.post()
+);
 
 // ============================================
 // ADMIN: VERIFY STUDENT PAYMENT
