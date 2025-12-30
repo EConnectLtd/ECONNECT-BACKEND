@@ -420,10 +420,10 @@ const userSchema = new mongoose.Schema({
   registration_type: {
     type: String,
     enum: [
-      "normal_registration", // CTM: 15,000 TZS
-      "premier_registration", // CTM: 70,000 TZS
-      "silver_registration", // Non-CTM: 39,000-59,000 TZS
-      "diamond_registration", // Non-CTM: 45,000-65,000 TZS
+      "normal", // CTM Club at School
+      "silver", // EConnect Talent Hub - Silver
+      "gold", // EConnect Talent Hub - Gold
+      "platinum", // EConnect Talent Hub - Platinum
     ],
   },
   registration_fee_paid: { type: Number, default: 0 },
@@ -3266,32 +3266,46 @@ app.post(
       }
 
       // ✅ AUTO-GENERATE INVOICE if registration type requires payment
-      if (
-        role === "student" &&
-        student?.registration_type &&
-        student.registration_type !== "normal_registration"
-      ) {
+
+      if (role === "student" && student?.registration_type) {
         const registrationFees = {
-          premier_registration: 70000,
-          silver_registration: 49000,
-          diamond_registration: 55000,
+          normal: 8000, // CTM Club: 3000 (gov) or 10000 (private) + 5000 certificate = 8000 or 15000
+          silver: 20000, // Silver Hub: 20,000 TZS/month
+          gold: 40000, // Gold Hub: 40,000 TZS/month
+          platinum: 80000, // Platinum Hub: 80,000 TZS/month
         };
 
         const amount = registrationFees[student.registration_type];
-
+        // ✅ For "normal" (CTM), calculate dynamic price based on institution type
+        let finalAmount = amount;
+        if (student.registration_type === "normal") {
+          if (student.institution_type === "private") {
+            finalAmount = 15000; // 10,000 annual + 5,000 certificate
+          } else {
+            finalAmount = 8000; // 3,000 annual + 5,000 certificate
+          }
+        }
         if (amount) {
           const invoiceNumber = `INV-${Date.now()}-${Math.random()
             .toString(36)
             .substring(2, 9)
             .toUpperCase()}`;
 
+          const getPackageName = (type) => {
+            const names = {
+              normal: "CTM Club Membership",
+              silver: "EConnect Talent Hub - Silver Package",
+              gold: "EConnect Talent Hub - Gold Package",
+              platinum: "EConnect Talent Hub - Platinum Package",
+            };
+            return names[type] || type.toUpperCase();
+          };
+
           const invoice = await Invoice.create({
             student_id: user._id,
             invoiceNumber,
             type: "ctm_membership",
-            description: `${student.registration_type
-              .replace("_", " ")
-              .toUpperCase()} Fee`,
+            description: getPackageName(student.registration_type),
             amount,
             currency: "TZS",
             status: payment && payment.reference ? "verification" : "pending",
@@ -3329,9 +3343,7 @@ app.post(
             ],
             metadata: {
               registrationType: student.registration_type,
-              packageName: student.registration_type
-                .replace("_", " ")
-                .toUpperCase(),
+              packageName: getPackageName(student.registration_type),
               ipAddress: req.ip || req.connection?.remoteAddress,
               userAgent: req.get("user-agent"),
             },
@@ -3339,11 +3351,9 @@ app.post(
 
           console.log(`📊 Payment history entry created for user ${user._id}`);
 
-          // Set next billing date for monthly subscriptions
+          // Set next billing date for monthly subscriptions (Silver, Gold, Platinum)
           if (
-            ["premier_registration", "diamond_registration"].includes(
-              student.registration_type
-            )
+            ["silver", "gold", "platinum"].includes(student.registration_type)
           ) {
             user.next_billing_date = new Date(
               Date.now() + 30 * 24 * 60 * 60 * 1000
