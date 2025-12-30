@@ -528,6 +528,7 @@ const schoolSchema = new mongoose.Schema({
       "technical college", // ✅ NEW
       "general college", // ✅ NEW
       "university",
+      "university college", // ✅ NEW
       "non-university high learning institutions", // ✅ NEW
       // Backward compatibility
       "vocational",
@@ -5249,7 +5250,7 @@ app.get("/api/schools", async (req, res) => {
       .limit(parseInt(limit))
       .skip((parseInt(page) - 1) * parseInt(limit))
       .select(
-        "_id name schoolCode type regionId districtId wardId address phoneNumber email principalName totalStudents totalTeachers logo isActive establishedYear"
+        "_id name schoolCode type ownership regionId districtId wardId address phoneNumber email principalName totalStudents totalTeachers logo isActive establishedYear"
       )
       .populate("regionId", "name code")
       .populate("districtId", "name code")
