@@ -3,14 +3,14 @@ module.exports = {
     {
       name: "econnect-backend",
       script: "./server.js",
-      instances: "max", // ✅ Use all CPU cores
+      instances: "4", // ✅ Use all CPU cores
       exec_mode: "cluster", // ✅ Enable cluster mode
       autorestart: true,
       watch: false,
       max_memory_restart: "1G",
       env: {
         NODE_ENV: "production",
-        PORT: 4000,
+        PORT: process.env.PORT || 4000,
       },
       error_file: "./logs/error.log",
       out_file: "./logs/out.log",
@@ -22,7 +22,7 @@ module.exports = {
       max_restarts: 10,
       // ✅ Graceful shutdown
       kill_timeout: 5000,
-      wait_ready: true,
+      wait_ready: false,
       listen_timeout: 10000,
     },
   ],
