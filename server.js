@@ -35,7 +35,7 @@ const { body, validationResult, param, query } = require("express-validator");
 const mongoSanitize = require("express-mongo-sanitize");
 const xss = require("xss-clean");
 const compression = require("compression");
-
+const cron = require("node-cron");
 // Load environment variables
 dotenv.config();
 
@@ -21095,22 +21095,43 @@ app.use((err, req, res, next) => {
 // AUTOMATED PAYMENT REMINDER CRON JOB
 // ============================================
 
-// Run daily at 9:00 AM to send payment reminders
-const cron = require("node-cron"); // Install: npm install node-cron
+// ✅ Only run cron jobs in production
+if (process.env.NODE_ENV === "production") {
+  // Schedule task to run daily at 9:00 AM
+  cron.schedule("0 9 * * *", async () => {
+    console.log("🕐 Running automated payment reminder job...");
 
-// Schedule task to run daily at 9:00 AM
-cron.schedule("0 9 * * *", async () => {
-  console.log("🕐 Running automated payment reminder job...");
+    try {
+      const result = await sendBulkPaymentReminders();
+      console.log(`✅ Automated reminders completed: ${result.sentCount} sent`);
+    } catch (error) {
+      console.error("❌ Automated reminder job failed:", error);
 
-  try {
-    const result = await sendBulkPaymentReminders();
-    console.log(`✅ Automated reminders completed: ${result.sentCount} sent`);
-  } catch (error) {
-    console.error("❌ Automated reminder job failed:", error);
-  }
-});
+      // ✅ Notify SuperAdmin of failure
+      try {
+        const superAdmins = await User.find({ role: "super_admin" }).distinct(
+          "_id"
+        );
+        await Promise.all(
+          superAdmins.map((adminId) =>
+            createNotification(
+              adminId,
+              "Payment Reminder Job Failed",
+              `Automated payment reminders failed: ${error.message}`,
+              "error"
+            )
+          )
+        );
+      } catch (notifError) {
+        console.error("❌ Failed to send error notification:", notifError);
+      }
+    }
+  });
 
-console.log("✅ Payment reminder cron job scheduled (daily at 9:00 AM)");
+  console.log("✅ Payment reminder cron job scheduled (daily at 9:00 AM)");
+} else {
+  console.log("ℹ️  Cron jobs disabled (not in production environment)");
+}
 
 // Start server
 server.listen(PORT, () => {
