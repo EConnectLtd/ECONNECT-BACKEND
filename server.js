@@ -285,17 +285,19 @@ if (!JWT_SECRET) {
 mongoose
   .connect(MONGODB_URI, {
     // Connection timeout settings
-    serverSelectionTimeoutMS: 30000, // Increase from 5000 to 30000
+    serverSelectionTimeoutMS: 30000,
     socketTimeoutMS: 45000,
-    // Connection pool optimization
-    maxPoolSize: 10,
-    minPoolSize: 2,
+    // ✅ Connection pool for concurrent users (FIXED)
+    maxPoolSize: 50, // Increased from 10 to 50
+    minPoolSize: 10, // Increased from 2 to 10
     maxIdleTimeMS: 30000,
+    // ✅ No keepAlive needed - Mongoose handles it automatically
   })
   .then(() => {
     console.log("✅ MongoDB Connected Successfully");
     console.log(`   Database: ${mongoose.connection.name}`);
     console.log(`   Host: ${mongoose.connection.host}`);
+    console.log(`   Pool Size: 50 connections (supports concurrent users)`);
   })
   .catch((err) => {
     console.error("❌ MongoDB Connection Error:", err.message);
@@ -309,6 +311,29 @@ mongoose
       });
     }, 5000);
   });
+
+// Monitor connection pool
+mongoose.connection.on("connected", () => {
+  console.log("✅ Mongoose connected to MongoDB");
+});
+
+mongoose.connection.on("error", (err) => {
+  console.error("❌ Mongoose connection error:", err);
+});
+
+mongoose.connection.on("disconnected", () => {
+  console.warn("⚠️ Mongoose disconnected");
+});
+
+// Log pool stats every 5 minutes
+setInterval(() => {
+  const pool = mongoose.connection.db?.serverConfig?.s?.pool;
+  if (pool) {
+    console.log(
+      `📊 DB Pool Stats: Available: ${pool.availableConnections}, In Use: ${pool.inUseConnections}`
+    );
+  }
+}, 5 * 60 * 1000);
 
 // ============================================
 // MONGODB SCHEMAS
@@ -2822,7 +2847,7 @@ app.get("/api/health", async (req, res) => {
 // Strict rate limiter for authentication endpoints
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // Limit each IP to 5 requests per windowMs
+  max: 20, // Increased from 5 to 20 - allows concurrent logins
   message: {
     success: false,
     error: "Too many authentication attempts, please try again later",
@@ -2835,7 +2860,7 @@ const authLimiter = rateLimit({
 // Moderate rate limiter for general API endpoints
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
+  max: 500, // Increased from 100 to 500
   message: {
     success: false,
     error: "Too many requests, please try again later",
