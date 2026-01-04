@@ -406,6 +406,14 @@ const userSchema = new mongoose.Schema({
   subjects: [String], // Array of subject names
   otherSubjects: String, // Custom subjects if "Others" selected
 
+  // Business/Entrepreneur fields (biz object for backward compatibility with seeded data)
+  biz: {
+    categories: [String],
+    business_name: String,
+    revenue: Number,
+    description: String,
+  },
+
   // Entrepreneur-specific fields
   businessName: String,
   businessType: String,
@@ -3218,6 +3226,15 @@ app.post(
         userData.businessStatus = entrepreneur.business_status;
         userData.businessWebsite = entrepreneur.business_website;
         userData.businessCategories = entrepreneur.business_categories || [];
+
+        // ✅ ALSO store in biz object for consistency with seeded data
+        userData.biz = {
+          business_name:
+            entrepreneur.business_name || entrepreneur.company_name,
+          categories: entrepreneur.business_categories || [],
+          description: entrepreneur.business_type || "Business",
+          revenue: 0,
+        };
       }
 
       // Create user
@@ -15155,7 +15172,6 @@ app.get(
         .sort({ createdAt: -1 })
         .limit(parseInt(limit))
         .skip((parseInt(page) - 1) * parseInt(limit))
-        // ✅ FIXED: Removed institutionType, added wardId population
         .populate({
           path: "schoolId",
           select:
@@ -15169,7 +15185,7 @@ app.get(
         .populate("regionId", "name code")
         .populate("districtId", "name code")
         .populate("wardId", "name code")
-        .lean(); // ✅ Better performance
+        .lean();
 
       // ✅ FETCH TALENTS FOR STUDENTS
       if (role === "student") {
@@ -15182,7 +15198,6 @@ app.get(
           .populate("talentId", "name category icon")
           .lean();
 
-        // Map talents to users
         const talentMap = {};
         studentTalents.forEach((st) => {
           const studentId = st.studentId.toString();
@@ -15195,26 +15210,25 @@ app.get(
         });
       }
 
-      // ✅ FETCH BUSINESS FOR ENTREPRENEURS
+      // ✅ NEW: FORMAT ENTREPRENEUR BUSINESS DATA
       if (role === "entrepreneur") {
-        const userIds = users.map((u) => u._id);
-
-        const businesses = await Business.find({
-          ownerId: { $in: userIds },
-        })
-          .select(
-            "name businessType registrationNumber isVerified status category"
-          )
-          .lean();
-
-        // Map businesses to users
-        const businessMap = {};
-        businesses.forEach((b) => {
-          businessMap[b.ownerId.toString()] = b;
-        });
+        console.log(`📊 Processing ${users.length} entrepreneurs...`);
 
         users.forEach((user) => {
-          user.businessDetails = businessMap[user._id.toString()] || null;
+          // Create a consistent business object from User fields
+          user.businessInfo = {
+            name: user.businessName || null,
+            type: user.businessType || null,
+            status: user.businessStatus || null,
+            website: user.businessWebsite || null,
+            categories: user.businessCategories || [],
+            registrationNumber: user.businessRegistrationNumber || null,
+            tinNumber: user.tinNumber || null,
+          };
+
+          console.log(
+            `✅ Entrepreneur ${user.firstName}: businessName = ${user.businessName}`
+          );
         });
       }
 
