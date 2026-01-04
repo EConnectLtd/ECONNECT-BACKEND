@@ -3134,7 +3134,8 @@ app.post(
 
       // Add role-specific data
       if (role === "student" && student) {
-        userData.gradeLevel = student.class_level || student.classLevel;
+        userData.classLevel = student.class_level || student.classLevel; // ✅ CORRECT FIELD
+        userData.gradeLevel = student.class_level || student.classLevel; // Keep for backward compat
         userData.course = student.course;
         userData.registration_type = student.registration_type;
         userData.is_ctm_student = student.is_ctm_student !== false;
@@ -9523,7 +9524,10 @@ app.get(
       const studentId = req.user.id;
       const student = await User.findById(studentId);
 
-      if (!student.schoolId || !student.gradeLevel) {
+      // Use classLevel (with fallback to gradeLevel for backward compat)
+      const studentClassLevel = student.classLevel || student.gradeLevel;
+
+      if (!student.schoolId || !studentClassLevel) {
         return res.json({
           success: true,
           data: [],
@@ -9535,7 +9539,7 @@ app.get(
 
       const timetables = await Timetable.find({
         schoolId: student.schoolId,
-        classLevel: student.gradeLevel,
+        classLevel: studentClassLevel, // ✅ CORRECT
         academicYear: currentYear.toString(),
         isActive: true,
       })
@@ -9855,7 +9859,8 @@ app.patch(
 
       // Update student's class level
       await User.findByIdAndUpdate(request.studentId, {
-        gradeLevel: request.requestedClassLevel,
+        classLevel: request.requestedClassLevel, // ✅ CORRECT
+        gradeLevel: request.requestedClassLevel, // Keep for backward compatibility
         course: request.requestedCourse,
         updatedAt: new Date(),
       });
@@ -10123,7 +10128,8 @@ app.patch(
       const student = await User.findByIdAndUpdate(
         req.user.id,
         {
-          gradeLevel: classLevel,
+          classLevel: classLevel, // ✅ CORRECT
+          gradeLevel: classLevel, // Keep for backward compatibility
           course: course || "",
           updatedAt: new Date(),
         },
@@ -10173,7 +10179,8 @@ app.patch(
       const student = await User.findByIdAndUpdate(
         studentId,
         {
-          gradeLevel: classLevel,
+          classLevel: classLevel, // ✅ CORRECT FIELD
+          gradeLevel: classLevel, // Keep for backward compatibility
           updatedAt: new Date(),
         },
         { new: true }
