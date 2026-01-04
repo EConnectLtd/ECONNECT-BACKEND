@@ -414,7 +414,11 @@ const userSchema = new mongoose.Schema({
   businessCategories: [String], // Array of categories,
   businessRegistrationNumber: String,
   tinNumber: String,
-
+  businessId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Business",
+    sparse: true, // Only for entrepreneurs
+  },
   // Staff-specific fields
   staffPosition: String,
   department: String,
@@ -15130,7 +15134,7 @@ app.post(
   }
 );
 
-// GET All Users (SuperAdmin)
+// GET All Users (SuperAdmin) - ENHANCED WITH FULL POPULATION
 app.get(
   "/api/superadmin/users",
   authenticateToken,
@@ -15144,14 +15148,79 @@ app.get(
       if (status === "active") query.isActive = true;
       if (status === "inactive") query.isActive = false;
 
+      console.log(`📊 Fetching users with role: ${role || "all"}`);
+
       const users = await User.find(query)
         .select("-password")
         .sort({ createdAt: -1 })
         .limit(parseInt(limit))
         .skip((parseInt(page) - 1) * parseInt(limit))
-        .populate("schoolId", "name schoolCode");
+        // ✅ FIXED: Removed institutionType, added wardId population
+        .populate({
+          path: "schoolId",
+          select:
+            "name schoolCode type ownership isActive regionId districtId wardId",
+          populate: [
+            { path: "regionId", select: "name code" },
+            { path: "districtId", select: "name code" },
+            { path: "wardId", select: "name code" },
+          ],
+        })
+        .populate("regionId", "name code")
+        .populate("districtId", "name code")
+        .populate("wardId", "name code")
+        .lean(); // ✅ Better performance
+
+      // ✅ FETCH TALENTS FOR STUDENTS
+      if (role === "student") {
+        const userIds = users.map((u) => u._id);
+
+        const studentTalents = await StudentTalent.find({
+          studentId: { $in: userIds },
+          status: "active",
+        })
+          .populate("talentId", "name category icon")
+          .lean();
+
+        // Map talents to users
+        const talentMap = {};
+        studentTalents.forEach((st) => {
+          const studentId = st.studentId.toString();
+          if (!talentMap[studentId]) talentMap[studentId] = [];
+          talentMap[studentId].push(st.talentId);
+        });
+
+        users.forEach((user) => {
+          user.talents = talentMap[user._id.toString()] || [];
+        });
+      }
+
+      // ✅ FETCH BUSINESS FOR ENTREPRENEURS
+      if (role === "entrepreneur") {
+        const userIds = users.map((u) => u._id);
+
+        const businesses = await Business.find({
+          ownerId: { $in: userIds },
+        })
+          .select(
+            "name businessType registrationNumber isVerified status category"
+          )
+          .lean();
+
+        // Map businesses to users
+        const businessMap = {};
+        businesses.forEach((b) => {
+          businessMap[b.ownerId.toString()] = b;
+        });
+
+        users.forEach((user) => {
+          user.businessDetails = businessMap[user._id.toString()] || null;
+        });
+      }
 
       const total = await User.countDocuments(query);
+
+      console.log(`✅ Fetched ${users.length} users (total: ${total})`);
 
       res.json({
         success: true,
@@ -15165,7 +15234,11 @@ app.get(
       });
     } catch (error) {
       console.error("❌ Error fetching users:", error);
-      res.status(500).json({ success: false, error: "Failed to fetch users" });
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch users",
+        message: error.message,
+      });
     }
   }
 );
