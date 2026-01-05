@@ -15175,7 +15175,7 @@ app.get(
       console.log(`📊 Fetching users with role: ${role || "all"}`);
 
       const users = await User.find(query)
-        .select("-password")
+        // ✅ DON'T use .select() - get all fields except password
         .sort({ createdAt: -1 })
         .limit(parseInt(limit))
         .skip((parseInt(page) - 1) * parseInt(limit))
@@ -15194,9 +15194,14 @@ app.get(
         .populate("wardId", "name code")
         .lean();
 
+      const total = await User.countDocuments(query);
+
+      // ✅ Manually remove password field
+      const sanitizedUsers = users.map(({ password, ...user }) => user);
+
       // ✅ FETCH TALENTS FOR STUDENTS
       if (role === "student") {
-        const userIds = users.map((u) => u._id);
+        const userIds = sanitizedUsers.map((u) => u._id);
 
         const studentTalents = await StudentTalent.find({
           studentId: { $in: userIds },
@@ -15212,17 +15217,16 @@ app.get(
           talentMap[studentId].push(st.talentId);
         });
 
-        users.forEach((user) => {
+        sanitizedUsers.forEach((user) => {
           user.talents = talentMap[user._id.toString()] || [];
         });
       }
 
-      // ✅ NEW: FORMAT ENTREPRENEUR BUSINESS DATA
+      // ✅ FORMAT ENTREPRENEUR BUSINESS DATA
       if (role === "entrepreneur") {
-        console.log(`📊 Processing ${users.length} entrepreneurs...`);
+        console.log(`📊 Processing ${sanitizedUsers.length} entrepreneurs...`);
 
-        users.forEach((user) => {
-          // Create a consistent business object from User fields
+        sanitizedUsers.forEach((user) => {
           user.businessInfo = {
             name: user.businessName || null,
             type: user.businessType || null,
@@ -15232,20 +15236,27 @@ app.get(
             registrationNumber: user.businessRegistrationNumber || null,
             tinNumber: user.tinNumber || null,
           };
-
-          console.log(
-            `✅ Entrepreneur ${user.firstName}: businessName = ${user.businessName}`
-          );
         });
       }
 
-      const total = await User.countDocuments(query);
+      console.log(
+        `✅ Fetched ${sanitizedUsers.length} users (total: ${total})`
+      );
 
-      console.log(`✅ Fetched ${users.length} users (total: ${total})`);
+      // ✅ LOG CLASSLEVEL VERIFICATION FOR STUDENTS
+      if (role === "student" && sanitizedUsers.length > 0) {
+        const sample = sanitizedUsers[0];
+        console.log("🔍 ClassLevel Check:", {
+          classLevel: sample.classLevel,
+          gradeLevel: sample.gradeLevel,
+          hasClassLevel: !!sample.classLevel,
+          sampleName: `${sample.firstName} ${sample.lastName}`,
+        });
+      }
 
       res.json({
         success: true,
-        data: users,
+        data: sanitizedUsers,
         meta: {
           total,
           page: parseInt(page),
@@ -15263,7 +15274,6 @@ app.get(
     }
   }
 );
-
 // MODERATE User
 app.post(
   "/api/superadmin/users/:userId/moderate",
