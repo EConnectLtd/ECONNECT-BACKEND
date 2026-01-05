@@ -14903,6 +14903,142 @@ app.post(
   }
 );
 
+// ============================================
+// DATA MIGRATION: gradeLevel → classLevel
+// ============================================
+app.post(
+  "/api/superadmin/migrate-classlevel",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      console.log("🔄 Starting classLevel migration...");
+
+      // Find all students who have gradeLevel but no classLevel
+      const studentsToMigrate = await User.find({
+        role: "student",
+        gradeLevel: { $exists: true, $ne: null },
+        $or: [
+          { classLevel: { $exists: false } },
+          { classLevel: null },
+          { classLevel: "" },
+        ],
+      });
+
+      console.log(`📊 Found ${studentsToMigrate.length} students to migrate`);
+
+      let migratedCount = 0;
+
+      for (const student of studentsToMigrate) {
+        student.classLevel = student.gradeLevel; // Copy gradeLevel to classLevel
+        await student.save();
+        migratedCount++;
+      }
+
+      console.log(`✅ Successfully migrated ${migratedCount} students`);
+
+      res.json({
+        success: true,
+        message: `Successfully migrated ${migratedCount} students`,
+        data: {
+          total: studentsToMigrate.length,
+          migrated: migratedCount,
+        },
+      });
+    } catch (error) {
+      console.error("❌ Migration error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Migration failed",
+        message: error.message,
+      });
+    }
+  }
+);
+
+// ============================================
+// GET Education Level Statistics
+// ============================================
+app.get(
+  "/api/superadmin/students/education-levels",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      console.log("📊 Fetching education level statistics...");
+
+      // Get all students with classLevel data
+      const students = await User.find({
+        role: "student",
+        isActive: true,
+        $or: [
+          { classLevel: { $exists: true, $ne: null, $ne: "" } },
+          { gradeLevel: { $exists: true, $ne: null, $ne: "" } },
+        ],
+      })
+        .select("classLevel gradeLevel")
+        .lean();
+
+      console.log(`📊 Total students found: ${students.length}`);
+
+      // Categorize students
+      const levels = {
+        primary: 0,
+        secondary: 0,
+        college: 0,
+        university: 0,
+        other: 0,
+      };
+
+      students.forEach((student) => {
+        // Use classLevel first, fallback to gradeLevel
+        const level = (
+          student.classLevel ||
+          student.gradeLevel ||
+          ""
+        ).toLowerCase();
+
+        if (
+          level.includes("standard") ||
+          level.includes("primary") ||
+          level.includes("darasa")
+        ) {
+          levels.primary++;
+        } else if (
+          level.includes("form") ||
+          level.includes("secondary") ||
+          level.includes("kidato")
+        ) {
+          levels.secondary++;
+        } else if (level.includes("college")) {
+          levels.college++;
+        } else if (level.includes("university") || level.includes("chuo")) {
+          levels.university++;
+        } else if (level) {
+          levels.other++;
+        }
+      });
+
+      console.log("✅ Education level breakdown:", levels);
+
+      res.json({
+        success: true,
+        data: levels,
+        meta: {
+          total: students.length,
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error fetching education levels:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch education level statistics",
+        message: error.message,
+      });
+    }
+  }
+);
+
 // DELETE /api/superadmin/schools/:schoolId - Delete School
 app.delete(
   "/api/superadmin/schools/:schoolId",
