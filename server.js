@@ -15255,11 +15255,18 @@ app.post(
         isActive: true,
       };
 
+      // ✅ ADD THIS
+      if (role === "student") {
+        userData.classLevel = req.body.classLevel || req.body.gradeLevel || "";
+        userData.gradeLevel = userData.classLevel; // Backward compatibility
+        userData.course = req.body.course || "";
+        userData.institutionType = req.body.institutionType || "government";
+      }
+
       if (level && locationId) {
         if (level === "district") userData.districtId = locationId;
         if (level === "regional") userData.regionId = locationId;
       }
-
       const user = await User.create(userData);
 
       // Send credentials via SMS (optional)
@@ -17128,6 +17135,20 @@ app.post(
         isActive: true,
       });
 
+      // ✅ ADD THIS
+      if (role === "student") {
+        userData.classLevel = req.body.classLevel || req.body.gradeLevel || "";
+        userData.gradeLevel = userData.classLevel; // Backward compatibility
+        userData.course = req.body.course || "";
+        userData.institutionType = req.body.institutionType || "government";
+        userData.studentId = req.body.studentId || "";
+      }
+
+      if (role === "teacher") {
+        userData.subjects = req.body.subjects || [];
+        userData.employeeId = req.body.employeeId || "";
+      }
+
       await logActivity(
         req.user.id,
         "USER_CREATED",
@@ -17195,6 +17216,15 @@ app.patch(
 
       // Update user (excluding password and role)
       const { password, role, ...updates } = req.body;
+      // ✅ ADD VALIDATION: If updating classLevel, also update gradeLevel
+      if (updates.classLevel) {
+        updates.gradeLevel = updates.classLevel; // Maintain backward compatibility
+      }
+
+      // If they somehow update gradeLevel instead, copy to classLevel
+      if (updates.gradeLevel && !updates.classLevel) {
+        updates.classLevel = updates.gradeLevel;
+      }
       Object.assign(user, updates);
       user.updatedAt = new Date();
       await user.save();
