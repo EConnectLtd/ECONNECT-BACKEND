@@ -17104,7 +17104,7 @@ app.post(
         });
       }
 
-      // Check if user already exists
+      // Check existing user
       const existingUser = await User.findOne({
         $or: [{ username }, { email }, { phoneNumber }],
       });
@@ -17116,12 +17116,10 @@ app.post(
         });
       }
 
-      // Hash password
       const hashedPassword = await hashPassword(password);
 
-      // Create user
-      const admin = await User.findById(req.user.id);
-      const user = await User.create({
+      // 🔹 Base user data
+      const userData = {
         username,
         email,
         password: hashedPassword,
@@ -17133,12 +17131,12 @@ app.post(
         regionId: req.user.regionId,
         districtId: req.user.districtId,
         isActive: true,
-      });
+      };
 
-      // ✅ ADD THIS
+      // 🔹 Role-based extensions
       if (role === "student") {
         userData.classLevel = req.body.classLevel || req.body.gradeLevel || "";
-        userData.gradeLevel = userData.classLevel; // Backward compatibility
+        userData.gradeLevel = userData.classLevel; // backward compatibility
         userData.course = req.body.course || "";
         userData.institutionType = req.body.institutionType || "government";
         userData.studentId = req.body.studentId || "";
@@ -17146,8 +17144,19 @@ app.post(
 
       if (role === "teacher") {
         userData.subjects = req.body.subjects || [];
+        userData.otherSubjects =
+          req.body.otherSubjects || req.body.other_subjects || "";
         userData.employeeId = req.body.employeeId || "";
       }
+
+      if (role === "entrepreneur") {
+        userData.businessName = req.body.businessName || "";
+        userData.businessType = req.body.businessType || "";
+        userData.businessCategories = req.body.businessCategories || [];
+      }
+
+      // 🔹 Create user ONCE
+      const user = await User.create(userData);
 
       await logActivity(
         req.user.id,
@@ -17216,7 +17225,7 @@ app.patch(
 
       // Update user (excluding password and role)
       const { password, role, ...updates } = req.body;
-      // ✅ ADD VALIDATION: If updating classLevel, also update gradeLevel
+      // ✅ ADD THIS: Sync classLevel with gradeLevel
       if (updates.classLevel) {
         updates.gradeLevel = updates.classLevel; // Maintain backward compatibility
       }
