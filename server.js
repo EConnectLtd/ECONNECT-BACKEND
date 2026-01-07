@@ -335,6 +335,23 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
+// ============================================================================
+// PASSWORD AUTO-GENERATION HELPER
+// ============================================================================
+
+/**
+ * Generate a secure 6-character alphanumeric password
+ * @returns {string} A random 6-character password
+ */
+function generateRandomPassword() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // Removed similar characters (I,O,1,0)
+  let password = "";
+  for (let i = 0; i < 6; i++) {
+    password += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return password;
+}
+
 // ============================================
 // MONGODB SCHEMAS
 // ============================================
@@ -3005,7 +3022,6 @@ app.post(
     try {
       const {
         phone,
-        password,
         names,
         email,
         role,
@@ -3052,8 +3068,13 @@ app.post(
         });
       }
 
-      // Hash password (use phone as password if not provided)
-      const hashedPassword = await hashPassword(password || phone);
+      // ✅ AUTO-GENERATE PASSWORD (6-character alphanumeric)
+      const generatedPassword = generateRandomPassword();
+      const hashedPassword = await hashPassword(generatedPassword);
+
+      console.log(
+        `🔐 Auto-generated password for ${phone}: ${generatedPassword}`
+      );
 
       // Build user object
       const userData = {
@@ -3248,6 +3269,24 @@ app.post(
         isActive: user.isActive,
       });
 
+      // ✅ Send SMS with password for immediately active users (students)
+      if (role === "student" || role === "entrepreneur") {
+        await sendSMS(
+          phone,
+          `Welcome to ECONNECT! Your account has been created. Your password is: ${generatedPassword}. Please login and change it.`
+        );
+
+        console.log(`📱 SMS sent to ${phone} with auto-generated password`);
+      }
+
+      // For teachers, password will be sent when approved by headmaster
+      if (role === "teacher") {
+        await sendSMS(
+          phone,
+          `Thank you for registering as a teacher on ECONNECT. Your account is pending approval. You'll receive your password via SMS once approved.`
+        );
+      }
+
       // ✅ ✅ ✅ FIX: SAVE STUDENT TALENTS TO StudentTalent COLLECTION
       if (
         role === "student" &&
@@ -3410,7 +3449,7 @@ app.post(
         }
       }
 
-      // ✅ SEND SUCCESS RESPONSE
+      // ✅ SEND SUCCESS RESPONSE WITH AUTO-GENERATED PASSWORD
       res.status(201).json({
         success: true,
         message: "Registration successful",
@@ -3425,6 +3464,7 @@ app.post(
             phoneNumber: user.phoneNumber,
             isActive: user.isActive,
           },
+          generatedPassword: generatedPassword, // ✅ NEW: Send password to frontend
         },
       });
     } catch (error) {
@@ -12173,7 +12213,7 @@ app.get(
   }
 );
 
-// APPROVE Teacher
+// APPROVE Teacher - FIXED VERSION
 app.post(
   "/api/headmaster/approvals/teacher/:userId/approve",
   authenticateToken,
@@ -12192,13 +12232,24 @@ app.post(
           .json({ success: false, error: "Teacher not found" });
       }
 
+      // ✅ Generate NEW password for approved teacher
+      const newPassword = generateRandomPassword();
+      const hashedPassword = await hashPassword(newPassword);
+
+      user.password = hashedPassword;
       user.isActive = true;
       await user.save();
+
+      // ✅ Send SMS with password
+      await sendSMS(
+        user.phoneNumber,
+        `Your ECONNECT teacher account has been approved! Your password is: ${newPassword}. Please login and change it immediately.`
+      );
 
       await createNotification(
         user._id,
         "Account Approved",
-        "Your teacher account has been approved by the headmaster",
+        "Your teacher account has been approved. Check your SMS for login credentials.",
         "success"
       );
 
@@ -12209,7 +12260,10 @@ app.post(
         req
       );
 
-      res.json({ success: true, message: "Teacher approved successfully" });
+      res.json({
+        success: true,
+        message: "Teacher approved and password sent via SMS",
+      });
     } catch (error) {
       console.error("❌ Error approving teacher:", error);
       res
@@ -12257,7 +12311,7 @@ app.post(
   }
 );
 
-// APPROVE Student
+// APPROVE Student - FIXED VERSION
 app.post(
   "/api/headmaster/approvals/student/:userId/approve",
   authenticateToken,
@@ -12276,13 +12330,24 @@ app.post(
           .json({ success: false, error: "Student not found" });
       }
 
+      // ✅ Generate NEW password
+      const newPassword = generateRandomPassword();
+      const hashedPassword = await hashPassword(newPassword);
+
+      user.password = hashedPassword;
       user.isActive = true;
       await user.save();
+
+      // ✅ Send SMS with password
+      await sendSMS(
+        user.phoneNumber,
+        `Your ECONNECT account has been approved! Your password is: ${newPassword}. Login at econnect.co.tz`
+      );
 
       await createNotification(
         user._id,
         "Account Approved",
-        "Your student account has been approved",
+        "Your account has been approved. Check your SMS for login credentials.",
         "success"
       );
 
