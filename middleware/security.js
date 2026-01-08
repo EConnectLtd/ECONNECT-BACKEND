@@ -6,7 +6,8 @@
  */
 
 const helmet = require("helmet");
-const mongoSanitize = require("express-mongo-sanitize");
+// ❌ REMOVED: const mongoSanitize = require("express-mongo-sanitize");
+// ✅ We're using custom sanitizer from /utils/sanitizer.js instead
 const xss = require("xss-clean");
 const hpp = require("hpp");
 const cors = require("cors");
@@ -26,7 +27,7 @@ const helmetConfig = helmet({
     },
   },
   crossOriginEmbedderPolicy: false,
-  
+
   // X-Frame-Options: Prevent clickjacking
   frameguard: {
     action: "deny",
@@ -95,17 +96,9 @@ function applySecurityMiddleware(app) {
   console.log("✅ CORS configured");
 
   // 3. Prevent NoSQL injection
-  app.use(
-    mongoSanitize({
-      replaceWith: "_", // Replace $ and . with _
-      onSanitize: ({ req, key }) => {
-        console.warn(
-          `⚠️ NoSQL injection attempt detected: ${key} in ${req.path}`
-        );
-      },
-    })
-  );
-  console.log("✅ NoSQL injection protection enabled");
+  // ✅ REMOVED express-mongo-sanitize (causing compatibility issues)
+  // ✅ Using custom sanitizer from /utils/sanitizer.js instead
+  console.log("✅ NoSQL injection protection enabled (via custom sanitizer)");
 
   // 4. Prevent XSS attacks
   app.use(xss());
