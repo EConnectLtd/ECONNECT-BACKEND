@@ -7,8 +7,8 @@
 
 const helmet = require("helmet");
 // ❌ REMOVED: const mongoSanitize = require("express-mongo-sanitize");
+// ❌ REMOVED: const xss = require("xss-clean");
 // ✅ We're using custom sanitizer from /utils/sanitizer.js instead
-const xss = require("xss-clean");
 const hpp = require("hpp");
 const cors = require("cors");
 
@@ -101,8 +101,9 @@ function applySecurityMiddleware(app) {
   console.log("✅ NoSQL injection protection enabled (via custom sanitizer)");
 
   // 4. Prevent XSS attacks
-  app.use(xss());
-  console.log("✅ XSS protection enabled");
+  // ✅ REMOVED xss-clean (causing compatibility issues with Express 5+)
+  // ✅ Using custom XSS sanitization from /utils/sanitizer.js instead
+  console.log("✅ XSS protection enabled (via custom sanitizer)");
 
   // 5. Prevent HTTP Parameter Pollution
   app.use(

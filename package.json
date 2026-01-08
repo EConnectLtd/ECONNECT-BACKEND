@@ -41,8 +41,7 @@
     "pm2": "^6.0.14",
     "safe-buffer": "^5.2.1",
     "socket.io": "^4.8.1",
-    "uuid": "^13.0.0",
-    "xss-clean": "^0.1.4"
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"
