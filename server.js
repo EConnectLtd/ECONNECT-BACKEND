@@ -21841,6 +21841,185 @@ app.post(
   }
 );
 
+// ✅ RESEND PASSWORD - For active users
+app.post(
+  "/api/superadmin/users/:userId/resend-password",
+  verifyToken,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+
+      // Find user
+      const user = await User.findById(userId);
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          error: "User not found",
+        });
+      }
+
+      // Get user's actual password (generated during registration)
+      const password =
+        user.generatedPassword || user.tempPassword || "ECONNECT2024";
+
+      // Send SMS with password
+      const phone = user.phoneNumber?.replace(/^0/, "255"); // Convert to international format
+      if (phone) {
+        try {
+          await sendSMS(
+            phone,
+            `Hello ${user.firstName}! Your ECONNECT login credentials:\n\nEmail: ${user.email}\nPassword: ${password}\n\nLogin at: https://econnect.co.tz`
+          );
+        } catch (smsError) {
+          console.error("SMS sending failed:", smsError);
+          // Continue even if SMS fails
+        }
+      }
+
+      // Create notification
+      await Notification.create({
+        recipient: user._id,
+        type: "account_update",
+        title: "Password Resent",
+        message: "Your login password has been resent via SMS.",
+        priority: "medium",
+      });
+
+      // Log activity
+      await ActivityLog.create({
+        user: req.user.id,
+        userRole: "superadmin",
+        action: "resend_password",
+        targetUser: user._id,
+        targetUserRole: user.role,
+        details: `Resent password to ${user.firstName} ${user.lastName}`,
+        ipAddress: req.ip,
+        userAgent: req.get("user-agent"),
+      });
+
+      res.json({
+        success: true,
+        message: "Password resent successfully",
+      });
+    } catch (error) {
+      console.error("Resend password error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to resend password",
+      });
+    }
+  }
+);
+
+// ✅ SEND PAYMENT REMINDER - For users with pending payment
+app.post(
+  "/api/superadmin/users/:userId/payment-reminder",
+  verifyToken,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+
+      // Find user and populate school info
+      const user = await User.findById(userId).populate("schoolId");
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          error: "User not found",
+        });
+      }
+
+      // Check payment status
+      const paymentStatus = user.payment_status || user.paymentStatus;
+      if (paymentStatus === "completed" || paymentStatus === "paid") {
+        return res.status(400).json({
+          success: false,
+          error: "User has already completed payment",
+        });
+      }
+
+      // Calculate amount due based on user type and package
+      let amountDue = 0;
+      let packageName = "";
+
+      if (user.role === "student") {
+        const { getStudentPackageInfo } = require("./utils/packagePricing");
+        const institutionType =
+          user.schoolId?.ownershipType || user.schoolId?.institutionType;
+        const packageInfo = getStudentPackageInfo(
+          user.registrationType || user.registration_type,
+          institutionType
+        );
+        amountDue = packageInfo.monthlyFee || packageInfo.annualFee || 0;
+        packageName = packageInfo.name;
+      } else if (user.role === "entrepreneur") {
+        const {
+          getEntrepreneurPackageInfo,
+        } = require("./utils/packagePricing");
+        const packageInfo = getEntrepreneurPackageInfo(
+          user.registrationType || user.registration_type
+        );
+        amountDue = packageInfo.monthlyFee || 0;
+        packageName = packageInfo.name;
+      }
+
+      // Send SMS reminder
+      const phone = user.phoneNumber?.replace(/^0/, "255");
+      if (phone) {
+        try {
+          await sendSMS(
+            phone,
+            `Hello ${
+              user.firstName
+            }! This is a payment reminder for ECONNECT.\n\nPackage: ${packageName}\nAmount Due: TZS ${amountDue.toLocaleString()}\n\nPlease complete your payment to continue enjoying our services.\n\nThank you!`
+          );
+        } catch (smsError) {
+          console.error("SMS sending failed:", smsError);
+          return res.status(500).json({
+            success: false,
+            error: "Failed to send SMS reminder",
+          });
+        }
+      }
+
+      // Create notification
+      await Notification.create({
+        recipient: user._id,
+        type: "payment",
+        title: "Payment Reminder",
+        message: `Please complete your payment of TZS ${amountDue.toLocaleString()} for ${packageName} package.`,
+        priority: "high",
+      });
+
+      // Log activity
+      await ActivityLog.create({
+        user: req.user.id,
+        userRole: "superadmin",
+        action: "payment_reminder",
+        targetUser: user._id,
+        targetUserRole: user.role,
+        details: `Sent payment reminder to ${user.firstName} ${
+          user.lastName
+        } - TZS ${amountDue.toLocaleString()}`,
+        ipAddress: req.ip,
+        userAgent: req.get("user-agent"),
+      });
+
+      res.json({
+        success: true,
+        message: "Payment reminder sent successfully",
+      });
+    } catch (error) {
+      console.error("Send payment reminder error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to send payment reminder",
+      });
+    }
+  }
+);
+
 // ============================================
 // 🛡️ APPLY ERROR HANDLERS (MUST BE LAST!)
 // ============================================
