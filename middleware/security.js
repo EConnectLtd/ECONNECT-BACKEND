@@ -3,57 +3,28 @@
  * 🛡️ SECURITY MIDDLEWARE
  * ============================================
  * Comprehensive security headers and sanitization
+ *
+ * 🔒 CSRF PROTECTION NOTE:
+ * CSRF protection is NOT implemented for this API because:
+ * 1. Stateless JWT authentication (tokens in Authorization header, not cookies)
+ * 2. No session cookies - CSRF only applies to cookie-based auth
+ * 3. Rate limiting protects auth endpoints (5 attempts/15min)
+ * 4. Input validation & sanitization prevents injection attacks
+ * 5. CORS restricts allowed origins
+ * 6. HTTPS prevents man-in-the-middle attacks
+ *
+ * CSRF is only necessary for session-based authentication where browsers
+ * automatically send auth cookies. Our JWT tokens must be explicitly
+ * included in request headers, making CSRF attacks impossible.
  */
 
 const helmet = require("helmet");
-const csrf = require("csurf");
+// ❌ REMOVED: const csrf = require("csurf"); - Deprecated and not needed for JWT APIs
 // ❌ REMOVED: const mongoSanitize = require("express-mongo-sanitize");
 // ❌ REMOVED: const xss = require("xss-clean");
 // ✅ We're using custom sanitizer from /utils/sanitizer.js instead
 const hpp = require("hpp");
 const cors = require("cors");
-
-/**
- * Configure CSRF Protection
- * ✅ Excludes auth endpoints (login, register, etc.) - they use rate limiting + JWT
- * ✅ Protects state-changing operations for authenticated users
- */
-const csrfProtection = csrf({
-  cookie: {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax", // Allow cross-site for better compatibility
-    path: "/",
-  },
-});
-
-/**
- * CSRF Middleware with Auth Endpoint Exclusions
- * Skips CSRF for stateless auth endpoints that use other protections
- */
-function csrfMiddleware(req, res, next) {
-  // ✅ Skip CSRF for authentication endpoints (protected by rate limiting + validation)
-  const excludedPaths = [
-    "/api/auth/login",
-    "/api/auth/register",
-    "/api/auth/forgot-password",
-    "/api/auth/reset-password",
-    "/api/auth/verify-email",
-    "/api/health",
-    "/api/csrf-token", // Allow getting CSRF token without validation
-  ];
-
-  // Check if current path should skip CSRF
-  const shouldSkip = excludedPaths.some((path) => req.path.startsWith(path));
-
-  if (shouldSkip) {
-    console.log(`⏭️  Skipping CSRF for: ${req.path}`);
-    return next();
-  }
-
-  // Apply CSRF protection to all other routes
-  csrfProtection(req, res, next);
-}
 
 /**
  * Configure Helmet for security headers
@@ -106,6 +77,7 @@ const corsOptions = {
     // Allow requests from your frontend domains
     const allowedOrigins = [
       "https://econnect.co.tz",
+      "https://www.econnect.co.tz",
       "http://localhost:5173", // Vite dev server
       "http://localhost:3000", // React dev server
     ];
@@ -155,10 +127,6 @@ function applySecurityMiddleware(app) {
     })
   );
   console.log("✅ HTTP Parameter Pollution protection enabled");
-
-  // 6. CSRF Protection
-  app.use(csrfMiddleware);
-  console.log("✅ CSRF protection enabled");
 
   console.log("🎉 All security middleware applied successfully!");
 }
