@@ -21,7 +21,6 @@ const {
   passwordResetLimiter,
   smsLimiter,
 } = require("./middleware/rateLimiters"); // ✅ Note: "rateLimiters" (plural)
-const { applyCSRFProtection } = require("./middleware/csrfProtection");
 const { applyErrorHandlers } = require("./middleware/errorHandler");
 const { applySanitization } = require("./utils/sanitizer");
 const { validateObjectId } = require("./middleware/validation");
@@ -200,9 +199,6 @@ applyRateLimiters(app);
 
 // 5. Input sanitization
 applySanitization(app);
-
-// 6. CSRF protection
-applyCSRFProtection(app);
 
 console.log("\n🎉 All security middleware applied!\n");
 
