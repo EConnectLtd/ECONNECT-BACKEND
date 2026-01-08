@@ -13,7 +13,14 @@ const mongoose = require("mongoose");
 
 // Import security middleware
 const { applySecurityMiddleware } = require("./middleware/security");
-const { applyRateLimiters } = require("./middleware/rateLimiter");
+const {
+  applyRateLimiters,
+  generalLimiter,
+  authLimiter,
+  registrationLimiter,
+  passwordResetLimiter,
+  smsLimiter,
+} = require("./middleware/rateLimiters"); // ✅ Note: "rateLimiters" (plural)
 const { applyCSRFProtection } = require("./middleware/csrfProtection");
 const { applyErrorHandlers } = require("./middleware/errorHandler");
 const { applySanitization } = require("./utils/sanitizer");
@@ -73,6 +80,20 @@ app.use(
     },
   })
 );
+
+// ============================================
+// ERROR SANITIZATION HELPER
+// ============================================
+function sanitizeError(error) {
+  if (process.env.NODE_ENV === "production") {
+    return { message: error.message };
+  }
+  return {
+    message: error.message,
+    stack: error.stack,
+    ...(error.code && { code: error.code }),
+  };
+}
 
 // ============================================
 // MULTER CONFIGURATION FOR FILE UPLOADS
