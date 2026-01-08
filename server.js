@@ -2631,15 +2631,6 @@ const handleValidationErrors = (req, res, next) => {
   next();
 };
 
-// Sanitize error messages for production
-const sanitizeError = (error, isDevelopment = false) => {
-  if (isDevelopment || process.env.NODE_ENV === "development") {
-    return error.message || "An error occurred";
-  }
-  // In production, return generic messages
-  return "An error occurred. Please try again later.";
-};
-
 // Validate MongoDB ObjectId
 const isValidObjectId = (id) => {
   return mongoose.Types.ObjectId.isValid(id);
