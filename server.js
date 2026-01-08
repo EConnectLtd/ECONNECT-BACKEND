@@ -48,8 +48,7 @@ const smsService = require("./services/smsService");
 // Initialize Express app
 const app = express();
 const server = http.createServer(app);
-app.set('trust proxy', true); // Trust DigitalOcean's load balancer
-
+app.set('trust proxy', 1); // Trust only the first proxy (DigitalOcean LB)
 // ============================================
 // SOCKET.IO CONFIGURATION
 // ============================================
