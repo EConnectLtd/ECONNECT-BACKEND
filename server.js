@@ -2654,6 +2654,10 @@ const isValidObjectId = (id) => {
 // AUTHENTICATION ENDPOINTS
 // ============================================
 
+// ============================================
+// AUTHENTICATION ENDPOINTS
+// ============================================
+
 // Register with OTP
 app.post(
   "/api/auth/register",
@@ -2849,8 +2853,8 @@ app.post(
 
       // Add role-specific data
       if (role === "student" && student) {
-        userData.classLevel = student.class_level || student.classLevel; // ✅ CORRECT FIELD
-        userData.gradeLevel = student.class_level || student.classLevel; // Keep for backward compat
+        userData.classLevel = student.class_level || student.classLevel;
+        userData.gradeLevel = student.class_level || student.classLevel;
         userData.course = student.course;
         userData.registration_type = student.registration_type;
         userData.is_ctm_student = student.is_ctm_student !== false;
@@ -2963,67 +2967,167 @@ app.post(
         isActive: user.isActive,
       });
 
-      // ✅ Send SMS with password for immediately active users (students)
+      // ============================================================================
+      // ✅ SEND CONGRATULATIONS SMS (NOT PASSWORD - JUST INSTRUCTIONS)
+      // ============================================================================
+
       if (role === "student" || role === "entrepreneur") {
         const userName = `${names.first} ${names.last}`;
-        const smsResult = await smsService.sendPasswordSMS(
-          phone,
-          generatedPassword,
-          userName,
-          user._id.toString()
-        );
 
-        if (smsResult.success) {
-          console.log(`📱 Password SMS sent successfully to ${phone}`);
+        // ✅ Determine message based on registration type
+        let smsMessage = "";
 
-          // ✅ Log SMS
-          await SMSLog.create({
-            userId: user._id,
-            phone: phone,
-            message: `Welcome password SMS`,
-            type: "password",
-            status: "sent",
-            messageId: smsResult.messageId,
-            reference: `pwd_${user._id}`,
-          });
+        if (role === "student" && student?.registration_type) {
+          // Student with package - needs to send payment receipt
+          const packageNames = {
+            normal: "CTM Club Membership",
+            silver: "Silver Package",
+            gold: "Gold Package",
+            platinum: "Platinum Package",
+          };
+
+          const packageName =
+            packageNames[student.registration_type] || "Package";
+
+          // Check if payment info was already submitted
+          if (payment && payment.reference) {
+            // User already submitted payment
+            smsMessage = `Hongera ${userName}! 🎉\n\nUmesajiliwa kwa mafanikio kwenye ECONNECT - ${packageName}.\n\nRisiti yako ya malipo imepokelewa na inasubiri kuthibitishwa.\n\nUtapokea neno la siri baada ya kuthibitisha malipo.\n\nAsante!\nECONNECT`;
+          } else {
+            // User needs to send payment
+            smsMessage = `Hongera ${userName}! 🎉\n\nUmesajiliwa kwa mafanikio kwenye ECONNECT - ${packageName}.\n\nHATUA IFUATAYO:\n1. Fanya malipo\n2. Tuma risiti kwa +255758061582\n3. Tutathibitisha malipo\n4. Utapokea neno la siri\n\nAsante!\nECONNECT`;
+          }
+        } else if (role === "entrepreneur") {
+          // Entrepreneur - needs approval
+          smsMessage = `Hongera ${userName}! 🎉\n\nUmesajiliwa kwa mafanikio kwenye ECONNECT kama Mjasiriamali.\n\nAkaunti yako inasubiri idhini. Utapokea neno la siri baada ya kuidhinishwa.\n\nAsante!\nECONNECT`;
         } else {
-          console.warn(`⚠️ Failed to send SMS to ${phone}:`, smsResult.error);
-
-          // ✅ Log failed SMS
-          await SMSLog.create({
-            userId: user._id,
-            phone: phone,
-            message: "Password SMS (failed)",
-            type: "password",
-            status: "failed",
-            errorMessage: smsResult.error || "Unknown error",
-            reference: `pwd_${user._id}`,
-          });
+          // Regular student without package
+          smsMessage = `Hongera ${userName}! 🎉\n\nUmesajiliwa kwa mafanikio kwenye ECONNECT.\n\nTuma risiti ya malipo kwa +255758061582 ili kuendelea.\n\nUtapokea neno la siri baada ya kuthibitishwa.\n\nAsante!\nECONNECT`;
         }
-      }
 
-      // For teachers, password will be sent when approved by headmaster
-      if (role === "teacher") {
+        // Send the SMS
         const smsResult = await smsService.sendSMS(
           phone,
-          `Thank you for registering as a teacher on ECONNECT. Your account is pending approval. You'll receive your password via SMS once approved.`,
-          "teacher_pending"
+          smsMessage,
+          `registration_congrats_${user._id}`
         );
 
         if (smsResult.success) {
+          console.log(`📱 Congratulations SMS sent successfully to ${phone}`);
+
           await SMSLog.create({
             userId: user._id,
             phone: phone,
-            message: "Teacher pending approval notification",
+            message: "Registration congratulations SMS",
             type: "general",
             status: "sent",
             messageId: smsResult.messageId,
-            reference: "teacher_pending",
+            reference: `reg_congrats_${user._id}`,
+          });
+        } else {
+          console.warn(
+            `⚠️ Failed to send congratulations SMS to ${phone}:`,
+            smsResult.error
+          );
+
+          await SMSLog.create({
+            userId: user._id,
+            phone: phone,
+            message: "Registration congratulations SMS (failed)",
+            type: "general",
+            status: "failed",
+            errorMessage: smsResult.error || "Unknown error",
+            reference: `reg_congrats_${user._id}`,
           });
         }
       }
 
-      // ✅ ✅ ✅ FIX: SAVE STUDENT TALENTS TO StudentTalent COLLECTION
+      // ✅ For teachers - send pending approval message
+      if (role === "teacher") {
+        const userName = `${names.first} ${names.last}`;
+
+        const smsMessage = `Hongera ${userName}! 🎉\n\nUmesajiliwa kwa mafanikio kwenye ECONNECT kama Mwalimu.\n\nAkaunti yako inasubiri idhini kutoka kwa Mkuu wa Shule. Utapokea neno la siri baada ya kuidhinishwa.\n\nAsante!\nECONNECT`;
+
+        const smsResult = await smsService.sendSMS(
+          phone,
+          smsMessage,
+          `teacher_pending_${user._id}`
+        );
+
+        if (smsResult.success) {
+          console.log(`📱 Teacher registration SMS sent to ${phone}`);
+
+          await SMSLog.create({
+            userId: user._id,
+            phone: phone,
+            message: "Teacher registration congratulations",
+            type: "general",
+            status: "sent",
+            messageId: smsResult.messageId,
+            reference: `teacher_reg_${user._id}`,
+          });
+        } else {
+          await SMSLog.create({
+            userId: user._id,
+            phone: phone,
+            message: "Teacher registration SMS (failed)",
+            type: "general",
+            status: "failed",
+            errorMessage: smsResult.error,
+            reference: `teacher_reg_${user._id}`,
+          });
+        }
+      }
+
+      // ✅ For staff/officials - send pending approval message
+      if (
+        [
+          "staff",
+          "district_official",
+          "regional_official",
+          "national_official",
+          "headmaster",
+        ].includes(role)
+      ) {
+        const userName = `${names.first} ${names.last}`;
+
+        const smsMessage = `Hongera ${userName}! 🎉\n\nUmesajiliwa kwa mafanikio kwenye ECONNECT.\n\nAkaunti yako inasubiri idhini. Utapokea neno la siri baada ya kuidhinishwa na Msimamizi.\n\nAsante!\nECONNECT`;
+
+        const smsResult = await smsService.sendSMS(
+          phone,
+          smsMessage,
+          `${role}_pending_${user._id}`
+        );
+
+        if (smsResult.success) {
+          console.log(`📱 ${role} registration SMS sent to ${phone}`);
+
+          await SMSLog.create({
+            userId: user._id,
+            phone: phone,
+            message: `${role} registration congratulations`,
+            type: "general",
+            status: "sent",
+            messageId: smsResult.messageId,
+            reference: `${role}_reg_${user._id}`,
+          });
+        } else {
+          await SMSLog.create({
+            userId: user._id,
+            phone: phone,
+            message: `${role} registration SMS (failed)`,
+            type: "general",
+            status: "failed",
+            errorMessage: smsResult.error,
+            reference: `${role}_reg_${user._id}`,
+          });
+        }
+      }
+
+      // ============================================================================
+      // ✅ SAVE STUDENT TALENTS TO StudentTalent COLLECTION
+      // ============================================================================
+
       if (
         role === "student" &&
         student?.talents &&
@@ -3087,26 +3191,30 @@ app.post(
         }
       }
 
+      // ============================================================================
       // ✅ AUTO-GENERATE INVOICE if registration type requires payment
+      // ============================================================================
 
       if (role === "student" && student?.registration_type) {
         const registrationFees = {
-          normal: 8000, // CTM Club: 3000 (gov) or 10000 (private) + 5000 certificate = 8000 or 15000
-          silver: 20000, // Silver Hub: 20,000 TZS/month
-          gold: 40000, // Gold Hub: 40,000 TZS/month
-          platinum: 80000, // Platinum Hub: 80,000 TZS/month
+          normal: 8000,
+          silver: 20000,
+          gold: 40000,
+          platinum: 80000,
         };
 
         const amount = registrationFees[student.registration_type];
+
         // ✅ For "normal" (CTM), calculate dynamic price based on institution type
         let finalAmount = amount;
         if (student.registration_type === "normal") {
           if (student.institution_type === "private") {
-            finalAmount = 15000; // 10,000 annual + 5,000 certificate
+            finalAmount = 15000;
           } else {
-            finalAmount = 8000; // 3,000 annual + 5,000 certificate
+            finalAmount = 8000;
           }
         }
+
         if (amount) {
           const invoiceNumber = `INV-${Date.now()}-${Math.random()
             .toString(36)
@@ -3128,7 +3236,7 @@ app.post(
             invoiceNumber,
             type: "ctm_membership",
             description: getPackageName(student.registration_type),
-            amount,
+            amount: finalAmount,
             currency: "TZS",
             status: payment && payment.reference ? "verification" : "pending",
             dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
@@ -3143,14 +3251,16 @@ app.post(
               }),
           });
 
-          console.log(`💰 Invoice created: ${invoiceNumber} for ${amount} TZS`);
+          console.log(
+            `💰 Invoice created: ${invoiceNumber} for ${finalAmount} TZS`
+          );
 
           // ✅ Create payment history entry
           await PaymentHistory.create({
             userId: user._id,
             invoiceId: invoice._id,
             transactionType: "registration_fee",
-            amount,
+            amount: finalAmount,
             currency: "TZS",
             paymentMethod: payment?.method || null,
             paymentReference: payment?.reference || null,
@@ -3185,7 +3295,10 @@ app.post(
         }
       }
 
+      // ============================================================================
       // ✅ SEND SUCCESS RESPONSE WITH AUTO-GENERATED PASSWORD
+      // ============================================================================
+
       res.status(201).json({
         success: true,
         message: "Registration successful",
@@ -3200,7 +3313,7 @@ app.post(
             phoneNumber: user.phoneNumber,
             isActive: user.isActive,
           },
-          generatedPassword: generatedPassword, // ✅ NEW: Send password to frontend
+          generatedPassword: generatedPassword,
         },
       });
     } catch (error) {
@@ -21263,7 +21376,7 @@ app.post(
         success: [],
         failed: [],
       };
-      
+
       for (const userData of users) {
         try {
           // Hash password
