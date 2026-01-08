@@ -6,6 +6,7 @@
  */
 
 const { body, validationResult } = require("express-validator");
+const mongoose = require("mongoose"); // ✅ ADDED
 
 /**
  * Tanzania phone number validation regex
@@ -57,6 +58,28 @@ function handleValidationErrors(req, res, next) {
 
   next();
 }
+
+/**
+ * ============================================
+ * ✅ VALIDATE MONGODB OBJECTID
+ * ============================================
+ * @param {string} paramName - The name of the route parameter to validate
+ * @returns {function} Express middleware function
+ */
+const validateObjectId = (paramName) => {
+  return (req, res, next) => {
+    const id = req.params[paramName];
+
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid ${paramName}. Please provide a valid ID.`,
+      });
+    }
+
+    next();
+  };
+};
 
 /**
  * Registration validation rules
@@ -231,4 +254,5 @@ module.exports = {
   handleValidationErrors,
   normalizeTanzaniaPhone,
   isTanzaniaPhone,
+  validateObjectId, // ✅ ADDED TO EXPORTS
 };
