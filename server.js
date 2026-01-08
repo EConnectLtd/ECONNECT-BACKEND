@@ -40,7 +40,6 @@ const crypto = require("crypto");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { body, validationResult, param, query } = require("express-validator");
-const mongoSanitize = require("express-mongo-sanitize");
 const xss = require("xss-clean");
 const compression = require("compression");
 const cron = require("node-cron");
