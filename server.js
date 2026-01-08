@@ -17,7 +17,6 @@ const { applyRateLimiters } = require("./middleware/rateLimiter");
 const { applyCSRFProtection } = require("./middleware/csrfProtection");
 const { applyErrorHandlers } = require("./middleware/errorHandler");
 const { applySanitization } = require("./utils/sanitizer");
-const { sanitizeError } = require("./utils/errorSanitizer");
 const { validateObjectId } = require("./middleware/validation");
 const { accessLogger } = require("./utils/logger");
 
