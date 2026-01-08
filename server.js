@@ -2636,19 +2636,6 @@ const isValidObjectId = (id) => {
   return mongoose.Types.ObjectId.isValid(id);
 };
 
-// ObjectId validation middleware
-const validateObjectId = (paramName = "id") => {
-  return [
-    param(paramName).custom((value) => {
-      if (!isValidObjectId(value)) {
-        throw new Error(`Invalid ${paramName} format`);
-      }
-      return true;
-    }),
-    handleValidationErrors,
-  ];
-};
-
 // ============================================
 // AUTHENTICATION ENDPOINTS
 // ============================================
