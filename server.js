@@ -8890,16 +8890,16 @@ app.post(
       });
     } catch (error) {
       console.error("❌ Error creating assignment:", error);
-      res.status(500).json({
-        success: false,
+      res.status(500).json({ 
+        success: false, 
         error: "Failed to create assignment",
         ...(process.env.NODE_ENV === "development" && {
-          debug: sanitizeError(error), // ✅ ADD THIS
+          debug: sanitizeError(error),
         }),
       });
     }
   }
-);
+);  // ✅ FIXED: Added closing }); for app.post()
 
 // SUBMIT assignment (student only)
 app.post(
@@ -21286,14 +21286,16 @@ app.get(
       });
     } catch (error) {
       console.error("❌ Error fetching SMS logs:", error);
-      res
-        .status(500)
-        .json({ success: false, error: "Failed to fetch SMS logs",
-    ...(process.env.NODE_ENV === "development" && {
-      debug: sanitizeError(error),
-    }),
-  });
-}
+      res.status(500).json({ 
+        success: false, 
+        error: "Failed to fetch SMS logs",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);  // ✅ FIXED: Closing app.get()
 
 // ============================================
 // SMS STATISTICS ENDPOINT
@@ -21338,13 +21340,16 @@ app.get(
         },
       });
     } catch (error) {
-      res.status(500).json({ success: false, error: "Failed to fetch stats",
-    ...(process.env.NODE_ENV === "development" && {
-      debug: sanitizeError(error),  // ✅ ADD THIS
-    }),
-  });
-}
-
+      res.status(500).json({ 
+        success: false, 
+        error: "Failed to fetch stats",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);  // ✅ FIXED: Removed extra )
 // ============================================
 // RESEND PASSWORD SMS (Manual Trigger for Admin)
 // ============================================
@@ -21413,15 +21418,16 @@ app.post(
       }
     } catch (error) {
       console.error("❌ Error resending password:", error);
-      res
-        .status(500)
-        .json({ success: false, error: "Failed to resend password",
-    ...(process.env.NODE_ENV === "development" && {
-      debug: sanitizeError(error),  // ✅ ADD THIS
-    }),
-  });
-}
-
+      res.status(500).json({ 
+        success: false, 
+        error: "Failed to resend password",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);  // ✅ FIXED: Closing app.post()
 // ============================================================================
 // EXPORT MODULE
 // ============================================================================
