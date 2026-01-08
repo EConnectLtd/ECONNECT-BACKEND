@@ -1,0 +1,128 @@
+/**
+ * ============================================
+ * 🛡️ SECURITY MIDDLEWARE
+ * ============================================
+ * Comprehensive security headers and sanitization
+ */
+
+const helmet = require("helmet");
+const mongoSanitize = require("express-mongo-sanitize");
+const xss = require("xss-clean");
+const hpp = require("hpp");
+const cors = require("cors");
+
+/**
+ * Configure Helmet for security headers
+ */
+const helmetConfig = helmet({
+  // Content Security Policy
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "https://api.nextsms.co.tz"],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
+  
+  // X-Frame-Options: Prevent clickjacking
+  frameguard: {
+    action: "deny",
+  },
+
+  // X-Content-Type-Options: Prevent MIME sniffing
+  noSniff: true,
+
+  // Strict-Transport-Security: Force HTTPS
+  hsts: {
+    maxAge: 31536000, // 1 year
+    includeSubDomains: true,
+    preload: true,
+  },
+
+  // X-XSS-Protection: Enable browser XSS filter
+  xssFilter: true,
+
+  // Referrer-Policy
+  referrerPolicy: {
+    policy: "strict-origin-when-cross-origin",
+  },
+
+  // Hide X-Powered-By header
+  hidePoweredBy: true,
+});
+
+/**
+ * Configure CORS
+ */
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests from your frontend domains
+    const allowedOrigins = [
+      "https://econnect.co.tz",
+      "http://localhost:5173", // Vite dev server
+      "http://localhost:3000", // React dev server
+    ];
+
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
+  credentials: true, // Allow cookies
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-CSRF-Token"],
+  exposedHeaders: ["X-CSRF-Token"],
+  maxAge: 86400, // 24 hours
+};
+
+/**
+ * Apply all security middleware
+ */
+function applySecurityMiddleware(app) {
+  console.log("🛡️ Applying security middleware...");
+
+  // 1. Security headers
+  app.use(helmetConfig);
+  console.log("✅ Helmet security headers applied");
+
+  // 2. CORS
+  app.use(cors(corsOptions));
+  console.log("✅ CORS configured");
+
+  // 3. Prevent NoSQL injection
+  app.use(
+    mongoSanitize({
+      replaceWith: "_", // Replace $ and . with _
+      onSanitize: ({ req, key }) => {
+        console.warn(
+          `⚠️ NoSQL injection attempt detected: ${key} in ${req.path}`
+        );
+      },
+    })
+  );
+  console.log("✅ NoSQL injection protection enabled");
+
+  // 4. Prevent XSS attacks
+  app.use(xss());
+  console.log("✅ XSS protection enabled");
+
+  // 5. Prevent HTTP Parameter Pollution
+  app.use(
+    hpp({
+      whitelist: ["tags", "talents", "subjects", "businessCategories"], // Allow arrays
+    })
+  );
+  console.log("✅ HTTP Parameter Pollution protection enabled");
+
+  console.log("🎉 All security middleware applied successfully!");
+}
+
+module.exports = {
+  applySecurityMiddleware,
+  corsOptions,
+};

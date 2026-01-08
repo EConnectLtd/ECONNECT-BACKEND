@@ -3,25 +3,27 @@
 // Complete Backend Server - ALL FEATURES
 // Version: 2.0.0
 // ============================================
-// ✅ 7+ User Roles (Student, Entrepreneur, Teacher, Headmaster, Staff, TAMISEMI, SuperAdmin)
-// ✅ NEXTSMS SMS Integration
-// ✅ Manual Payment Processing
-// ✅ Socket.io Real-time Messaging
-// ✅ Multi-School Data Isolation
-// ✅ File Uploads (Avatars, Books, Certificates)
-// ✅ Events & Registration
-// ✅ Revenue Tracking
-// ✅ Books Store
-// ✅ Business Management
-// ✅ Comprehensive Analytics
-// ============================================
+
+const dotenv = require("dotenv");
+// Load environment variables
+dotenv.config();
 
 const express = require("express");
 const mongoose = require("mongoose");
+
+// Import security middleware
+const { applySecurityMiddleware } = require("./middleware/security");
+const { applyRateLimiters } = require("./middleware/rateLimiter");
+const { applyCSRFProtection } = require("./middleware/csrfProtection");
+const { applyErrorHandlers } = require("./middleware/errorHandler");
+const { applySanitization } = require("./utils/sanitizer");
+const { sanitizeError } = require("./utils/errorSanitizer");
+const { validateObjectId } = require("./middleware/validation");
+const { accessLogger } = require("./utils/logger");
+
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
-const dotenv = require("dotenv");
 const http = require("http");
 const socketIO = require("socket.io");
 const multer = require("multer");
@@ -36,8 +38,7 @@ const mongoSanitize = require("express-mongo-sanitize");
 const xss = require("xss-clean");
 const compression = require("compression");
 const cron = require("node-cron");
-// Load environment variables
-dotenv.config();
+
 const smsService = require("./services/smsService");
 
 // Initialize Express app
@@ -61,6 +62,18 @@ const io = socketIO(server, {
     credentials: true,
   },
 });
+
+app.use(
+  express.json({
+    limit: "10mb",
+    verify: (req, res, buf) => {
+      // Prevent billion laughs attack
+      if (buf.length > 10 * 1024 * 1024) {
+        throw new Error("Request entity too large");
+      }
+    },
+  })
+);
 
 // ============================================
 // MULTER CONFIGURATION FOR FILE UPLOADS
@@ -108,7 +121,7 @@ const storage = multer.diskStorage({
     cb(null, uploadPath);
   },
   filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    const uniqueSuffix = Date.now() + "-" + crypto.randomInt(100000, 999999);
     const ext = path.extname(file.originalname);
     cb(null, file.fieldname + "-" + uniqueSuffix + ext);
   },
@@ -144,6 +157,52 @@ const upload = multer({
 // MIDDLEWARE
 // ============================================
 
+// ============================================
+// 🛡️ SECURITY MIDDLEWARE (APPLY FIRST!)
+// ============================================
+
+console.log("\n🛡️ ========================================");
+console.log("🛡️  APPLYING SECURITY MIDDLEWARE");
+console.log("🛡️ ========================================\n");
+
+// 1. Parse JSON (with size limit to prevent payload attacks)
+
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+console.log("✅ JSON parser configured (10mb limit)");
+
+// 2. Access logging
+app.use(accessLogger);
+console.log("✅ Access logging enabled");
+
+// 3. Security headers (Helmet)
+applySecurityMiddleware(app);
+
+// 4. Rate limiting
+applyRateLimiters(app);
+
+// 5. Input sanitization
+applySanitization(app);
+
+// 6. CSRF protection
+applyCSRFProtection(app);
+
+console.log("\n🎉 All security middleware applied!\n");
+
+// Force HTTPS in production
+if (process.env.NODE_ENV === "production") {
+  app.use((req, res, next) => {
+    if (req.header("x-forwarded-proto") !== "https") {
+      res.redirect(`https://${req.header("host")}${req.url}`);
+    } else {
+      next();
+    }
+  });
+}
+
+// ============================================
+// ADDITIONAL MIDDLEWARE
+// ============================================
+
 // Response Compression (Gzip) - Reduces response size by 70-90%
 app.use(
   compression({
@@ -156,24 +215,9 @@ app.use(
     },
   })
 );
+console.log("✅ Compression middleware enabled");
 
-// Security Headers (Helmet)
-app.use(
-  helmet({
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        scriptSrc: ["'self'"],
-        imgSrc: ["'self'", "data:", "https:"],
-        connectSrc: ["'self'"],
-      },
-    },
-    crossOriginEmbedderPolicy: false,
-  })
-);
-
-// CORS Configuration
+// CORS Configuration (after security middleware)
 app.use(
   cors({
     origin: process.env.ALLOWED_ORIGINS
@@ -188,75 +232,13 @@ app.use(
     credentials: true,
   })
 );
+console.log("✅ CORS configured");
 
-// Body Parsing
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
-
-// Data Sanitization - Prevent NoSQL Injection (FIXED)
-app.use((req, res, next) => {
-  const sanitize = (obj) => {
-    if (obj && typeof obj === "object") {
-      Object.keys(obj).forEach((key) => {
-        if (key.startsWith("$") || key.includes(".")) {
-          delete obj[key];
-        } else if (typeof obj[key] === "object") {
-          sanitize(obj[key]);
-        }
-      });
-    }
-    return obj;
-  };
-
-  if (req.body) sanitize(req.body);
-  if (req.query) {
-    const sanitizedQuery = {};
-    Object.keys(req.query).forEach((key) => {
-      if (!key.startsWith("$") && !key.includes(".")) {
-        sanitizedQuery[key] = req.query[key];
-      }
-    });
-    req.query = sanitizedQuery;
-  }
-  if (req.params) sanitize(req.params);
-
-  next();
-});
-
-// XSS Protection (FIXED)
-app.use((req, res, next) => {
-  const sanitizeValue = (value) => {
-    if (typeof value === "string") {
-      return value
-        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
-        .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, "")
-        .replace(/javascript:/gi, "")
-        .replace(/on\w+\s*=/gi, "");
-    }
-    if (typeof value === "object" && value !== null) {
-      Object.keys(value).forEach((key) => {
-        value[key] = sanitizeValue(value[key]);
-      });
-    }
-    return value;
-  };
-
-  if (req.body) {
-    req.body = sanitizeValue(req.body);
-  }
-  if (req.query) {
-    const sanitizedQuery = {};
-    Object.keys(req.query).forEach((key) => {
-      sanitizedQuery[key] = sanitizeValue(req.query[key]);
-    });
-    req.query = sanitizedQuery;
-  }
-  if (req.params) {
-    req.params = sanitizeValue(req.params);
-  }
-
-  next();
-});
+// ============================================
+// ✅ Security sanitization is now handled by:
+// - /utils/sanitizer.js (input sanitization)
+// - /middleware/security.js (helmet, CORS, etc.)
+// ============================================
 
 // Static Files
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
@@ -336,6 +318,11 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
+const publicRateLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 20, // 20 requests per minute
+});
+
 // ============================================================================
 // PASSWORD AUTO-GENERATION HELPER
 // ============================================================================
@@ -345,11 +332,15 @@ setInterval(() => {
  * @returns {string} A random 6-character password
  */
 function generateRandomPassword() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // Removed similar characters (I,O,1,0)
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const length = 8; // Increase to 8
   let password = "";
-  for (let i = 0; i < 6; i++) {
-    password += chars.charAt(Math.floor(Math.random() * chars.length));
+
+  for (let i = 0; i < length; i++) {
+    const randomIndex = crypto.randomInt(0, chars.length);
+    password += chars[randomIndex];
   }
+
   return password;
 }
 
@@ -2300,18 +2291,20 @@ function generateReferenceId(prefix = "ECON") {
 
 // Log activity
 async function logActivity(userId, action, description, req, metadata = {}) {
-  try {
-    await ActivityLog.create({
-      userId,
-      action,
-      description,
-      ipAddress: req?.ip || req?.connection?.remoteAddress,
-      userAgent: req?.get("user-agent"),
-      metadata,
-    });
-  } catch (error) {
-    console.error("Error logging activity:", error);
-  }
+  // ✅ Remove sensitive data
+  const sanitizedMetadata = { ...metadata };
+  delete sanitizedMetadata.password;
+  delete sanitizedMetadata.token;
+  delete sanitizedMetadata.ssn;
+
+  await ActivityLog.create({
+    userId,
+    action,
+    description,
+    ipAddress: req?.ip || req?.connection?.remoteAddress,
+    userAgent: req?.get("user-agent"),
+    metadata: sanitizedMetadata, // Use sanitized version
+  });
 }
 
 // Create notification
@@ -2619,47 +2612,6 @@ app.get("/api/health", async (req, res) => {
       error: error.message,
     });
   }
-});
-
-// ============================================
-// RATE LIMITING CONFIGURATION
-// ============================================
-
-// Strict rate limiter for authentication endpoints
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20, // Increased from 5 to 20 - allows concurrent logins
-  message: {
-    success: false,
-    error: "Too many authentication attempts, please try again later",
-  },
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
-  skipSuccessfulRequests: false, // Count successful requests too
-});
-
-// Moderate rate limiter for general API endpoints
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 500, // Increased from 100 to 500
-  message: {
-    success: false,
-    error: "Too many requests, please try again later",
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-// Strict rate limiter for password reset
-const passwordResetLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 3, // Limit each IP to 3 password reset attempts per hour
-  message: {
-    success: false,
-    error: "Too many password reset attempts, please try again later",
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
 });
 
 // ============================================
@@ -3264,7 +3216,7 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Registration failed",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && { debug: error.message }),
       });
     }
   }
@@ -3525,7 +3477,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch payment history",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -3609,7 +3563,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch payment history",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -3658,7 +3614,9 @@ app.get("/api/payment-history/:id", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch payment details",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -3717,7 +3675,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch pending payments",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -3960,7 +3920,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to send reminder",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -3992,7 +3954,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to send bulk reminders",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -4031,7 +3995,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch reminders",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -4066,7 +4032,9 @@ app.patch(
       res.status(500).json({
         success: false,
         error: "Failed to mark reminder as opened",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -4127,7 +4095,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch reminder statistics",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -4136,7 +4106,7 @@ app.get(
 // Login
 app.post(
   "/api/auth/login",
-  authLimiter,
+  publicRateLimiter,
   [
     body("username").trim().notEmpty().withMessage("Username is required"),
     body("password").notEmpty().withMessage("Password is required"),
@@ -4206,7 +4176,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Login failed",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -4235,7 +4207,9 @@ app.get("/api/auth/me", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch user profile",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -4285,7 +4259,9 @@ app.put("/api/auth/profile", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to update profile",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -4348,7 +4324,9 @@ app.post("/api/auth/change-password", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to change password",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -4356,7 +4334,7 @@ app.post("/api/auth/change-password", authenticateToken, async (req, res) => {
 // Forgot password - Request OTP
 app.post(
   "/api/auth/forgot-password",
-  passwordResetLimiter,
+  publicRateLimiter,
   [
     body("email")
       .isEmail()
@@ -4396,7 +4374,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to process request",
-        message: sanitizeError(error),
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -4404,8 +4384,7 @@ app.post(
 
 // Reset password with OTP
 app.post(
-  "/api/auth/reset-password",
-  passwordResetLimiter,
+  "/api/auth/reset-password",  publicRateLimiter, 
   [
     body("email")
       .isEmail()
@@ -4473,7 +4452,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to reset password",
-        message: sanitizeError(error),
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -4495,7 +4476,9 @@ app.post("/api/auth/logout", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Logout failed",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -4588,7 +4571,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Upload failed",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -4622,7 +4607,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Upload failed",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -4653,7 +4640,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Upload failed",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -4684,7 +4673,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Upload failed",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -4715,7 +4706,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Upload failed",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -4806,7 +4799,9 @@ app.get("/api/locations/regions", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch regions",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -4859,7 +4854,9 @@ app.get("/api/locations/districts", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch districts",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -4912,7 +4909,9 @@ app.get("/api/locations/wards", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch wards",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -4976,7 +4975,9 @@ app.get("/api/locations/all", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch all locations",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -5007,7 +5008,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to create region",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -5039,7 +5042,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to create district",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -5071,7 +5076,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to create ward",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -5160,13 +5167,15 @@ app.get("/api/schools", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch schools",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
 
 // GET school by ID
-app.get("/api/schools/:id", async (req, res) => {
+app.get("/api/schools/:id", validateObjectId("id"), async (req, res) => {
   try {
     const school = await School.findById(req.params.id)
       .populate("regionId", "name code")
@@ -5211,7 +5220,9 @@ app.get("/api/schools/:id", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch school",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -5306,7 +5317,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to create school",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -5315,6 +5328,7 @@ app.post(
 app.put(
   "/api/schools/:id",
   authenticateToken,
+  validateObjectId("id"),
   authorizeRoles(
     "super_admin",
     "national_official",
@@ -5365,7 +5379,9 @@ app.put(
       res.status(500).json({
         success: false,
         error: "Failed to update school",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -5375,6 +5391,7 @@ app.put(
 app.delete(
   "/api/schools/:id",
   authenticateToken,
+  validateObjectId("id"),
   authorizeRoles("super_admin", "national_official"),
   async (req, res) => {
     try {
@@ -5407,7 +5424,9 @@ app.delete(
       res.status(500).json({
         success: false,
         error: "Failed to delete school",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -5449,7 +5468,9 @@ app.get("/api/talents", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch talents",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -5483,7 +5504,9 @@ app.get("/api/talents/:id", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch talent",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -5538,7 +5561,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to create talent",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -5580,7 +5605,9 @@ app.put(
       res.status(500).json({
         success: false,
         error: "Failed to update talent",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -5622,7 +5649,9 @@ app.delete(
       res.status(500).json({
         success: false,
         error: "Failed to delete talent",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -5636,6 +5665,7 @@ app.delete(
 app.get(
   "/api/students/:studentId/talents",
   authenticateToken,
+  validateObjectId("studentId"),
   async (req, res) => {
     try {
       const studentTalents = await StudentTalent.find({
@@ -5654,7 +5684,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch student talents",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -5664,6 +5696,7 @@ app.get(
 app.post(
   "/api/students/:studentId/talents",
   authenticateToken,
+  validateObjectId("studentId"),
   async (req, res) => {
     try {
       const {
@@ -5729,7 +5762,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to register talent",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -5738,7 +5773,8 @@ app.post(
 // UPDATE student talent
 app.put(
   "/api/students/:studentId/talents/:talentId",
-  authenticateToken,
+  authenticateToken,validateObjectId("talentId"),
+  validateObjectId("studentId"),
   async (req, res) => {
     try {
       const studentTalent = await StudentTalent.findOneAndUpdate(
@@ -5773,7 +5809,9 @@ app.put(
       res.status(500).json({
         success: false,
         error: "Failed to update talent",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -5782,7 +5820,8 @@ app.put(
 // DELETE student talent registration
 app.delete(
   "/api/students/:studentId/talents/:talentId",
-  authenticateToken,
+  authenticateToken,validateObjectId("talentId"),
+  validateObjectId("studentId"),
   async (req, res) => {
     try {
       const studentTalent = await StudentTalent.findOneAndDelete({
@@ -5813,7 +5852,9 @@ app.delete(
       res.status(500).json({
         success: false,
         error: "Failed to remove talent registration",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -5822,7 +5863,8 @@ app.delete(
 // Add certification to student talent
 app.post(
   "/api/students/:studentId/talents/:talentId/certifications",
-  authenticateToken,
+  authenticateToken,validateObjectId("talentId"),
+  validateObjectId("studentId"),
   async (req, res) => {
     try {
       const {
@@ -5875,7 +5917,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to add certification",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -5886,7 +5930,7 @@ app.post(
 // ============================================
 
 // GET all books
-app.get("/api/books", async (req, res) => {
+app.get("/api/books", publicRateLimiter, async (req, res) => {
   try {
     const {
       page = 1,
@@ -5943,42 +5987,51 @@ app.get("/api/books", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch books",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
 
 // GET book by ID
-app.get("/api/books/:id", async (req, res) => {
-  try {
-    const book = await Book.findById(req.params.id)
-      .populate("uploadedBy", "firstName lastName")
-      .populate("reviews.userId", "firstName lastName profileImage");
+app.get(
+  "/api/books/:id",
+  validateObjectId("id"),
+  publicRateLimiter,
+  async (req, res) => {
+    try {
+      const book = await Book.findById(req.params.id)
+        .populate("uploadedBy", "firstName lastName")
+        .populate("reviews.userId", "firstName lastName profileImage");
 
-    if (!book) {
-      return res.status(404).json({
+      if (!book) {
+        return res.status(404).json({
+          success: false,
+          error: "Book not found",
+        });
+      }
+
+      // Increment view count
+      book.viewCount += 1;
+      await book.save();
+
+      res.json({
+        success: true,
+        data: book,
+      });
+    } catch (error) {
+      console.error("❌ Error fetching book:", error);
+      res.status(500).json({
         success: false,
-        error: "Book not found",
+        error: "Failed to fetch book",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
-
-    // Increment view count
-    book.viewCount += 1;
-    await book.save();
-
-    res.json({
-      success: true,
-      data: book,
-    });
-  } catch (error) {
-    console.error("❌ Error fetching book:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to fetch book",
-      message: error.message,
-    });
   }
-});
+);
 
 // CREATE book
 app.post(
@@ -6009,7 +6062,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to create book",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -6019,6 +6074,7 @@ app.post(
 app.put(
   "/api/books/:id",
   authenticateToken,
+  validateObjectId("id"),
   authorizeRoles("super_admin", "entrepreneur", "national_official"),
   async (req, res) => {
     try {
@@ -6061,7 +6117,9 @@ app.put(
       res.status(500).json({
         success: false,
         error: "Failed to update book",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -6071,6 +6129,7 @@ app.put(
 app.delete(
   "/api/books/:id",
   authenticateToken,
+  validateObjectId("id"),
   authorizeRoles("super_admin", "entrepreneur"),
   async (req, res) => {
     try {
@@ -6113,115 +6172,136 @@ app.delete(
       res.status(500).json({
         success: false,
         error: "Failed to delete book",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
 );
 
 // Purchase book
-app.post("/api/books/:id/purchase", authenticateToken, async (req, res) => {
-  try {
-    const book = await Book.findById(req.params.id);
-    if (!book) {
-      return res.status(404).json({ success: false, error: "Book not found" });
-    }
+app.post(
+  "/api/books/:id/purchase",
+  authenticateToken,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const book = await Book.findById(req.params.id);
+      if (!book) {
+        return res
+          .status(404)
+          .json({ success: false, error: "Book not found" });
+      }
 
-    const amount = book.discountPrice || book.price;
-    const { phoneNumber } = req.body;
+      const amount = book.discountPrice || book.price;
+      const { phoneNumber } = req.body;
 
-    if (!phoneNumber) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Phone number is required" });
-    }
-    // Manual payment instructions
-    res.json({
-      success: true,
-      message: "Book purchase recorded. Please complete payment manually.",
-      data: {
-        bookId: book._id,
-        bookTitle: book.title,
-        amount,
-        paymentInstructions: {
-          vodacomLipa: "5130676",
-          crdbAccount: "0150814579600",
-          accountName: "E Connect Limited",
+      if (!phoneNumber) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Phone number is required" });
+      }
+      // Manual payment instructions
+      res.json({
+        success: true,
+        message: "Book purchase recorded. Please complete payment manually.",
+        data: {
+          bookId: book._id,
+          bookTitle: book.title,
+          amount,
+          paymentInstructions: {
+            vodacomLipa: "5130676",
+            crdbAccount: "0150814579600",
+            accountName: "E Connect Limited",
+          },
         },
-      },
-    });
-  } catch (error) {
-    console.error("❌ Purchase error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Purchase failed",
-      message: error.message,
-    });
+      });
+    } catch (error) {
+      console.error("❌ Purchase error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Purchase failed",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
   }
-});
+);
 
 // Add book review
-app.post("/api/books/:id/reviews", authenticateToken, async (req, res) => {
-  try {
-    const { rating, comment } = req.body;
+app.post(
+  "/api/books/:id/reviews",
+  authenticateToken,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const { rating, comment } = req.body;
 
-    if (!rating || rating < 1 || rating > 5) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Valid rating (1-5) is required" });
+      if (!rating || rating < 1 || rating > 5) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Valid rating (1-5) is required" });
+      }
+
+      const book = await Book.findById(req.params.id);
+
+      if (!book) {
+        return res
+          .status(404)
+          .json({ success: false, error: "Book not found" });
+      }
+
+      // Check if user already reviewed
+      const existingReview = book.reviews.find(
+        (r) => r.userId.toString() === req.user.id
+      );
+      if (existingReview) {
+        return res.status(409).json({
+          success: false,
+          error: "You have already reviewed this book",
+        });
+      }
+
+      book.reviews.push({
+        userId: req.user.id,
+        rating,
+        comment,
+      });
+
+      // Recalculate average rating
+      const totalRating = book.reviews.reduce((sum, r) => sum + r.rating, 0);
+      book.rating = totalRating / book.reviews.length;
+      book.ratingsCount = book.reviews.length;
+      book.updatedAt = new Date();
+
+      await book.save();
+
+      await logActivity(
+        req.user.id,
+        "BOOK_REVIEWED",
+        `Reviewed book: ${book.title}`,
+        req
+      );
+
+      res.status(201).json({
+        success: true,
+        message: "Review added successfully",
+        data: book,
+      });
+    } catch (error) {
+      console.error("❌ Error adding review:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to add review",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
     }
-
-    const book = await Book.findById(req.params.id);
-
-    if (!book) {
-      return res.status(404).json({ success: false, error: "Book not found" });
-    }
-
-    // Check if user already reviewed
-    const existingReview = book.reviews.find(
-      (r) => r.userId.toString() === req.user.id
-    );
-    if (existingReview) {
-      return res
-        .status(409)
-        .json({ success: false, error: "You have already reviewed this book" });
-    }
-
-    book.reviews.push({
-      userId: req.user.id,
-      rating,
-      comment,
-    });
-
-    // Recalculate average rating
-    const totalRating = book.reviews.reduce((sum, r) => sum + r.rating, 0);
-    book.rating = totalRating / book.reviews.length;
-    book.ratingsCount = book.reviews.length;
-    book.updatedAt = new Date();
-
-    await book.save();
-
-    await logActivity(
-      req.user.id,
-      "BOOK_REVIEWED",
-      `Reviewed book: ${book.title}`,
-      req
-    );
-
-    res.status(201).json({
-      success: true,
-      message: "Review added successfully",
-      data: book,
-    });
-  } catch (error) {
-    console.error("❌ Error adding review:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to add review",
-      message: error.message,
-    });
   }
-});
+);
 
 // Get user's purchased books
 app.get("/api/books/purchased", authenticateToken, async (req, res) => {
@@ -6242,7 +6322,9 @@ app.get("/api/books/purchased", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch purchased books",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -6304,13 +6386,15 @@ app.get("/api/events", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch events",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
 
 // GET event by ID
-app.get("/api/events/:id", async (req, res) => {
+app.get("/api/events/:id", validateObjectId("id"), async (req, res) => {
   try {
     const event = await Event.findById(req.params.id)
       .populate("organizer", "firstName lastName email phoneNumber")
@@ -6340,7 +6424,9 @@ app.get("/api/events/:id", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch event",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -6384,203 +6470,236 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to create event",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
 );
 
 // UPDATE event
-app.put("/api/events/:id", authenticateToken, async (req, res) => {
-  try {
-    const event = await Event.findById(req.params.id);
+app.put(
+  "/api/events/:id",
+  authenticateToken,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const event = await Event.findById(req.params.id);
 
-    if (!event) {
-      return res.status(404).json({ success: false, error: "Event not found" });
+      if (!event) {
+        return res
+          .status(404)
+          .json({ success: false, error: "Event not found" });
+      }
+
+      // Check permissions
+      const canEdit =
+        req.user.role === "super_admin" ||
+        event.organizer.toString() === req.user.id;
+
+      if (!canEdit) {
+        return res
+          .status(403)
+          .json({ success: false, error: "You cannot edit this event" });
+      }
+
+      Object.assign(event, req.body);
+      event.updatedAt = new Date();
+      await event.save();
+
+      await logActivity(
+        req.user.id,
+        "EVENT_UPDATED",
+        `Updated event: ${event.title}`,
+        req
+      );
+
+      res.json({
+        success: true,
+        message: "Event updated successfully",
+        data: event,
+      });
+    } catch (error) {
+      console.error("❌ Error updating event:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to update event",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
     }
-
-    // Check permissions
-    const canEdit =
-      req.user.role === "super_admin" ||
-      event.organizer.toString() === req.user.id;
-
-    if (!canEdit) {
-      return res
-        .status(403)
-        .json({ success: false, error: "You cannot edit this event" });
-    }
-
-    Object.assign(event, req.body);
-    event.updatedAt = new Date();
-    await event.save();
-
-    await logActivity(
-      req.user.id,
-      "EVENT_UPDATED",
-      `Updated event: ${event.title}`,
-      req
-    );
-
-    res.json({
-      success: true,
-      message: "Event updated successfully",
-      data: event,
-    });
-  } catch (error) {
-    console.error("❌ Error updating event:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to update event",
-      message: error.message,
-    });
   }
-});
+);
 
 // DELETE event
-app.delete("/api/events/:id", authenticateToken, async (req, res) => {
-  try {
-    const event = await Event.findById(req.params.id);
+app.delete(
+  "/api/events/:id",
+  authenticateToken,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const event = await Event.findById(req.params.id);
 
-    if (!event) {
-      return res.status(404).json({ success: false, error: "Event not found" });
+      if (!event) {
+        return res
+          .status(404)
+          .json({ success: false, error: "Event not found" });
+      }
+
+      // Check permissions
+      const canDelete =
+        req.user.role === "super_admin" ||
+        event.organizer.toString() === req.user.id;
+
+      if (!canDelete) {
+        return res
+          .status(403)
+          .json({ success: false, error: "You cannot delete this event" });
+      }
+
+      event.status = "cancelled";
+      event.updatedAt = new Date();
+      await event.save();
+
+      await logActivity(
+        req.user.id,
+        "EVENT_DELETED",
+        `Cancelled event: ${event.title}`,
+        req
+      );
+
+      res.json({
+        success: true,
+        message: "Event cancelled successfully",
+      });
+    } catch (error) {
+      console.error("❌ Error deleting event:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to delete event",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
     }
-
-    // Check permissions
-    const canDelete =
-      req.user.role === "super_admin" ||
-      event.organizer.toString() === req.user.id;
-
-    if (!canDelete) {
-      return res
-        .status(403)
-        .json({ success: false, error: "You cannot delete this event" });
-    }
-
-    event.status = "cancelled";
-    event.updatedAt = new Date();
-    await event.save();
-
-    await logActivity(
-      req.user.id,
-      "EVENT_DELETED",
-      `Cancelled event: ${event.title}`,
-      req
-    );
-
-    res.json({
-      success: true,
-      message: "Event cancelled successfully",
-    });
-  } catch (error) {
-    console.error("❌ Error deleting event:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to delete event",
-      message: error.message,
-    });
   }
-});
+);
 
 // Register for event
-app.post("/api/events/:id/register", authenticateToken, async (req, res) => {
-  try {
-    const event = await Event.findById(req.params.id);
+app.post(
+  "/api/events/:id/register",
+  authenticateToken,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const event = await Event.findById(req.params.id);
 
-    if (!event) {
-      return res.status(404).json({ success: false, error: "Event not found" });
-    }
+      if (!event) {
+        return res
+          .status(404)
+          .json({ success: false, error: "Event not found" });
+      }
 
-    if (event.status !== "published") {
-      return res
-        .status(400)
-        .json({ success: false, error: "Event is not open for registration" });
-    }
+      if (event.status !== "published") {
+        return res.status(400).json({
+          success: false,
+          error: "Event is not open for registration",
+        });
+      }
 
-    if (event.registrationDeadline && new Date() > event.registrationDeadline) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Registration deadline has passed" });
-    }
+      if (
+        event.registrationDeadline &&
+        new Date() > event.registrationDeadline
+      ) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Registration deadline has passed" });
+      }
 
-    // Check if already registered
-    const existing = await EventRegistration.findOne({
-      eventId: event._id,
-      userId: req.user.id,
-    });
-
-    if (existing) {
-      return res
-        .status(409)
-        .json({ success: false, error: "Already registered for this event" });
-    }
-
-    // Check capacity
-    if (event.maxParticipants) {
-      const currentCount = await EventRegistration.countDocuments({
+      // Check if already registered
+      const existing = await EventRegistration.findOne({
         eventId: event._id,
-        registrationStatus: { $ne: "cancelled" },
+        userId: req.user.id,
       });
 
-      if (currentCount >= event.maxParticipants) {
-        return res.status(400).json({ success: false, error: "Event is full" });
+      if (existing) {
+        return res
+          .status(409)
+          .json({ success: false, error: "Already registered for this event" });
       }
+
+      // Check capacity
+      if (event.maxParticipants) {
+        const currentCount = await EventRegistration.countDocuments({
+          eventId: event._id,
+          registrationStatus: { $ne: "cancelled" },
+        });
+
+        if (currentCount >= event.maxParticipants) {
+          return res
+            .status(400)
+            .json({ success: false, error: "Event is full" });
+        }
+      }
+
+      const registration = await EventRegistration.create({
+        eventId: event._id,
+        userId: req.user.id,
+        schoolId: req.user.schoolId,
+        talentId: req.body.talentId,
+        teamMembers: req.body.teamMembers,
+        notes: req.body.notes,
+      });
+
+      // Update event participant count
+      event.currentParticipants += 1;
+      await event.save();
+
+      await createNotification(
+        req.user.id,
+        "Event Registration",
+        `You have registered for ${event.title}`,
+        "success",
+        `/events/${event._id}`
+      );
+
+      await logActivity(
+        req.user.id,
+        "EVENT_REGISTERED",
+        `Registered for event: ${event.title}`,
+        req
+      );
+
+      // Event registration without payment gateway
+      if (event.registrationFee > 0) {
+        // Create pending payment record
+        registration.paymentStatus = "pending";
+        registration.notes =
+          "Payment pending - contact organizer for payment instructions";
+        await registration.save();
+      }
+
+      res.status(201).json({
+        success: true,
+        message: "Registered successfully",
+        data: registration,
+      });
+    } catch (error) {
+      console.error("❌ Registration error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Registration failed",
+        ...(process.env.NODE_ENV === "development" && { debug: error.message }),
+      });
     }
-
-    const registration = await EventRegistration.create({
-      eventId: event._id,
-      userId: req.user.id,
-      schoolId: req.user.schoolId,
-      talentId: req.body.talentId,
-      teamMembers: req.body.teamMembers,
-      notes: req.body.notes,
-    });
-
-    // Update event participant count
-    event.currentParticipants += 1;
-    await event.save();
-
-    await createNotification(
-      req.user.id,
-      "Event Registration",
-      `You have registered for ${event.title}`,
-      "success",
-      `/events/${event._id}`
-    );
-
-    await logActivity(
-      req.user.id,
-      "EVENT_REGISTERED",
-      `Registered for event: ${event.title}`,
-      req
-    );
-
-    // Event registration without payment gateway
-    if (event.registrationFee > 0) {
-      // Create pending payment record
-      registration.paymentStatus = "pending";
-      registration.notes =
-        "Payment pending - contact organizer for payment instructions";
-      await registration.save();
-    }
-
-    res.status(201).json({
-      success: true,
-      message: "Registered successfully",
-      data: registration,
-    });
-  } catch (error) {
-    console.error("❌ Registration error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Registration failed",
-      message: error.message,
-    });
   }
-});
+);
 
 app.delete(
   "/api/student/events/:eventId/register",
-  authenticateToken,
+  authenticateToken,validateObjectId("eventId"),
   authorizeRoles("student"),
   async (req, res) => {
     try {
@@ -6666,7 +6785,9 @@ app.delete(
       res.status(500).json({
         success: false,
         error: "Failed to unregister from event",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -6676,6 +6797,7 @@ app.delete(
 app.get(
   "/api/events/:id/registrations",
   authenticateToken,
+  validateObjectId("id"),
   async (req, res) => {
     try {
       const event = await Event.findById(req.params.id);
@@ -6719,7 +6841,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch registrations",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -6771,7 +6895,9 @@ app.get("/api/businesses", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch businesses",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -6808,7 +6934,9 @@ app.get("/api/businesses/:id", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch business",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -6843,7 +6971,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to create business",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -6891,7 +7021,9 @@ app.put("/api/businesses/:id", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to update business",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -6943,7 +7075,9 @@ app.patch(
       res.status(500).json({
         success: false,
         error: "Failed to verify business",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -6981,7 +7115,9 @@ app.get("/api/businesses/:id/products", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch products",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -7033,7 +7169,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to create product",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -7180,7 +7318,7 @@ app.post(
 
       res.status(500).json({
         success: false,
-        error: "Failed to submit payment proof. Please try again.",
+        error: "Failed to submit payment proof. Please try again.", // ✅ GOOD - Generic message
       });
     }
   }
@@ -7539,7 +7677,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch invoices",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -7590,7 +7730,9 @@ app.get("/api/transactions", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch transactions",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -7669,7 +7811,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch revenue data",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -7733,7 +7877,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch analytics",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -7775,7 +7921,9 @@ app.get("/api/messages", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch messages",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -7834,7 +7982,9 @@ app.get("/api/messages/conversations", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch conversations",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -7903,7 +8053,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch conversations",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -7956,7 +8108,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch teachers",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -8028,7 +8182,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch messages",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -8116,7 +8272,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to send message",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -8156,14 +8314,16 @@ app.get("/api/notifications", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch notifications",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
 
 app.patch(
   "/api/notifications/:id/read",
-  authenticateToken,
+  authenticateToken, validateObjectId("id"), 
   async (req, res) => {
     try {
       const notification = await Notification.findOneAndUpdate(
@@ -8184,7 +8344,9 @@ app.patch(
       res.status(500).json({
         success: false,
         error: "Failed to update notification",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -8206,7 +8368,9 @@ app.patch(
       res.status(500).json({
         success: false,
         error: "Failed to update notifications",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -8284,38 +8448,48 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch users",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && { debug: error.message }),
       });
     }
   }
 );
 
-app.get("/api/users/:id", authenticateToken, async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id)
-      .select("-password")
-      .populate("schoolId", "name schoolCode type")
-      .populate("regionId", "name code")
-      .populate("districtId", "name code");
+app.get(
+  "/api/users/:id",
+  authenticateToken,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const user = await User.findById(req.params.id)
+        .select("-password")
+        .populate("schoolId", "name schoolCode type")
+        .populate("regionId", "name code")
+        .populate("districtId", "name code");
 
-    if (!user) {
-      return res.status(404).json({ success: false, error: "User not found" });
+      if (!user) {
+        return res
+          .status(404)
+          .json({ success: false, error: "User not found" });
+      }
+
+      res.json({ success: true, data: user });
+    } catch (error) {
+      console.error("❌ Error fetching user:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch user",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
     }
-
-    res.json({ success: true, data: user });
-  } catch (error) {
-    console.error("❌ Error fetching user:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to fetch user",
-      message: error.message,
-    });
   }
-});
+);
 
 app.put(
   "/api/users/:id",
   authenticateToken,
+  validateObjectId("id"),
   authorizeRoles(
     "super_admin",
     "national_official",
@@ -8356,7 +8530,9 @@ app.put(
       res.status(500).json({
         success: false,
         error: "Failed to update user",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -8365,6 +8541,7 @@ app.put(
 app.patch(
   "/api/users/:id/deactivate",
   authenticateToken,
+  validateObjectId("id"),
   authorizeRoles("super_admin", "national_official", "regional_official"),
   async (req, res) => {
     try {
@@ -8397,7 +8574,9 @@ app.patch(
       res.status(500).json({
         success: false,
         error: "Failed to deactivate user",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -8471,7 +8650,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch grades",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -8535,7 +8716,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch attendance",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -8633,13 +8816,15 @@ app.get("/api/assignments", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch assignments",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
 
 // GET assignment by ID
-app.get("/api/assignments/:id", authenticateToken, async (req, res) => {
+app.get("/api/assignments/:id", authenticateToken, validateObjectId("id"), async (req, res) => {
   try {
     const assignment = await Assignment.findById(req.params.id)
       .populate("teacherId", "firstName lastName email")
@@ -8693,7 +8878,9 @@ app.get("/api/assignments/:id", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch assignment",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -8728,7 +8915,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to create assignment",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error), // ✅ ADD THIS
+        }),
       });
     }
   }
@@ -8802,7 +8991,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to submit assignment",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -8849,7 +9040,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to post grade",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -8900,7 +9093,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to record attendance",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -8976,7 +9171,9 @@ app.get("/api/search", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Search failed",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -9103,7 +9300,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch announcements",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -9150,7 +9349,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch timetable",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -9198,7 +9399,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch CTM membership",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -9255,7 +9458,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch CTM activities",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -9297,7 +9502,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch awards",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -9342,7 +9549,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch rankings",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -9403,7 +9612,9 @@ app.patch(
       res.status(500).json({
         success: false,
         error: "Failed to update talents",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -9623,7 +9834,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to submit request",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -9698,7 +9911,9 @@ app.put(
       res.status(500).json({
         success: false,
         error: "Failed to update profile",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -9748,7 +9963,9 @@ app.patch(
       res.status(500).json({
         success: false,
         error: "Failed to update class information",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -9799,7 +10016,9 @@ app.patch(
       res.status(500).json({
         success: false,
         error: "Failed to update class level",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -9827,7 +10046,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch terms",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -9876,7 +10097,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to accept terms",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -9957,7 +10180,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to submit assignment",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -10062,7 +10287,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to load dashboard",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -10152,7 +10379,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to load dashboard",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -10316,7 +10545,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to load dashboard",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -10440,7 +10671,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to load dashboard",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -10633,7 +10866,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to load dashboard",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -10701,7 +10936,9 @@ app.get("/api/performance-records", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch performance records",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -10746,7 +10983,9 @@ app.get("/api/performance-records/:id", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch performance record",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -10836,7 +11075,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to create performance record",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -10895,7 +11136,9 @@ app.put(
       res.status(500).json({
         success: false,
         error: "Failed to update performance record",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -10933,7 +11176,9 @@ app.delete(
       res.status(500).json({
         success: false,
         error: "Failed to delete performance record",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -10943,6 +11188,7 @@ app.delete(
 app.get(
   "/api/students/:studentId/performance",
   authenticateToken,
+  validateObjectId("id"),
   async (req, res) => {
     try {
       const { studentId } = req.params;
@@ -11048,7 +11294,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch student performance",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -12855,6 +13103,7 @@ app.get(
 app.get(
   "/api/headmaster/teachers/:teacherId/report",
   authenticateToken,
+  validateObjectId("id"),
   authorizeRoles("headmaster"),
   async (req, res) => {
     try {
@@ -14303,7 +14552,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch schools",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -14497,7 +14748,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to create school",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -14632,7 +14885,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Migration failed",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -14715,7 +14970,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch education level statistics",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -14843,7 +15100,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch colleges",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -14897,7 +15156,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch universities",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -15094,7 +15355,7 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch users",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && { debug: error.message }),
       });
     }
   }
@@ -16101,7 +16362,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch dashboard",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -16654,7 +16917,7 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch users",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && { debug: error.message }),
       });
     }
   }
@@ -16765,7 +17028,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to create user",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -16845,7 +17110,9 @@ app.patch(
       res.status(500).json({
         success: false,
         error: "Failed to update user",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -16911,7 +17178,9 @@ app.delete(
       res.status(500).json({
         success: false,
         error: "Failed to delete user",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -16948,7 +17217,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch profile",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -17681,7 +17952,9 @@ app.put(
       res.status(500).json({
         success: false,
         error: "Failed to update school",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -17847,7 +18120,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch class level requests",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -17896,7 +18171,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch request details",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -18313,15 +18590,19 @@ app.post(
       console.error("❌ Error creating assignment:", error);
       res
         .status(500)
-        .json({ success: false, error: "Failed to create assignment" });
-    }
-  }
-);
+        .json({ success: false, error: "Failed to create assignment" ,
+    ...(process.env.NODE_ENV === "development" && {
+      debug: sanitizeError(error), // ✅ ADD THIS
+    }),
+  });
+}
+
 
 // GET Assignment Submissions
 app.get(
   "/api/teacher/assignments/:assignmentId/submissions",
   authenticateToken,
+  validateObjectId("assignmentId"),
   authorizeRoles("teacher"),
   async (req, res) => {
     try {
@@ -18359,6 +18640,7 @@ app.get(
 app.post(
   "/api/teacher/submissions/:submissionId/grade",
   authenticateToken,
+  validateObjectId("submissionId"),
   authorizeRoles("teacher"),
   async (req, res) => {
     try {
@@ -18571,6 +18853,7 @@ app.post(
 // GET Student Report
 app.get(
   "/api/teacher/students/:studentId/report",
+  validateObjectId("studentId"),
   authenticateToken,
   authorizeRoles("teacher"),
   async (req, res) => {
@@ -18625,6 +18908,7 @@ app.get(
   "/api/teacher/classes/:classId/report",
   authenticateToken,
   authorizeRoles("teacher"),
+  validateObjectId("classId"),
   async (req, res) => {
     try {
       const classData = await Class.findOne({
@@ -18751,45 +19035,55 @@ app.get("/api/certificates", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch certificates",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
 
 // GET certificate by ID
-app.get("/api/certificates/:id", authenticateToken, async (req, res) => {
-  try {
-    const certificate = await Certificate.findById(req.params.id)
-      .populate("studentId", "firstName lastName email dateOfBirth")
-      .populate("talentId", "name category description")
-      .populate("issuedBy", "firstName lastName email")
-      .populate("schoolId", "name schoolCode logo address");
+app.get(
+  "/api/certificates/:id",
+  validateObjectId("id"),
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const certificate = await Certificate.findById(req.params.id)
+        .populate("studentId", "firstName lastName email dateOfBirth")
+        .populate("talentId", "name category description")
+        .populate("issuedBy", "firstName lastName email")
+        .populate("schoolId", "name schoolCode logo address");
 
-    if (!certificate) {
-      return res.status(404).json({
+      if (!certificate) {
+        return res.status(404).json({
+          success: false,
+          error: "Certificate not found",
+        });
+      }
+
+      res.json({
+        success: true,
+        data: certificate,
+      });
+    } catch (error) {
+      console.error("❌ Error fetching certificate:", error);
+      res.status(500).json({
         success: false,
-        error: "Certificate not found",
+        error: "Failed to fetch certificate",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
-
-    res.json({
-      success: true,
-      data: certificate,
-    });
-  } catch (error) {
-    console.error("❌ Error fetching certificate:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to fetch certificate",
-      message: error.message,
-    });
   }
-});
+);
 
 // GET student certificates
 app.get(
   "/api/students/:studentId/certificates",
   authenticateToken,
+  validateObjectId("studentId"),
   async (req, res) => {
     try {
       const certificates = await Certificate.find({
@@ -18809,7 +19103,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch certificates",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -18895,66 +19191,76 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to issue certificate",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
 );
 
 // Verify certificate by number or code
-app.get("/api/certificates/verify/:identifier", async (req, res) => {
-  try {
-    const { identifier } = req.params;
+app.get(
+  "/api/certificates/verify/:identifier",
+  publicRateLimiter,
+  validateObjectId("identifier"),
+  async (req, res) => {
+    try {
+      const { identifier } = req.params;
 
-    const certificate = await Certificate.findOne({
-      $or: [
-        { certificateNumber: identifier },
-        { verificationCode: identifier },
-      ],
-      isVerified: true,
-    })
-      .populate("studentId", "firstName lastName")
-      .populate("talentId", "name category")
-      .populate("schoolId", "name schoolCode logo")
-      .populate("issuedBy", "firstName lastName");
+      const certificate = await Certificate.findOne({
+        $or: [
+          { certificateNumber: identifier },
+          { verificationCode: identifier },
+        ],
+        isVerified: true,
+      })
+        .populate("studentId", "firstName lastName")
+        .populate("talentId", "name category")
+        .populate("schoolId", "name schoolCode logo")
+        .populate("issuedBy", "firstName lastName");
 
-    if (!certificate) {
-      return res.status(404).json({
-        success: false,
-        error: "Certificate not found or not verified",
-      });
-    }
+      if (!certificate) {
+        return res.status(404).json({
+          success: false,
+          error: "Certificate not found or not verified",
+        });
+      }
 
-    // Check if expired
-    if (certificate.expiryDate && new Date() > certificate.expiryDate) {
-      return res.json({
+      // Check if expired
+      if (certificate.expiryDate && new Date() > certificate.expiryDate) {
+        return res.json({
+          success: true,
+          verified: false,
+          message: "Certificate has expired",
+          data: certificate,
+        });
+      }
+
+      res.json({
         success: true,
-        verified: false,
-        message: "Certificate has expired",
+        verified: true,
+        message: "Certificate is valid",
         data: certificate,
       });
+    } catch (error) {
+      console.error("❌ Error verifying certificate:", error);
+      res.status(500).json({
+        success: false,
+        error: "Verification failed",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
     }
-
-    res.json({
-      success: true,
-      verified: true,
-      message: "Certificate is valid",
-      data: certificate,
-    });
-  } catch (error) {
-    console.error("❌ Error verifying certificate:", error);
-    res.status(500).json({
-      success: false,
-      error: "Verification failed",
-      message: error.message,
-    });
   }
-});
+);
 
 // UPDATE certificate
 app.put(
   "/api/certificates/:id",
   authenticateToken,
+  validateObjectId("id"),
   authorizeRoles("headmaster", "super_admin"),
   async (req, res) => {
     try {
@@ -18988,7 +19294,9 @@ app.put(
       res.status(500).json({
         success: false,
         error: "Failed to update certificate",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -18998,6 +19306,7 @@ app.put(
 app.patch(
   "/api/certificates/:id/revoke",
   authenticateToken,
+  validateObjectId("id"),
   authorizeRoles("headmaster", "super_admin"),
   async (req, res) => {
     try {
@@ -19038,7 +19347,9 @@ app.patch(
       res.status(500).json({
         success: false,
         error: "Failed to revoke certificate",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -19110,53 +19421,62 @@ app.get("/api/groups", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch groups",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
 
 // GET group by ID
-app.get("/api/groups/:id", authenticateToken, async (req, res) => {
-  try {
-    const group = await Group.findById(req.params.id)
-      .populate("createdBy", "firstName lastName profileImage email")
-      .populate("admins", "firstName lastName profileImage email")
-      .populate("members", "firstName lastName profileImage email role")
-      .populate("schoolId", "name schoolCode logo");
+app.get(
+  "/api/groups/:id",
+  authenticateToken,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const group = await Group.findById(req.params.id)
+        .populate("createdBy", "firstName lastName profileImage email")
+        .populate("admins", "firstName lastName profileImage email")
+        .populate("members", "firstName lastName profileImage email role")
+        .populate("schoolId", "name schoolCode logo");
 
-    if (!group) {
-      return res.status(404).json({
+      if (!group) {
+        return res.status(404).json({
+          success: false,
+          error: "Group not found",
+        });
+      }
+
+      // Check if user is a member
+      const isMember =
+        group.members.some((m) => m._id.toString() === req.user.id) ||
+        group.admins.some((a) => a._id.toString() === req.user.id) ||
+        group.createdBy._id.toString() === req.user.id;
+
+      if (!isMember && group.isPrivate) {
+        return res.status(403).json({
+          success: false,
+          error: "You do not have access to this private group",
+        });
+      }
+
+      res.json({
+        success: true,
+        data: group,
+      });
+    } catch (error) {
+      console.error("❌ Error fetching group:", error);
+      res.status(500).json({
         success: false,
-        error: "Group not found",
+        error: "Failed to fetch group",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
-
-    // Check if user is a member
-    const isMember =
-      group.members.some((m) => m._id.toString() === req.user.id) ||
-      group.admins.some((a) => a._id.toString() === req.user.id) ||
-      group.createdBy._id.toString() === req.user.id;
-
-    if (!isMember && group.isPrivate) {
-      return res.status(403).json({
-        success: false,
-        error: "You do not have access to this private group",
-      });
-    }
-
-    res.json({
-      success: true,
-      data: group,
-    });
-  } catch (error) {
-    console.error("❌ Error fetching group:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to fetch group",
-      message: error.message,
-    });
   }
-});
+);
 
 // CREATE group
 app.post("/api/groups", authenticateToken, async (req, res) => {
@@ -19227,182 +19547,206 @@ app.post("/api/groups", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to create group",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
 
 // UPDATE group
-app.put("/api/groups/:id", authenticateToken, async (req, res) => {
-  try {
-    const group = await Group.findById(req.params.id);
+app.put(
+  "/api/groups/:id",
+  authenticateToken,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const group = await Group.findById(req.params.id);
 
-    if (!group) {
-      return res.status(404).json({
+      if (!group) {
+        return res.status(404).json({
+          success: false,
+          error: "Group not found",
+        });
+      }
+
+      // Check if user is admin
+      const isAdmin =
+        group.createdBy.toString() === req.user.id ||
+        group.admins.some((a) => a.toString() === req.user.id);
+
+      if (!isAdmin) {
+        return res.status(403).json({
+          success: false,
+          error: "Only group admins can update the group",
+        });
+      }
+
+      Object.assign(group, req.body);
+      group.updatedAt = new Date();
+      await group.save();
+
+      await logActivity(
+        req.user.id,
+        "GROUP_UPDATED",
+        `Updated group: ${group.name}`,
+        req
+      );
+
+      res.json({
+        success: true,
+        message: "Group updated successfully",
+        data: group,
+      });
+    } catch (error) {
+      console.error("❌ Error updating group:", error);
+      res.status(500).json({
         success: false,
-        error: "Group not found",
+        error: "Failed to update group",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
-
-    // Check if user is admin
-    const isAdmin =
-      group.createdBy.toString() === req.user.id ||
-      group.admins.some((a) => a.toString() === req.user.id);
-
-    if (!isAdmin) {
-      return res.status(403).json({
-        success: false,
-        error: "Only group admins can update the group",
-      });
-    }
-
-    Object.assign(group, req.body);
-    group.updatedAt = new Date();
-    await group.save();
-
-    await logActivity(
-      req.user.id,
-      "GROUP_UPDATED",
-      `Updated group: ${group.name}`,
-      req
-    );
-
-    res.json({
-      success: true,
-      message: "Group updated successfully",
-      data: group,
-    });
-  } catch (error) {
-    console.error("❌ Error updating group:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to update group",
-      message: error.message,
-    });
   }
-});
+);
 
 // DELETE group
-app.delete("/api/groups/:id", authenticateToken, async (req, res) => {
-  try {
-    const group = await Group.findById(req.params.id);
+app.delete(
+  "/api/groups/:id",
+  authenticateToken,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const group = await Group.findById(req.params.id);
 
-    if (!group) {
-      return res.status(404).json({
+      if (!group) {
+        return res.status(404).json({
+          success: false,
+          error: "Group not found",
+        });
+      }
+
+      // Only creator can delete
+      if (group.createdBy.toString() !== req.user.id) {
+        return res.status(403).json({
+          success: false,
+          error: "Only the group creator can delete the group",
+        });
+      }
+
+      await group.deleteOne();
+
+      // Delete all messages
+      await GroupMessage.deleteMany({ groupId: group._id });
+
+      await logActivity(
+        req.user.id,
+        "GROUP_DELETED",
+        `Deleted group: ${group.name}`,
+        req
+      );
+
+      res.json({
+        success: true,
+        message: "Group deleted successfully",
+      });
+    } catch (error) {
+      console.error("❌ Error deleting group:", error);
+      res.status(500).json({
         success: false,
-        error: "Group not found",
+        error: "Failed to delete group",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
-
-    // Only creator can delete
-    if (group.createdBy.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: "Only the group creator can delete the group",
-      });
-    }
-
-    await group.deleteOne();
-
-    // Delete all messages
-    await GroupMessage.deleteMany({ groupId: group._id });
-
-    await logActivity(
-      req.user.id,
-      "GROUP_DELETED",
-      `Deleted group: ${group.name}`,
-      req
-    );
-
-    res.json({
-      success: true,
-      message: "Group deleted successfully",
-    });
-  } catch (error) {
-    console.error("❌ Error deleting group:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to delete group",
-      message: error.message,
-    });
   }
-});
+);
 
 // ADD member to group
-app.post("/api/groups/:id/members", authenticateToken, async (req, res) => {
-  try {
-    const { userIds } = req.body;
+app.post(
+  "/api/groups/:id/members",
+  authenticateToken,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const { userIds } = req.body;
 
-    if (!userIds || !Array.isArray(userIds)) {
-      return res.status(400).json({
-        success: false,
-        error: "User IDs array is required",
-      });
-    }
-
-    const group = await Group.findById(req.params.id);
-
-    if (!group) {
-      return res.status(404).json({
-        success: false,
-        error: "Group not found",
-      });
-    }
-
-    // Check permissions
-    const isAdmin =
-      group.createdBy.toString() === req.user.id ||
-      group.admins.some((a) => a.toString() === req.user.id) ||
-      (group.settings.allowMemberInvite &&
-        group.members.some((m) => m.toString() === req.user.id));
-
-    if (!isAdmin) {
-      return res.status(403).json({
-        success: false,
-        error: "You do not have permission to add members",
-      });
-    }
-
-    // Add new members (avoid duplicates)
-    userIds.forEach((userId) => {
-      if (!group.members.includes(userId)) {
-        group.members.push(userId);
+      if (!userIds || !Array.isArray(userIds)) {
+        return res.status(400).json({
+          success: false,
+          error: "User IDs array is required",
+        });
       }
-    });
 
-    group.updatedAt = new Date();
-    await group.save();
+      const group = await Group.findById(req.params.id);
 
-    // Notify new members
-    userIds.forEach(async (userId) => {
-      await createNotification(
-        userId,
-        "Added to Group",
-        `You have been added to "${group.name}"`,
-        "info",
-        `/groups/${group._id}`
-      );
-    });
+      if (!group) {
+        return res.status(404).json({
+          success: false,
+          error: "Group not found",
+        });
+      }
 
-    res.json({
-      success: true,
-      message: "Members added successfully",
-      data: group,
-    });
-  } catch (error) {
-    console.error("❌ Error adding members:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to add members",
-      message: error.message,
-    });
+      // Check permissions
+      const isAdmin =
+        group.createdBy.toString() === req.user.id ||
+        group.admins.some((a) => a.toString() === req.user.id) ||
+        (group.settings.allowMemberInvite &&
+          group.members.some((m) => m.toString() === req.user.id));
+
+      if (!isAdmin) {
+        return res.status(403).json({
+          success: false,
+          error: "You do not have permission to add members",
+        });
+      }
+
+      // Add new members (avoid duplicates)
+      userIds.forEach((userId) => {
+        if (!group.members.includes(userId)) {
+          group.members.push(userId);
+        }
+      });
+
+      group.updatedAt = new Date();
+      await group.save();
+
+      // Notify new members
+      userIds.forEach(async (userId) => {
+        await createNotification(
+          userId,
+          "Added to Group",
+          `You have been added to "${group.name}"`,
+          "info",
+          `/groups/${group._id}`
+        );
+      });
+
+      res.json({
+        success: true,
+        message: "Members added successfully",
+        data: group,
+      });
+    } catch (error) {
+      console.error("❌ Error adding members:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to add members",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
   }
-});
+);
 
 // REMOVE member from group
 app.delete(
   "/api/groups/:id/members/:userId",
   authenticateToken,
+  validateObjectId("id"), validateObjectId("userId"),
   async (req, res) => {
     try {
       const group = await Group.findById(req.params.id);
@@ -19446,144 +19790,160 @@ app.delete(
       res.status(500).json({
         success: false,
         error: "Failed to remove member",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
 );
 
 // GET group messages
-app.get("/api/groups/:id/messages", authenticateToken, async (req, res) => {
-  try {
-    const { page = 1, limit = 50 } = req.query;
+app.get(
+  "/api/groups/:id/messages",
+  authenticateToken,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 50 } = req.query;
 
-    const group = await Group.findById(req.params.id);
+      const group = await Group.findById(req.params.id);
 
-    if (!group) {
-      return res.status(404).json({
+      if (!group) {
+        return res.status(404).json({
+          success: false,
+          error: "Group not found",
+        });
+      }
+
+      // Check if user is member
+      const isMember =
+        group.members.some((m) => m.toString() === req.user.id) ||
+        group.admins.some((a) => a.toString() === req.user.id) ||
+        group.createdBy.toString() === req.user.id;
+
+      if (!isMember) {
+        return res.status(403).json({
+          success: false,
+          error: "You are not a member of this group",
+        });
+      }
+
+      const messages = await GroupMessage.find({ groupId: req.params.id })
+        .sort({ createdAt: -1 })
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .populate("senderId", "firstName lastName profileImage role");
+
+      const total = await GroupMessage.countDocuments({
+        groupId: req.params.id,
+      });
+
+      res.json({
+        success: true,
+        data: messages.reverse(),
+        meta: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit)),
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error fetching group messages:", error);
+      res.status(500).json({
         success: false,
-        error: "Group not found",
+        error: "Failed to fetch messages",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
-
-    // Check if user is member
-    const isMember =
-      group.members.some((m) => m.toString() === req.user.id) ||
-      group.admins.some((a) => a.toString() === req.user.id) ||
-      group.createdBy.toString() === req.user.id;
-
-    if (!isMember) {
-      return res.status(403).json({
-        success: false,
-        error: "You are not a member of this group",
-      });
-    }
-
-    const messages = await GroupMessage.find({ groupId: req.params.id })
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
-      .skip((parseInt(page) - 1) * parseInt(limit))
-      .populate("senderId", "firstName lastName profileImage role");
-
-    const total = await GroupMessage.countDocuments({
-      groupId: req.params.id,
-    });
-
-    res.json({
-      success: true,
-      data: messages.reverse(),
-      meta: {
-        total,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        pages: Math.ceil(total / parseInt(limit)),
-      },
-    });
-  } catch (error) {
-    console.error("❌ Error fetching group messages:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to fetch messages",
-      message: error.message,
-    });
   }
-});
+);
 
 // POST group message (REST endpoint, Socket.io also available)
-app.post("/api/groups/:id/messages", authenticateToken, async (req, res) => {
-  try {
-    const { content, messageType, attachmentUrl, attachmentName, mentions } =
-      req.body;
+app.post(
+  "/api/groups/:id/messages",
+  authenticateToken,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const { content, messageType, attachmentUrl, attachmentName, mentions } =
+        req.body;
 
-    const group = await Group.findById(req.params.id);
+      const group = await Group.findById(req.params.id);
 
-    if (!group) {
-      return res.status(404).json({
+      if (!group) {
+        return res.status(404).json({
+          success: false,
+          error: "Group not found",
+        });
+      }
+
+      // Check permissions
+      const isMember =
+        group.members.some((m) => m.toString() === req.user.id) ||
+        group.admins.some((a) => a.toString() === req.user.id) ||
+        group.createdBy.toString() === req.user.id;
+
+      if (!isMember) {
+        return res.status(403).json({
+          success: false,
+          error: "You are not a member of this group",
+        });
+      }
+
+      if (
+        !group.settings.allowMemberPost &&
+        !group.admins.some((a) => a.toString() === req.user.id)
+      ) {
+        return res.status(403).json({
+          success: false,
+          error: "Only admins can post in this group",
+        });
+      }
+
+      const message = await GroupMessage.create({
+        senderId: req.user.id,
+        groupId: req.params.id,
+        content,
+        messageType: messageType || "text",
+        attachmentUrl,
+        attachmentName,
+        mentions: mentions || [],
+      });
+
+      await message.populate("senderId", "firstName lastName profileImage");
+
+      // Update group timestamp
+      group.updatedAt = new Date();
+      await group.save();
+
+      res.status(201).json({
+        success: true,
+        message: "Message sent successfully",
+        data: message,
+      });
+    } catch (error) {
+      console.error("❌ Error sending group message:", error);
+      res.status(500).json({
         success: false,
-        error: "Group not found",
+        error: "Failed to send message",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
-
-    // Check permissions
-    const isMember =
-      group.members.some((m) => m.toString() === req.user.id) ||
-      group.admins.some((a) => a.toString() === req.user.id) ||
-      group.createdBy.toString() === req.user.id;
-
-    if (!isMember) {
-      return res.status(403).json({
-        success: false,
-        error: "You are not a member of this group",
-      });
-    }
-
-    if (
-      !group.settings.allowMemberPost &&
-      !group.admins.some((a) => a.toString() === req.user.id)
-    ) {
-      return res.status(403).json({
-        success: false,
-        error: "Only admins can post in this group",
-      });
-    }
-
-    const message = await GroupMessage.create({
-      senderId: req.user.id,
-      groupId: req.params.id,
-      content,
-      messageType: messageType || "text",
-      attachmentUrl,
-      attachmentName,
-      mentions: mentions || [],
-    });
-
-    await message.populate("senderId", "firstName lastName profileImage");
-
-    // Update group timestamp
-    group.updatedAt = new Date();
-    await group.save();
-
-    res.status(201).json({
-      success: true,
-      message: "Message sent successfully",
-      data: message,
-    });
-  } catch (error) {
-    console.error("❌ Error sending group message:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to send message",
-      message: error.message,
-    });
   }
-});
+);
 
 // ============================================================================
 // COMPLETE PRODUCT ENDPOINTS
 // ============================================================================
 
 // GET all products (public endpoint with search)
-app.get("/api/products", async (req, res) => {
+app.get("/api/products", publicRateLimiter, async (req, res) => {
   try {
     const {
       page = 1,
@@ -19643,207 +20003,240 @@ app.get("/api/products", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch products",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
 
 // GET product by ID
-app.get("/api/products/:id", async (req, res) => {
-  try {
-    const product = await Product.findById(req.params.id).populate({
-      path: "businessId",
-      select: "name logo isVerified address phoneNumber email",
-    });
+app.get(
+  "/api/products/:id",
+  publicRateLimiter,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const product = await Product.findById(req.params.id).populate({
+        path: "businessId",
+        select: "name logo isVerified address phoneNumber email",
+      });
 
-    if (!product) {
-      return res.status(404).json({
+      if (!product) {
+        return res.status(404).json({
+          success: false,
+          error: "Product not found",
+        });
+      }
+
+      // Increment view count
+      product.viewCount += 1;
+      await product.save();
+
+      res.json({
+        success: true,
+        data: product,
+      });
+    } catch (error) {
+      console.error("❌ Error fetching product:", error);
+      res.status(500).json({
         success: false,
-        error: "Product not found",
+        error: "Failed to fetch product",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
-
-    // Increment view count
-    product.viewCount += 1;
-    await product.save();
-
-    res.json({
-      success: true,
-      data: product,
-    });
-  } catch (error) {
-    console.error("❌ Error fetching product:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to fetch product",
-      message: error.message,
-    });
   }
-});
+);
 
 // UPDATE product
-app.put("/api/products/:id", authenticateToken, async (req, res) => {
-  try {
-    const product = await Product.findById(req.params.id).populate(
-      "businessId"
-    );
+app.put(
+  "/api/products/:id",
+  publicRateLimiter,
+  validateObjectId("id"),
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const product = await Product.findById(req.params.id).populate(
+        "businessId"
+      );
 
-    if (!product) {
-      return res.status(404).json({
+      if (!product) {
+        return res.status(404).json({
+          success: false,
+          error: "Product not found",
+        });
+      }
+
+      // Check ownership
+      if (
+        req.user.role !== "super_admin" &&
+        product.businessId.ownerId.toString() !== req.user.id
+      ) {
+        return res.status(403).json({
+          success: false,
+          error: "You can only update your own products",
+        });
+      }
+
+      Object.assign(product, req.body);
+      product.updatedAt = new Date();
+      await product.save();
+
+      await logActivity(
+        req.user.id,
+        "PRODUCT_UPDATED",
+        `Updated product: ${product.name}`,
+        req
+      );
+
+      res.json({
+        success: true,
+        message: "Product updated successfully",
+        data: product,
+      });
+    } catch (error) {
+      console.error("❌ Error updating product:", error);
+      res.status(500).json({
         success: false,
-        error: "Product not found",
+        error: "Failed to update product",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
-
-    // Check ownership
-    if (
-      req.user.role !== "super_admin" &&
-      product.businessId.ownerId.toString() !== req.user.id
-    ) {
-      return res.status(403).json({
-        success: false,
-        error: "You can only update your own products",
-      });
-    }
-
-    Object.assign(product, req.body);
-    product.updatedAt = new Date();
-    await product.save();
-
-    await logActivity(
-      req.user.id,
-      "PRODUCT_UPDATED",
-      `Updated product: ${product.name}`,
-      req
-    );
-
-    res.json({
-      success: true,
-      message: "Product updated successfully",
-      data: product,
-    });
-  } catch (error) {
-    console.error("❌ Error updating product:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to update product",
-      message: error.message,
-    });
   }
-});
+);
 
 // DELETE product
-app.delete("/api/products/:id", authenticateToken, async (req, res) => {
-  try {
-    const product = await Product.findById(req.params.id).populate(
-      "businessId"
-    );
+app.delete(
+  "/api/products/:id",
+  publicRateLimiter,
+  validateObjectId("id"),
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const product = await Product.findById(req.params.id).populate(
+        "businessId"
+      );
 
-    if (!product) {
-      return res.status(404).json({
+      if (!product) {
+        return res.status(404).json({
+          success: false,
+          error: "Product not found",
+        });
+      }
+
+      // Check ownership
+      if (
+        req.user.role !== "super_admin" &&
+        product.businessId.ownerId.toString() !== req.user.id
+      ) {
+        return res.status(403).json({
+          success: false,
+          error: "You can only delete your own products",
+        });
+      }
+
+      product.isActive = false;
+      product.updatedAt = new Date();
+      await product.save();
+
+      await logActivity(
+        req.user.id,
+        "PRODUCT_DELETED",
+        `Deleted product: ${product.name}`,
+        req
+      );
+
+      res.json({
+        success: true,
+        message: "Product deleted successfully",
+      });
+    } catch (error) {
+      console.error("❌ Error deleting product:", error);
+      res.status(500).json({
         success: false,
-        error: "Product not found",
+        error: "Failed to delete product",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
-
-    // Check ownership
-    if (
-      req.user.role !== "super_admin" &&
-      product.businessId.ownerId.toString() !== req.user.id
-    ) {
-      return res.status(403).json({
-        success: false,
-        error: "You can only delete your own products",
-      });
-    }
-
-    product.isActive = false;
-    product.updatedAt = new Date();
-    await product.save();
-
-    await logActivity(
-      req.user.id,
-      "PRODUCT_DELETED",
-      `Deleted product: ${product.name}`,
-      req
-    );
-
-    res.json({
-      success: true,
-      message: "Product deleted successfully",
-    });
-  } catch (error) {
-    console.error("❌ Error deleting product:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to delete product",
-      message: error.message,
-    });
   }
-});
+);
 
 // ============================================================================
 // BOOK DOWNLOAD ENDPOINT (with Purchase Verification)
 // ============================================================================
 
-app.get("/api/books/:id/download", authenticateToken, async (req, res) => {
-  try {
-    const book = await Book.findById(req.params.id);
+app.get(
+  "/api/books/:id/download",
+  authenticateToken,
+  publicRateLimiter,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const book = await Book.findById(req.params.id);
 
-    if (!book) {
-      return res.status(404).json({
+      if (!book) {
+        return res.status(404).json({
+          success: false,
+          error: "Book not found",
+        });
+      }
+
+      // Verify purchase
+      const purchase = await BookPurchase.findOne({
+        userId: req.user.id,
+        bookId: book._id,
+        paymentStatus: "completed",
+      });
+
+      if (!purchase) {
+        return res.status(403).json({
+          success: false,
+          error: "You have not purchased this book",
+          message: "Please purchase the book to download it",
+        });
+      }
+
+      // Update download count
+      purchase.downloadCount += 1;
+      purchase.lastDownloadDate = new Date();
+      await purchase.save();
+
+      await logActivity(
+        req.user.id,
+        "BOOK_DOWNLOADED",
+        `Downloaded book: ${book.title}`,
+        req
+      );
+
+      // In production, you would stream the file or return a signed URL
+      res.json({
+        success: true,
+        message: "Book download authorized",
+        data: {
+          downloadUrl: book.pdfFile,
+          bookTitle: book.title,
+          author: book.author,
+          downloadCount: purchase.downloadCount,
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error downloading book:", error);
+      res.status(500).json({
         success: false,
-        error: "Book not found",
+        error: "Download failed",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
-
-    // Verify purchase
-    const purchase = await BookPurchase.findOne({
-      userId: req.user.id,
-      bookId: book._id,
-      paymentStatus: "completed",
-    });
-
-    if (!purchase) {
-      return res.status(403).json({
-        success: false,
-        error: "You have not purchased this book",
-        message: "Please purchase the book to download it",
-      });
-    }
-
-    // Update download count
-    purchase.downloadCount += 1;
-    purchase.lastDownloadDate = new Date();
-    await purchase.save();
-
-    await logActivity(
-      req.user.id,
-      "BOOK_DOWNLOADED",
-      `Downloaded book: ${book.title}`,
-      req
-    );
-
-    // In production, you would stream the file or return a signed URL
-    res.json({
-      success: true,
-      message: "Book download authorized",
-      data: {
-        downloadUrl: book.pdfFile,
-        bookTitle: book.title,
-        author: book.author,
-        downloadCount: purchase.downloadCount,
-      },
-    });
-  } catch (error) {
-    console.error("❌ Error downloading book:", error);
-    res.status(500).json({
-      success: false,
-      error: "Download failed",
-      message: error.message,
-    });
   }
-});
+);
 
 // ============================================
 // STUDENT: GET REGISTERED EVENTS (with populated event details)
@@ -19930,7 +20323,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch events",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -19996,7 +20391,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch activity logs",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),  // ✅ ADDED
+        }),
       });
     }
   }
@@ -20112,7 +20509,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to generate school report",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -20205,7 +20604,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to generate talent report",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -20311,7 +20712,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to generate revenue report",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -20322,7 +20725,7 @@ app.get(
 // ============================================
 
 // GET all subjects
-app.get("/api/subjects", async (req, res) => {
+app.get("/api/subjects",  publicRateLimiter,async (req, res) => {
   try {
     const { schoolId, category, isActive = true } = req.query;
 
@@ -20359,13 +20762,15 @@ app.get("/api/subjects", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch subjects",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
 
 // GET subject by ID
-app.get("/api/subjects/:id", async (req, res) => {
+app.get("/api/subjects/:id", publicRateLimiter, validateObjectId("id"), async (req, res) => {
   try {
     const subject = await Subject.findById(req.params.id);
 
@@ -20385,7 +20790,9 @@ app.get("/api/subjects/:id", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch subject",
-      message: error.message,
+      ...(process.env.NODE_ENV === "development" && {
+        debug: sanitizeError(error),
+      }),
     });
   }
 });
@@ -20393,7 +20800,7 @@ app.get("/api/subjects/:id", async (req, res) => {
 // CREATE subject (admin only)
 app.post(
   "/api/subjects",
-  authenticateToken,
+  authenticateToken, publicRateLimiter,
   authorizeRoles("super_admin", "national_official", "headmaster"),
   async (req, res) => {
     try {
@@ -20444,7 +20851,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to create subject",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -20454,7 +20863,9 @@ app.post(
 app.put(
   "/api/subjects/:id",
   authenticateToken,
-  authorizeRoles("super_admin", "national_official", "headmaster"),
+  publicRateLimiter,  // ✅ FIXED: Moved before authorizeRoles
+  authorizeRoles("super_admin", "national_official", "headmaster"),  // ✅ FIXED: Removed syntax error
+  validateObjectId("id"),
   async (req, res) => {
     try {
       const subject = await Subject.findByIdAndUpdate(
@@ -20487,7 +20898,9 @@ app.put(
       res.status(500).json({
         success: false,
         error: "Failed to update subject",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -20497,7 +20910,9 @@ app.put(
 app.delete(
   "/api/subjects/:id",
   authenticateToken,
-  authorizeRoles("super_admin"),
+  publicRateLimiter,  // ✅ FIXED
+  authorizeRoles("super_admin"),  // ✅ FIXED
+  validateObjectId("id"),
   async (req, res) => {
     try {
       const subject = await Subject.findByIdAndUpdate(
@@ -20529,7 +20944,9 @@ app.delete(
       res.status(500).json({
         success: false,
         error: "Failed to delete subject",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -20606,7 +21023,9 @@ app.get(
       res.status(500).json({
         success: false,
         error: "Failed to generate user report",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -20621,6 +21040,13 @@ app.post(
   "/api/users/bulk-import",
   authenticateToken,
   authorizeRoles("super_admin", "headmaster"),
+  [
+    body("users").isArray().withMessage("Users must be an array"),
+    body("users.*.username").trim().notEmpty(),
+    body("users.*.email").isEmail(),
+    body("users.*.password").isLength({ min: 6 }),
+  ],
+  handleValidationErrors,
   async (req, res) => {
     try {
       const { users } = req.body; // Array of user objects
@@ -20676,7 +21102,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Bulk import failed",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -20755,7 +21183,9 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Bulk registration failed",
-        message: error.message,
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   }
@@ -20880,10 +21310,12 @@ app.get(
       console.error("❌ Error fetching SMS logs:", error);
       res
         .status(500)
-        .json({ success: false, error: "Failed to fetch SMS logs" });
-    }
-  }
-);
+        .json({ success: false, error: "Failed to fetch SMS logs",
+    ...(process.env.NODE_ENV === "development" && {
+      debug: sanitizeError(error),
+    }),
+  });
+}
 
 // ============================================
 // SMS STATISTICS ENDPOINT
@@ -20928,10 +21360,12 @@ app.get(
         },
       });
     } catch (error) {
-      res.status(500).json({ success: false, error: "Failed to fetch stats" });
-    }
-  }
-);
+      res.status(500).json({ success: false, error: "Failed to fetch stats",
+    ...(process.env.NODE_ENV === "development" && {
+      debug: sanitizeError(error),  // ✅ ADD THIS
+    }),
+  });
+}
 
 // ============================================
 // RESEND PASSWORD SMS (Manual Trigger for Admin)
@@ -21003,38 +21437,29 @@ app.post(
       console.error("❌ Error resending password:", error);
       res
         .status(500)
-        .json({ success: false, error: "Failed to resend password" });
-    }
-  }
-);
+        .json({ success: false, error: "Failed to resend password",
+    ...(process.env.NODE_ENV === "development" && {
+      debug: sanitizeError(error),  // ✅ ADD THIS
+    }),
+  });
+}
 
 // ============================================================================
 // EXPORT MODULE
 // ============================================================================
 
-// ensure the standalone block is properly closed before attaching middleware
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    error: "Endpoint not found",
-    path: req.path,
-  });
-});
+// ============================================
+// 🛡️ APPLY ERROR HANDLERS (MUST BE LAST!)
+// ============================================
 
-// Global error handler
-app.use((err, req, res, next) => {
-  console.error("❌ Server Error:", err);
-  const statusCode = err.status || err.statusCode || 500;
-  res.status(statusCode).json({
-    success: false,
-    error:
-      err.name === "ValidationError"
-        ? "Validation Error"
-        : "Internal server error",
-    message: sanitizeError(err),
-    ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
-  });
-});
+console.log("\n🛡️ ========================================");
+console.log("🛡️  APPLYING ERROR HANDLERS");
+console.log("🛡️ ========================================\n");
+
+// Apply error handling middleware from /middleware/errorHandler.js
+applyErrorHandlers(app);
+
+console.log("✅ Error handlers applied successfully!\n");
 
 // ============================================
 // AUTOMATED PAYMENT REMINDER CRON JOB
