@@ -47,7 +47,7 @@ const smsService = require("./services/smsService");
 // Initialize Express app
 const app = express();
 const server = http.createServer(app);
-app.set('trust proxy', 1); // Trust only the first proxy (DigitalOcean LB)
+app.set("trust proxy", 1); // Trust only the first proxy (DigitalOcean LB)
 // ============================================
 // SOCKET.IO CONFIGURATION
 // ============================================
@@ -17182,6 +17182,195 @@ app.delete(
       res.status(500).json({
         success: false,
         error: "Failed to delete user",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
+// ============================================
+// APPROVE USER ENDPOINT (Students/Entrepreneurs)
+// ============================================
+
+// POST /api/superadmin/users/:userId/approve - Approve paid inactive user
+app.post(
+  "/api/superadmin/users/:userId/approve",
+  authenticateToken,
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+
+      console.log(`🔍 Approval request for user: ${userId}`);
+
+      // Find the user
+      const user = await User.findById(userId);
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          error: "User not found",
+        });
+      }
+
+      // Check if user is already active
+      if (user.isActive) {
+        return res.status(400).json({
+          success: false,
+          error: "User is already active",
+        });
+      }
+
+      // Check payment status (for students/entrepreneurs)
+      if (user.role === "student" || user.role === "entrepreneur") {
+        if (!user.payment_reference && user.payment_status === "pending") {
+          return res.status(400).json({
+            success: false,
+            error: "User has not submitted payment information",
+          });
+        }
+      }
+
+      // Generate new password
+      const newPassword = generateRandomPassword();
+      const hashedPassword = await hashPassword(newPassword);
+
+      // Activate user and update payment verification
+      user.isActive = true;
+      user.password = hashedPassword;
+      user.payment_status = "verified";
+      user.payment_verified_by = req.user.id;
+      user.payment_verified_at = new Date();
+      user.updatedAt = new Date();
+
+      await user.save();
+
+      console.log(`✅ User activated: ${user.username} (${user.role})`);
+
+      // Send SMS with password
+      const userName =
+        `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
+        user.username;
+      const smsResult = await smsService.sendPasswordSMS(
+        user.phoneNumber,
+        newPassword,
+        userName,
+        user._id.toString()
+      );
+
+      // Log SMS result
+      if (smsResult.success) {
+        console.log(`📱 Approval SMS sent to ${user.phoneNumber}`);
+
+        await SMSLog.create({
+          userId: user._id,
+          phone: user.phoneNumber,
+          message: "Account approval password SMS",
+          type: "password",
+          status: "sent",
+          messageId: smsResult.messageId,
+          reference: `approval_${user._id}`,
+        });
+      } else {
+        console.error(`❌ Failed to send approval SMS:`, smsResult.error);
+
+        await SMSLog.create({
+          userId: user._id,
+          phone: user.phoneNumber,
+          message: "Account approval SMS (failed)",
+          type: "password",
+          status: "failed",
+          errorMessage: smsResult.error,
+          reference: `approval_${user._id}`,
+        });
+      }
+
+      // Create in-app notification
+      await createNotification(
+        user._id,
+        "Account Approved! 🎉",
+        `Your ${user.role} account has been approved! Check your SMS at ${user.phoneNumber} for your login password.`,
+        "success"
+      );
+
+      // Update invoice status if exists
+      if (user.role === "student" || user.role === "entrepreneur") {
+        const invoiceUpdate = await Invoice.updateMany(
+          {
+            student_id: user._id,
+            status: { $in: ["pending", "verification"] },
+          },
+          {
+            status: "paid",
+            paidDate: new Date(),
+            "paymentProof.status": "verified",
+            "paymentProof.verifiedBy": req.user.id,
+            "paymentProof.verifiedAt": new Date(),
+          }
+        );
+
+        console.log(`📄 Updated ${invoiceUpdate.modifiedCount} invoices`);
+      }
+
+      // Update payment history if exists
+      await PaymentHistory.updateMany(
+        { userId: user._id, status: { $in: ["pending", "submitted"] } },
+        {
+          status: "verified",
+          verifiedAt: new Date(),
+          verifiedBy: req.user.id,
+          $push: {
+            statusHistory: {
+              status: "verified",
+              changedBy: req.user.id,
+              changedAt: new Date(),
+              reason: "Account approved by admin",
+            },
+          },
+        }
+      );
+
+      // Log activity
+      await logActivity(
+        req.user.id,
+        "USER_APPROVED",
+        `Approved ${user.role}: ${userName} (${user.username})`,
+        req,
+        {
+          userId: user._id,
+          userRole: user.role,
+          phoneNumber: user.phoneNumber,
+          smsSent: smsResult.success,
+          payment_reference: user.payment_reference,
+        }
+      );
+
+      console.log(`✅ Approval complete for ${user.username}`);
+
+      res.json({
+        success: true,
+        message: `${
+          user.role.charAt(0).toUpperCase() + user.role.slice(1)
+        } approved successfully. Password sent via SMS to ${user.phoneNumber}.`,
+        data: {
+          userId: user._id,
+          username: user.username,
+          name: userName,
+          role: user.role,
+          phoneNumber: user.phoneNumber,
+          email: user.email,
+          smsSent: smsResult.success,
+          isActive: user.isActive,
+          payment_status: user.payment_status,
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error approving user:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to approve user",
         ...(process.env.NODE_ENV === "development" && {
           debug: sanitizeError(error),
         }),
