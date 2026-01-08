@@ -4,8 +4,8 @@
 // Version: 2.0.0
 // ============================================
 // ✅ 7+ User Roles (Student, Entrepreneur, Teacher, Headmaster, Staff, TAMISEMI, SuperAdmin)
-// ✅ Beem OTP & SMS Integration
-// ✅ AzamPay Payment Integration
+// ✅ NEXTSMS SMS Integration
+// ✅ Manual Payment Processing
 // ✅ Socket.io Real-time Messaging
 // ✅ Multi-School Data Isolation
 // ✅ File Uploads (Avatars, Books, Certificates)
@@ -38,6 +38,7 @@ const compression = require("compression");
 const cron = require("node-cron");
 // Load environment variables
 dotenv.config();
+const smsService = require("./services/smsService");
 
 // Initialize Express app
 const app = express();
@@ -542,27 +543,6 @@ const ClassLevelRequest = mongoose.model(
   "ClassLevelRequest",
   classLevelRequestSchema
 );
-
-// OTP Schema (for Beem Integration)
-const otpSchema = new mongoose.Schema({
-  phoneNumber: { type: String, required: true, index: true },
-  otp: { type: String, required: true },
-  purpose: {
-    type: String,
-    enum: [
-      "registration",
-      "login",
-      "password_reset",
-      "phone_verification",
-      "transaction_verification",
-    ],
-    required: true,
-  },
-  expiresAt: { type: Date, required: true, index: true },
-  isVerified: { type: Boolean, default: false },
-  attempts: { type: Number, default: 0 },
-  createdAt: { type: Date, default: Date.now, expires: 600 }, // Auto-delete after 10 minutes
-});
 
 const schoolSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
@@ -1392,33 +1372,6 @@ const groupMessageSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
-// Subscription Schema
-const subscriptionSchema = new mongoose.Schema({
-  userId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
-    required: true,
-    index: true,
-  },
-  plan: {
-    type: String,
-    enum: ["free", "basic", "premium", "enterprise"],
-    required: true,
-  },
-  status: {
-    type: String,
-    enum: ["active", "cancelled", "expired", "suspended"],
-    default: "active",
-  },
-  startDate: { type: Date, required: true },
-  endDate: { type: Date, required: true },
-  autoRenew: { type: Boolean, default: true },
-  amount: Number,
-  transactionId: { type: mongoose.Schema.Types.ObjectId, ref: "Transaction" },
-  features: [String],
-  createdAt: { type: Date, default: Date.now },
-});
-
 // Certificate Schema
 const certificateSchema = new mongoose.Schema({
   studentId: {
@@ -1816,11 +1769,32 @@ const PaymentReminder = mongoose.model(
   paymentReminderSchema
 );
 
+const smsLogSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  phone: { type: String, required: true },
+  message: { type: String, required: true },
+  type: {
+    type: String,
+    enum: ["password", "payment_confirmation", "payment_approval", "general"],
+    required: true,
+  },
+  status: {
+    type: String,
+    enum: ["sent", "failed", "delivered", "pending"],
+    default: "pending",
+  },
+  messageId: String,
+  reference: String,
+  errorMessage: String,
+  sentAt: { type: Date, default: Date.now },
+});
+
+const SMSLog = mongoose.model("SMSLog", smsLogSchema);
+
 // ============================================
 // MODELS
 // ============================================
 const User = mongoose.model("User", userSchema);
-const OTP = mongoose.model("OTP", otpSchema);
 const School = mongoose.model("School", schoolSchema);
 const Region = mongoose.model("Region", regionSchema);
 const District = mongoose.model("District", districtSchema);
@@ -1847,7 +1821,6 @@ const ActivityLog = mongoose.model("ActivityLog", activityLogSchema);
 const Message = mongoose.model("Message", messageSchema);
 const Group = mongoose.model("Group", groupSchema);
 const GroupMessage = mongoose.model("GroupMessage", groupMessageSchema);
-const Subscription = mongoose.model("Subscription", subscriptionSchema);
 const Certificate = mongoose.model("Certificate", certificateSchema);
 
 // ============================================
@@ -2318,11 +2291,6 @@ function generateToken(user) {
   );
 }
 
-// Generate OTP
-function generateOTP() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
-
 // Generate unique reference ID
 function generateReferenceId(prefix = "ECON") {
   const timestamp = Date.now();
@@ -2374,192 +2342,6 @@ async function createNotification(
   }
 }
 
-// Send SMS via Beem
-async function sendSMS(phoneNumber, message) {
-  try {
-    const beemApiKey = process.env.BEEM_API_KEY;
-    const beemSecretKey = process.env.BEEM_SECRET_KEY;
-    const beemSourceAddr = process.env.BEEM_SOURCE_ADDR || "ECONNECT";
-
-    if (!beemApiKey || !beemSecretKey) {
-      console.log("⚠️  Beem credentials not configured. SMS: " + message);
-      return { success: false, message: "Beem not configured" };
-    }
-
-    const response = await axios.post(
-      "https://apisms.beem.africa/v1/send",
-      {
-        source_addr: beemSourceAddr,
-        schedule_time: "",
-        encoding: 0,
-        message: message,
-        recipients: [{ recipient_id: "1", dest_addr: phoneNumber }],
-      },
-      {
-        headers: {
-          Authorization: `Basic ${Buffer.from(
-            `${beemApiKey}:${beemSecretKey}`
-          ).toString("base64")}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
-    console.log("✅ SMS sent via Beem:", phoneNumber);
-    return { success: true, data: response.data };
-  } catch (error) {
-    console.error("❌ Beem SMS Error:", error.response?.data || error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-// Send OTP via Beem
-async function sendOTP(phoneNumber, purpose = "verification") {
-  try {
-    const otp = generateOTP();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-
-    await OTP.create({
-      phoneNumber,
-      otp,
-      purpose,
-      expiresAt,
-    });
-
-    const message = `Your ECONNECT verification code is: ${otp}. Valid for 10 minutes. Do not share this code with anyone.`;
-
-    // Direct send SMS (Redis queues disabled)
-    await sendSMS(phoneNumber, message);
-
-    return { success: true, message: "OTP sent successfully" };
-  } catch (error) {
-    console.error("❌ Send OTP Error:", error);
-    return { success: false, error: error.message };
-  }
-}
-
-// Verify OTP
-async function verifyOTP(phoneNumber, otp, purpose) {
-  try {
-    const otpRecord = await OTP.findOne({
-      phoneNumber,
-      otp,
-      purpose,
-      isVerified: false,
-      expiresAt: { $gt: new Date() },
-    }).sort({ createdAt: -1 });
-
-    if (!otpRecord) {
-      return { success: false, message: "Invalid or expired OTP" };
-    }
-
-    if (otpRecord.attempts >= 5) {
-      return {
-        success: false,
-        message: "Maximum attempts exceeded. Please request a new OTP.",
-      };
-    }
-
-    otpRecord.isVerified = true;
-    await otpRecord.save();
-
-    return { success: true, message: "OTP verified successfully" };
-  } catch (error) {
-    console.error("❌ Verify OTP Error:", error);
-    return { success: false, error: error.message };
-  }
-}
-
-// AzamPay - Initialize Payment
-async function initiateAzamPayPayment(
-  amount,
-  phoneNumber,
-  userId,
-  transactionType,
-  metadata = {}
-) {
-  try {
-    const azampayAppName = process.env.AZAMPAY_APP_NAME;
-    const azampayClientId = process.env.AZAMPAY_CLIENT_ID;
-    const azampayClientSecret = process.env.AZAMPAY_CLIENT_SECRET;
-    const azampayApiUrl =
-      process.env.AZAMPAY_API_URL || "https://sandbox.azampay.co.tz";
-
-    if (!azampayClientId || !azampayClientSecret) {
-      console.log("⚠️  AzamPay credentials not configured.");
-      return { success: false, message: "AzamPay not configured" };
-    }
-
-    // Generate unique reference
-    const referenceId = generateReferenceId("ECON");
-
-    // Create transaction record
-    const transaction = await Transaction.create({
-      userId,
-      transactionType,
-      amount,
-      paymentMethod: "azampay",
-      paymentProvider: "AzamPay",
-      status: "pending",
-      referenceId,
-      phoneNumber,
-      metadata,
-    });
-
-    // Call AzamPay API
-    const response = await axios.post(
-      `${azampayApiUrl}/api/v1/Partner/PostCheckout`,
-      {
-        appName: azampayAppName,
-        clientId: azampayClientId,
-        vendorId: azampayClientId,
-        language: "en",
-        currency: "TZS",
-        externalId: referenceId,
-        requestId: referenceId,
-        amount: amount,
-        cart: {
-          items: [
-            {
-              name: transactionType.replace("_", " ").toUpperCase(),
-            },
-          ],
-        },
-        redirectFailURL: `${process.env.FRONTEND_URL}/payment/failed`,
-        redirectSuccessURL: `${process.env.FRONTEND_URL}/payment/success`,
-        msisdn: phoneNumber,
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
-    if (response.data && response.data.success) {
-      transaction.providerReference = response.data.transactionId;
-      transaction.status = "processing";
-      await transaction.save();
-
-      return {
-        success: true,
-        transactionId: transaction._id,
-        referenceId,
-        paymentUrl: response.data.paymentUrl || null,
-      };
-    } else {
-      transaction.status = "failed";
-      transaction.failureReason = "AzamPay initialization failed";
-      await transaction.save();
-
-      return { success: false, message: "Payment initialization failed" };
-    }
-  } catch (error) {
-    console.error("❌ AzamPay Error:", error.response?.data || error.message);
-    return { success: false, error: error.message };
-  }
-}
-
 // Calculate revenue split
 function calculateRevenueSplit(amount, type = "default") {
   const commissionRates = {
@@ -2575,36 +2357,6 @@ function calculateRevenueSplit(amount, type = "default") {
   const netAmount = amount - commission;
 
   return { commission, netAmount };
-}
-
-// Helper function to get subscription features by plan
-function getFeaturesByPlan(plan) {
-  const planFeatures = {
-    free: ["Basic profile", "View public content", "Limited messaging"],
-    basic: [
-      "Full profile access",
-      "Unlimited messaging",
-      "Basic analytics",
-      "Upload content",
-    ],
-    premium: [
-      "All Basic features",
-      "Advanced analytics",
-      "Priority support",
-      "Custom branding",
-      "API access",
-    ],
-    enterprise: [
-      "All Premium features",
-      "Dedicated account manager",
-      "Custom integrations",
-      "Advanced security",
-      "SLA guarantee",
-      "White-label options",
-    ],
-  };
-
-  return planFeatures[plan] || planFeatures.free;
 }
 
 // ============================================
@@ -3068,13 +2820,11 @@ app.post(
         });
       }
 
-      // ✅ AUTO-GENERATE PASSWORD (6-character alphanumeric)
-      const generatedPassword = generateRandomPassword();
-      const hashedPassword = await hashPassword(generatedPassword);
-
-      console.log(
-        `🔐 Auto-generated password for ${phone}: ${generatedPassword}`
-      );
+      // ✅ GENERATE SECURE PASSWORD
+      const generatedPassword =
+        Math.random().toString(36).slice(-8) +
+        Math.random().toString(36).slice(-8).toUpperCase();
+      const hashedPassword = await bcrypt.hash(generatedPassword, 10);
 
       // Build user object
       const userData = {
@@ -3271,20 +3021,62 @@ app.post(
 
       // ✅ Send SMS with password for immediately active users (students)
       if (role === "student" || role === "entrepreneur") {
-        await sendSMS(
+        const userName = `${names.first} ${names.last}`;
+        const smsResult = await smsService.sendPasswordSMS(
           phone,
-          `Welcome to ECONNECT! Your account has been created. Your password is: ${generatedPassword}. Please login and change it.`
+          generatedPassword,
+          userName,
+          user._id.toString()
         );
 
-        console.log(`📱 SMS sent to ${phone} with auto-generated password`);
+        if (smsResult.success) {
+          console.log(`📱 Password SMS sent successfully to ${phone}`);
+
+          // ✅ Log SMS
+          await SMSLog.create({
+            userId: user._id,
+            phone: phone,
+            message: `Welcome password SMS`,
+            type: "password",
+            status: "sent",
+            messageId: smsResult.messageId,
+            reference: `pwd_${user._id}`,
+          });
+        } else {
+          console.warn(`⚠️ Failed to send SMS to ${phone}:`, smsResult.error);
+
+          // ✅ Log failed SMS
+          await SMSLog.create({
+            userId: user._id,
+            phone: phone,
+            message: "Password SMS (failed)",
+            type: "password",
+            status: "failed",
+            errorMessage: smsResult.error || "Unknown error",
+            reference: `pwd_${user._id}`,
+          });
+        }
       }
 
       // For teachers, password will be sent when approved by headmaster
       if (role === "teacher") {
-        await sendSMS(
+        const smsResult = await smsService.sendSMS(
           phone,
-          `Thank you for registering as a teacher on ECONNECT. Your account is pending approval. You'll receive your password via SMS once approved.`
+          `Thank you for registering as a teacher on ECONNECT. Your account is pending approval. You'll receive your password via SMS once approved.`,
+          "teacher_pending"
         );
+
+        if (smsResult.success) {
+          await SMSLog.create({
+            userId: user._id,
+            phone: phone,
+            message: "Teacher pending approval notification",
+            type: "general",
+            status: "sent",
+            messageId: smsResult.messageId,
+            reference: "teacher_pending",
+          });
+        }
       }
 
       // ✅ ✅ ✅ FIX: SAVE STUDENT TALENTS TO StudentTalent COLLECTION
@@ -3931,90 +3723,6 @@ app.get(
   }
 );
 
-// Verify OTP
-app.post("/api/auth/verify-otp", authenticateToken, async (req, res) => {
-  try {
-    const { otp, purpose } = req.body;
-
-    if (!otp) {
-      return res.status(400).json({ success: false, error: "OTP is required" });
-    }
-
-    const user = await User.findById(req.user.id);
-
-    if (!user) {
-      return res.status(404).json({ success: false, error: "User not found" });
-    }
-
-    const verification = await verifyOTP(
-      user.phoneNumber,
-      otp,
-      purpose || "registration"
-    );
-
-    if (!verification.success) {
-      return res.status(400).json(verification);
-    }
-
-    user.isPhoneVerified = true;
-    await user.save();
-
-    await createNotification(
-      user._id,
-      "Phone Verified",
-      "Your phone number has been verified successfully",
-      "success"
-    );
-
-    await logActivity(user._id, "PHONE_VERIFIED", "Phone number verified", req);
-
-    res.json({
-      success: true,
-      message: "Phone verified successfully",
-      data: { isPhoneVerified: true },
-    });
-  } catch (error) {
-    console.error("❌ OTP verification error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Verification failed",
-      message: error.message,
-    });
-  }
-});
-
-// Resend OTP
-app.post("/api/auth/resend-otp", authenticateToken, async (req, res) => {
-  try {
-    const { purpose } = req.body;
-    const user = await User.findById(req.user.id);
-
-    if (!user) {
-      return res.status(404).json({ success: false, error: "User not found" });
-    }
-
-    if (!user.phoneNumber) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Phone number not found" });
-    }
-
-    await sendOTP(user.phoneNumber, purpose || "registration");
-
-    res.json({
-      success: true,
-      message: "OTP resent successfully",
-    });
-  } catch (error) {
-    console.error("❌ Resend OTP error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to resend OTP",
-      message: error.message,
-    });
-  }
-});
-
 // ============================================
 // PAYMENT REMINDER HELPER FUNCTIONS
 // ============================================
@@ -4091,12 +3799,38 @@ async function sendPaymentReminder(userId, invoiceId, reminderType) {
     );
 
     // Send SMS if available
-    if (student.phoneNumber && process.env.BEEM_API_KEY) {
+    if (student.phoneNumber) {
       const smsMessage = `${title}: ${message.substring(
         0,
         150
       )}... Reference: ${invoice.invoiceNumber}`;
-      await sendSMS(student.phoneNumber, smsMessage);
+      const smsResult = await smsService.sendSMS(
+        student.phoneNumber,
+        smsMessage,
+        "payment_reminder"
+      );
+
+      if (smsResult.success) {
+        await SMSLog.create({
+          userId: userId,
+          phone: student.phoneNumber,
+          message: smsMessage,
+          type: "payment_confirmation",
+          status: "sent",
+          messageId: smsResult.messageId,
+          reference: `reminder_${reminderType}_${invoiceId}`,
+        });
+      } else {
+        await SMSLog.create({
+          userId: userId,
+          phone: student.phoneNumber,
+          message: smsMessage,
+          type: "payment_confirmation",
+          status: "failed",
+          errorMessage: smsResult.error,
+          reference: `reminder_${reminderType}_${invoiceId}`,
+        });
+      }
     }
 
     // Create reminder record
@@ -6401,40 +6135,21 @@ app.post("/api/books/:id/purchase", authenticateToken, async (req, res) => {
         .status(400)
         .json({ success: false, error: "Phone number is required" });
     }
-
-    const payment = await initiateAzamPayPayment(
-      amount,
-      phoneNumber,
-      req.user.id,
-      "book_purchase",
-      {
+    // Manual payment instructions
+    res.json({
+      success: true,
+      message: "Book purchase recorded. Please complete payment manually.",
+      data: {
         bookId: book._id,
         bookTitle: book.title,
-      }
-    );
-
-    if (payment.success) {
-      await BookPurchase.create({
-        userId: req.user.id,
-        bookId: book._id,
         amount,
-        paymentMethod: "azampay",
-        transactionId: payment.referenceId,
-        paymentStatus: "pending",
-      });
-
-      res.json({
-        success: true,
-        message: "Payment initiated successfully",
-        data: payment,
-      });
-    } else {
-      res.status(400).json({
-        success: false,
-        error: "Payment initiation failed",
-        message: payment.message,
-      });
-    }
+        paymentInstructions: {
+          vodacomLipa: "5130676",
+          crdbAccount: "0150814579600",
+          accountName: "E Connect Limited",
+        },
+      },
+    });
   } catch (error) {
     console.error("❌ Purchase error:", error);
     res.status(500).json({
@@ -6839,24 +6554,13 @@ app.post("/api/events/:id/register", authenticateToken, async (req, res) => {
       req
     );
 
-    // If there's a fee, initiate payment
-    if (event.registrationFee > 0 && req.body.phoneNumber) {
-      const payment = await initiateAzamPayPayment(
-        event.registrationFee,
-        req.body.phoneNumber,
-        req.user.id,
-        "event_registration",
-        {
-          eventId: event._id,
-          eventTitle: event.title,
-          registrationId: registration._id,
-        }
-      );
-
-      if (payment.success) {
-        registration.transactionId = payment.referenceId;
-        await registration.save();
-      }
+    // Event registration without payment gateway
+    if (event.registrationFee > 0) {
+      // Create pending payment record
+      registration.paymentStatus = "pending";
+      registration.notes =
+        "Payment pending - contact organizer for payment instructions";
+      await registration.save();
     }
 
     res.status(201).json({
@@ -7845,155 +7549,6 @@ app.get(
 // REST OF ENDPOINTS CONTINUE...
 //
 // ============================================
-
-// Payment callback (AzamPay webhook)
-app.post("/api/payments/callback/azampay", async (req, res) => {
-  try {
-    console.log("💳 AzamPay Callback:", req.body);
-
-    const { transactionId, status, reference } = req.body;
-
-    const transaction = await Transaction.findOne({ referenceId: reference });
-
-    if (!transaction) {
-      console.error("❌ Transaction not found:", reference);
-      return res
-        .status(404)
-        .json({ success: false, error: "Transaction not found" });
-    }
-
-    if (status === "success" || status === "completed") {
-      transaction.status = "completed";
-      transaction.completedAt = new Date();
-      transaction.providerTransactionId = transactionId;
-      await transaction.save();
-
-      // Calculate revenue
-      const { commission, netAmount } = calculateRevenueSplit(
-        transaction.amount,
-        transaction.transactionType
-      );
-
-      // Create revenue record
-      await Revenue.create({
-        transactionId: transaction._id,
-        businessId: transaction.businessId,
-        schoolId: transaction.schoolId,
-        userId: transaction.userId,
-        amount: transaction.amount,
-        commission,
-        netAmount,
-        revenueType: transaction.transactionType,
-        revenueDate: new Date(),
-        month: new Date().getMonth() + 1,
-        year: new Date().getFullYear(),
-        quarter: Math.ceil((new Date().getMonth() + 1) / 3),
-      });
-
-      // Update related entities based on transaction type
-      if (
-        transaction.transactionType === "book_purchase" &&
-        transaction.metadata?.bookId
-      ) {
-        await Book.findByIdAndUpdate(transaction.metadata.bookId, {
-          $inc: { soldCount: 1 },
-        });
-
-        await BookPurchase.findOneAndUpdate(
-          { transactionId: transaction.referenceId },
-          { paymentStatus: "completed" }
-        );
-      }
-
-      if (
-        transaction.transactionType === "event_registration" &&
-        transaction.metadata?.registrationId
-      ) {
-        await EventRegistration.findByIdAndUpdate(
-          transaction.metadata.registrationId,
-          { paymentStatus: "paid" }
-        );
-      }
-
-      await createNotification(
-        transaction.userId,
-        "Payment Successful",
-        `Your payment of TZS ${transaction.amount.toLocaleString()} was successful`,
-        "success"
-      );
-
-      await logActivity(
-        transaction.userId,
-        "PAYMENT_COMPLETED",
-        `Payment completed: TZS ${transaction.amount}`,
-        req
-      );
-    } else {
-      transaction.status = "failed";
-      transaction.failureReason = req.body.message || "Payment failed";
-      await transaction.save();
-
-      await createNotification(
-        transaction.userId,
-        "Payment Failed",
-        "Your payment was not successful. Please try again.",
-        "error"
-      );
-    }
-
-    res.json({ success: true, message: "Callback processed" });
-  } catch (error) {
-    console.error("❌ Payment callback error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Callback processing failed",
-      message: error.message,
-    });
-  }
-});
-
-// Initiate payment
-app.post("/api/payments/initiate", authenticateToken, async (req, res) => {
-  try {
-    const { amount, phoneNumber, transactionType, metadata } = req.body;
-
-    if (!amount || !phoneNumber || !transactionType) {
-      return res.status(400).json({
-        success: false,
-        error: "Amount, phone number, and transaction type are required",
-      });
-    }
-
-    const payment = await initiateAzamPayPayment(
-      amount,
-      phoneNumber,
-      req.user.id,
-      transactionType,
-      metadata
-    );
-
-    if (payment.success) {
-      res.json({
-        success: true,
-        message: "Payment initiated successfully",
-        data: payment,
-      });
-    } else {
-      res.status(400).json({
-        success: false,
-        error: "Payment initiation failed",
-        message: payment.message,
-      });
-    }
-  } catch (error) {
-    console.error("❌ Payment initiation error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Payment initiation failed",
-      message: error.message,
-    });
-  }
-});
 
 // Get transactions
 app.get("/api/transactions", authenticateToken, async (req, res) => {
@@ -12240,12 +11795,43 @@ app.post(
       user.isActive = true;
       await user.save();
 
-      // ✅ Send SMS with password
-      await sendSMS(
+      // ✅ Send SMS with password using NEXTSMS
+      const userName = `${user.firstName} ${user.lastName}`;
+      const smsResult = await smsService.sendPasswordSMS(
         user.phoneNumber,
-        `Your ECONNECT teacher account has been approved! Your password is: ${newPassword}. Please login and change it immediately.`
+        newPassword,
+        userName,
+        user._id.toString()
       );
 
+      if (smsResult.success) {
+        console.log(`📱 Teacher approval SMS sent to ${user.phoneNumber}`);
+
+        await SMSLog.create({
+          userId: user._id,
+          phone: user.phoneNumber,
+          message: "Teacher approval password SMS",
+          type: "password",
+          status: "sent",
+          messageId: smsResult.messageId,
+          reference: `teacher_approved_${user._id}`,
+        });
+      } else {
+        console.error(
+          `❌ Failed to send teacher approval SMS:`,
+          smsResult.error
+        );
+
+        await SMSLog.create({
+          userId: user._id,
+          phone: user.phoneNumber,
+          message: "Teacher approval SMS (failed)",
+          type: "password",
+          status: "failed",
+          errorMessage: smsResult.error,
+          reference: `teacher_approved_${user._id}`,
+        });
+      }
       await createNotification(
         user._id,
         "Account Approved",
@@ -12338,12 +11924,43 @@ app.post(
       user.isActive = true;
       await user.save();
 
-      // ✅ Send SMS with password
-      await sendSMS(
+      // ✅ Send SMS with password using NEXTSMS
+      const userName = `${user.firstName} ${user.lastName}`;
+      const smsResult = await smsService.sendPasswordSMS(
         user.phoneNumber,
-        `Your ECONNECT account has been approved! Your password is: ${newPassword}. Login at econnect.co.tz`
+        newPassword,
+        userName,
+        user._id.toString()
       );
 
+      if (smsResult.success) {
+        console.log(`📱 Student approval SMS sent to ${user.phoneNumber}`);
+
+        await SMSLog.create({
+          userId: user._id,
+          phone: user.phoneNumber,
+          message: "Student approval password SMS",
+          type: "password",
+          status: "sent",
+          messageId: smsResult.messageId,
+          reference: `student_approved_${user._id}`,
+        });
+      } else {
+        console.error(
+          `❌ Failed to send student approval SMS:`,
+          smsResult.error
+        );
+
+        await SMSLog.create({
+          userId: user._id,
+          phone: user.phoneNumber,
+          message: "Student approval SMS (failed)",
+          type: "password",
+          status: "failed",
+          errorMessage: smsResult.error,
+          reference: `student_approved_${user._id}`,
+        });
+      }
       await createNotification(
         user._id,
         "Account Approved",
@@ -16371,101 +15988,6 @@ app.get(
   }
 );
 
-// GET Subscription Plans
-app.get(
-  "/api/superadmin/subscriptions/plans",
-  authenticateToken,
-  authorizeRoles("super_admin"),
-  async (req, res) => {
-    try {
-      // Return default plans (you can store these in DB later)
-      const plans = [
-        {
-          id: "free",
-          name: "Free",
-          price: 0,
-          duration: "forever",
-          features: [
-            "Basic profile",
-            "View public content",
-            "Limited messaging",
-          ],
-        },
-        {
-          id: "basic",
-          name: "Basic",
-          price: 5000,
-          duration: "30 days",
-          features: [
-            "Full profile access",
-            "Unlimited messaging",
-            "Basic analytics",
-            "Upload content",
-          ],
-        },
-        {
-          id: "premium",
-          name: "Premium",
-          price: 15000,
-          duration: "30 days",
-          features: [
-            "All Basic features",
-            "Advanced analytics",
-            "Priority support",
-            "Custom branding",
-            "API access",
-          ],
-        },
-      ];
-
-      res.json({ success: true, data: plans });
-    } catch (error) {
-      console.error("❌ Error fetching subscription plans:", error);
-      res
-        .status(500)
-        .json({ success: false, error: "Failed to fetch subscription plans" });
-    }
-  }
-);
-
-// CREATE Subscription Plan
-app.post(
-  "/api/superadmin/subscriptions/plans",
-  authenticateToken,
-  authorizeRoles("super_admin"),
-  async (req, res) => {
-    try {
-      const { name, price, duration, features } = req.body;
-
-      if (!name || price === undefined || !duration) {
-        return res.status(400).json({
-          success: false,
-          error: "Name, price, and duration are required",
-        });
-      }
-
-      // Store in system settings or separate collection
-      await logActivity(
-        req.user.id,
-        "SUBSCRIPTION_PLAN_CREATED",
-        `Created plan: ${name}`,
-        req
-      );
-
-      res.status(201).json({
-        success: true,
-        message: "Subscription plan created successfully",
-        data: { name, price, duration, features },
-      });
-    } catch (error) {
-      console.error("❌ Error creating subscription plan:", error);
-      res
-        .status(500)
-        .json({ success: false, error: "Failed to create subscription plan" });
-    }
-  }
-);
-
 // GET SuperAdmin Profile
 app.get(
   "/api/superadmin/profile",
@@ -20415,174 +19937,6 @@ app.get(
 );
 
 // ============================================================================
-// SUBSCRIPTION MANAGEMENT ENDPOINTS
-// ============================================================================
-
-// GET user subscriptions
-app.get("/api/subscriptions", authenticateToken, async (req, res) => {
-  try {
-    const subscriptions = await Subscription.find({ userId: req.user.id })
-      .sort({ createdAt: -1 })
-      .populate("transactionId");
-
-    res.json({
-      success: true,
-      data: subscriptions,
-    });
-  } catch (error) {
-    console.error("❌ Error fetching subscriptions:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to fetch subscriptions",
-      message: error.message,
-    });
-  }
-});
-
-// GET active subscription
-app.get("/api/subscriptions/active", authenticateToken, async (req, res) => {
-  try {
-    const subscription = await Subscription.findOne({
-      userId: req.user.id,
-      status: "active",
-      endDate: { $gt: new Date() },
-    });
-
-    res.json({
-      success: true,
-      data: subscription,
-    });
-  } catch (error) {
-    console.error("❌ Error fetching active subscription:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to fetch active subscription",
-      message: error.message,
-    });
-  }
-});
-
-// CREATE subscription
-app.post("/api/subscriptions", authenticateToken, async (req, res) => {
-  try {
-    const { plan, duration = 30, amount, phoneNumber } = req.body; // duration in days
-
-    if (!plan || !amount || !phoneNumber) {
-      return res.status(400).json({
-        success: false,
-        error: "Plan, amount, and phone number are required",
-      });
-    }
-
-    const startDate = new Date();
-    const endDate = new Date();
-    endDate.setDate(endDate.getDate() + parseInt(duration));
-
-    // Initiate payment
-    const payment = await initiateAzamPayPayment(
-      amount,
-      phoneNumber,
-      req.user.id,
-      "subscription",
-      {
-        plan,
-        duration,
-        startDate,
-        endDate,
-      }
-    );
-
-    if (!payment.success) {
-      return res.status(400).json({
-        success: false,
-        error: "Payment initiation failed",
-        message: payment.message,
-      });
-    }
-
-    // Create subscription (pending payment)
-    const subscription = await Subscription.create({
-      userId: req.user.id,
-      plan,
-      status: "active",
-      startDate,
-      endDate,
-      autoRenew: true,
-      amount,
-      features: getFeaturesByPlan(plan),
-    });
-
-    res.status(201).json({
-      success: true,
-      message: "Subscription created. Complete payment to activate.",
-      data: {
-        subscription,
-        payment,
-      },
-    });
-  } catch (error) {
-    console.error("❌ Error creating subscription:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to create subscription",
-      message: error.message,
-    });
-  }
-});
-
-// CANCEL subscription
-app.patch(
-  "/api/subscriptions/:id/cancel",
-  authenticateToken,
-  async (req, res) => {
-    try {
-      const subscription = await Subscription.findOne({
-        _id: req.params.id,
-        userId: req.user.id,
-      });
-
-      if (!subscription) {
-        return res.status(404).json({
-          success: false,
-          error: "Subscription not found",
-        });
-      }
-
-      subscription.status = "cancelled";
-      subscription.autoRenew = false;
-      await subscription.save();
-
-      await createNotification(
-        req.user.id,
-        "Subscription Cancelled",
-        `Your ${subscription.plan} subscription has been cancelled`,
-        "info"
-      );
-
-      await logActivity(
-        req.user.id,
-        "SUBSCRIPTION_CANCELLED",
-        `Cancelled ${subscription.plan} subscription`,
-        req
-      );
-
-      res.json({
-        success: true,
-        message: "Subscription cancelled successfully",
-        data: subscription,
-      });
-    } catch (error) {
-      console.error("❌ Error cancelling subscription:", error);
-      res.status(500).json({
-        success: false,
-        error: "Failed to cancel subscription",
-        message: error.message,
-      });
-    }
-  }
-);
-
-// ============================================================================
 // ACTIVITY LOGS ENDPOINT
 // ============================================================================
 
@@ -21407,6 +20761,253 @@ app.post(
   }
 );
 
+// ============================================
+// TEST ENDPOINT 1: Test NEXTSMS Connection
+// ADD THIS AFTER YOUR LAST ENDPOINT (Before server.listen())
+// ============================================
+
+app.post(
+  "/api/test/nextsms",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { phone, message } = req.body;
+
+      console.log("🧪 Testing NEXTSMS with:", {
+        phone,
+        messageLength: message?.length,
+      });
+
+      const result = await smsService.sendSMS(phone, message, "test");
+
+      res.json({
+        success: true,
+        testResult: result,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("❌ NEXTSMS test failed:", error);
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// ============================================
+// TEST ENDPOINT 2: Test Password SMS
+// ============================================
+
+app.post(
+  "/api/test/password-sms",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { phone, password, userName } = req.body;
+
+      const result = await smsService.sendPasswordSMS(
+        phone,
+        password,
+        userName,
+        "test123"
+      );
+
+      res.json({
+        success: true,
+        testResult: result,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// ============================================
+// SMS LOGS ENDPOINT: View SMS History
+// ============================================
+
+app.get(
+  "/api/superadmin/sms-logs",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 50, status, type } = req.query;
+
+      const query = {};
+      if (status) query.status = status;
+      if (type) query.type = type;
+
+      const logs = await SMSLog.find(query)
+        .sort({ sentAt: -1 })
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .populate("userId", "firstName lastName email phoneNumber role");
+
+      const total = await SMSLog.countDocuments(query);
+
+      // Get stats
+      const stats = await SMSLog.aggregate([
+        {
+          $group: {
+            _id: "$status",
+            count: { $sum: 1 },
+          },
+        },
+      ]);
+
+      res.json({
+        success: true,
+        data: logs,
+        meta: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit)),
+          stats: stats.reduce((acc, item) => {
+            acc[item._id] = item.count;
+            return acc;
+          }, {}),
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error fetching SMS logs:", error);
+      res
+        .status(500)
+        .json({ success: false, error: "Failed to fetch SMS logs" });
+    }
+  }
+);
+
+// ============================================
+// SMS STATISTICS ENDPOINT
+// ============================================
+
+app.get(
+  "/api/superadmin/sms-stats",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const [totalSent, totalFailed, last24Hours, byType] = await Promise.all([
+        SMSLog.countDocuments({ status: "sent" }),
+        SMSLog.countDocuments({ status: "failed" }),
+        SMSLog.countDocuments({
+          sentAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+        }),
+        SMSLog.aggregate([
+          {
+            $group: {
+              _id: "$type",
+              count: { $sum: 1 },
+              successful: {
+                $sum: { $cond: [{ $eq: ["$status", "sent"] }, 1, 0] },
+              },
+            },
+          },
+        ]),
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          totalSent,
+          totalFailed,
+          last24Hours,
+          byType,
+          successRate:
+            totalSent + totalFailed > 0
+              ? ((totalSent / (totalSent + totalFailed)) * 100).toFixed(2)
+              : 0,
+        },
+      });
+    } catch (error) {
+      res.status(500).json({ success: false, error: "Failed to fetch stats" });
+    }
+  }
+);
+
+// ============================================
+// RESEND PASSWORD SMS (Manual Trigger for Admin)
+// ============================================
+
+app.post(
+  "/api/superadmin/resend-password-sms",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { userId } = req.body;
+
+      const user = await User.findById(userId);
+
+      if (!user) {
+        return res
+          .status(404)
+          .json({ success: false, error: "User not found" });
+      }
+
+      // Generate new password
+      const newPassword = generateRandomPassword();
+      const hashedPassword = await hashPassword(newPassword);
+
+      user.password = hashedPassword;
+      await user.save();
+
+      // Send SMS
+      const userName = `${user.firstName} ${user.lastName}`;
+      const smsResult = await smsService.sendPasswordSMS(
+        user.phoneNumber,
+        newPassword,
+        userName,
+        user._id.toString()
+      );
+
+      if (smsResult.success) {
+        await SMSLog.create({
+          userId: user._id,
+          phone: user.phoneNumber,
+          message: "Password resent by admin",
+          type: "password",
+          status: "sent",
+          messageId: smsResult.messageId,
+          reference: `pwd_resend_${user._id}`,
+        });
+
+        await logActivity(
+          req.user.id,
+          "PASSWORD_RESENT",
+          `Resent password to ${user.firstName} ${user.lastName}`,
+          req
+        );
+
+        res.json({
+          success: true,
+          message: "Password SMS sent successfully",
+          phone: user.phoneNumber,
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: "Failed to send SMS",
+          details: smsResult.error,
+        });
+      }
+    } catch (error) {
+      console.error("❌ Error resending password:", error);
+      res
+        .status(500)
+        .json({ success: false, error: "Failed to resend password" });
+    }
+  }
+);
+
 // ============================================================================
 // EXPORT MODULE
 // ============================================================================
@@ -21488,8 +21089,6 @@ server.listen(PORT, () => {
   console.log("");
   console.log("🎯 FEATURES ENABLED:");
   console.log("   ✅ 7+ User Roles");
-  console.log("   ✅ Beem OTP & SMS");
-  console.log("   ✅ AzamPay Payments");
   console.log("   ✅ Socket.io Messaging");
   console.log("   ✅ Multi-School Isolation");
   console.log("   ✅ File Uploads");
