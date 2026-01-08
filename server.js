@@ -4362,7 +4362,8 @@ app.post(
 
 // Reset password with OTP
 app.post(
-  "/api/auth/reset-password",  publicRateLimiter, 
+  "/api/auth/reset-password",
+  publicRateLimiter,
   [
     body("email")
       .isEmail()
@@ -5751,7 +5752,8 @@ app.post(
 // UPDATE student talent
 app.put(
   "/api/students/:studentId/talents/:talentId",
-  authenticateToken,validateObjectId("talentId"),
+  authenticateToken,
+  validateObjectId("talentId"),
   validateObjectId("studentId"),
   async (req, res) => {
     try {
@@ -5798,7 +5800,8 @@ app.put(
 // DELETE student talent registration
 app.delete(
   "/api/students/:studentId/talents/:talentId",
-  authenticateToken,validateObjectId("talentId"),
+  authenticateToken,
+  validateObjectId("talentId"),
   validateObjectId("studentId"),
   async (req, res) => {
     try {
@@ -5841,7 +5844,8 @@ app.delete(
 // Add certification to student talent
 app.post(
   "/api/students/:studentId/talents/:talentId/certifications",
-  authenticateToken,validateObjectId("talentId"),
+  authenticateToken,
+  validateObjectId("talentId"),
   validateObjectId("studentId"),
   async (req, res) => {
     try {
@@ -6677,7 +6681,8 @@ app.post(
 
 app.delete(
   "/api/student/events/:eventId/register",
-  authenticateToken,validateObjectId("eventId"),
+  authenticateToken,
+  validateObjectId("eventId"),
   authorizeRoles("student"),
   async (req, res) => {
     try {
@@ -8301,7 +8306,8 @@ app.get("/api/notifications", authenticateToken, async (req, res) => {
 
 app.patch(
   "/api/notifications/:id/read",
-  authenticateToken, validateObjectId("id"), 
+  authenticateToken,
+  validateObjectId("id"),
   async (req, res) => {
     try {
       const notification = await Notification.findOneAndUpdate(
@@ -8802,66 +8808,72 @@ app.get("/api/assignments", authenticateToken, async (req, res) => {
 });
 
 // GET assignment by ID
-app.get("/api/assignments/:id", authenticateToken, validateObjectId("id"), async (req, res) => {
-  try {
-    const assignment = await Assignment.findById(req.params.id)
-      .populate("teacherId", "firstName lastName email")
-      .populate("schoolId", "name schoolCode");
+app.get(
+  "/api/assignments/:id",
+  authenticateToken,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const assignment = await Assignment.findById(req.params.id)
+        .populate("teacherId", "firstName lastName email")
+        .populate("schoolId", "name schoolCode");
 
-    if (!assignment) {
-      return res.status(404).json({
-        success: false,
-        error: "Assignment not found",
-      });
-    }
+      if (!assignment) {
+        return res.status(404).json({
+          success: false,
+          error: "Assignment not found",
+        });
+      }
 
-    // Check permissions
-    const canView =
-      req.user.role === "super_admin" ||
-      assignment.teacherId._id.toString() === req.user.id ||
-      (req.user.role === "student" &&
-        assignment.schoolId._id.toString() === req.user.schoolId?.toString());
+      // Check permissions
+      const canView =
+        req.user.role === "super_admin" ||
+        assignment.teacherId._id.toString() === req.user.id ||
+        (req.user.role === "student" &&
+          assignment.schoolId._id.toString() === req.user.schoolId?.toString());
 
-    if (!canView) {
-      return res.status(403).json({
-        success: false,
-        error: "You do not have permission to view this assignment",
-      });
-    }
+      if (!canView) {
+        return res.status(403).json({
+          success: false,
+          error: "You do not have permission to view this assignment",
+        });
+      }
 
-    // If student, get their submission
-    if (req.user.role === "student") {
-      const submission = await AssignmentSubmission.findOne({
-        assignmentId: assignment._id,
-        studentId: req.user.id,
-      });
+      // If student, get their submission
+      if (req.user.role === "student") {
+        const submission = await AssignmentSubmission.findOne({
+          assignmentId: assignment._id,
+          studentId: req.user.id,
+        });
 
-      const assignmentObj = assignment.toObject();
-      assignmentObj.submitted = !!submission;
-      assignmentObj.submission = submission;
-      assignmentObj.isOverdue = !submission && new Date() > assignment.dueDate;
+        const assignmentObj = assignment.toObject();
+        assignmentObj.submitted = !!submission;
+        assignmentObj.submission = submission;
+        assignmentObj.isOverdue =
+          !submission && new Date() > assignment.dueDate;
 
-      return res.json({
+        return res.json({
+          success: true,
+          data: assignmentObj,
+        });
+      }
+
+      res.json({
         success: true,
-        data: assignmentObj,
+        data: assignment,
+      });
+    } catch (error) {
+      console.error("❌ Error fetching assignment:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch assignment",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
-
-    res.json({
-      success: true,
-      data: assignment,
-    });
-  } catch (error) {
-    console.error("❌ Error fetching assignment:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to fetch assignment",
-      ...(process.env.NODE_ENV === "development" && {
-        debug: sanitizeError(error),
-      }),
-    });
   }
-});
+);
 
 // CREATE assignment (teacher only)
 app.post(
@@ -8890,8 +8902,8 @@ app.post(
       });
     } catch (error) {
       console.error("❌ Error creating assignment:", error);
-      res.status(500).json({ 
-        success: false, 
+      res.status(500).json({
+        success: false,
         error: "Failed to create assignment",
         ...(process.env.NODE_ENV === "development" && {
           debug: sanitizeError(error),
@@ -8899,7 +8911,7 @@ app.post(
       });
     }
   }
-);  // ✅ FIXED: Added closing }); for app.post()
+); // ✅ FIXED: Added closing }); for app.post()
 
 // SUBMIT assignment (student only)
 app.post(
@@ -18566,15 +18578,16 @@ app.post(
       });
     } catch (error) {
       console.error("❌ Error creating assignment:", error);
-      res
-        .status(500)
-        .json({ success: false, error: "Failed to create assignment" ,
-    ...(process.env.NODE_ENV === "development" && {
-      debug: sanitizeError(error), // ✅ ADD THIS
-    }),
-  });
-}
-
+      res.status(500).json({
+        success: false,
+        error: "Failed to create assignment",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+); // ✅ FIXED: Closing app.post() for CREATE Assignment
 
 // GET Assignment Submissions
 app.get(
@@ -19724,7 +19737,8 @@ app.post(
 app.delete(
   "/api/groups/:id/members/:userId",
   authenticateToken,
-  validateObjectId("id"), validateObjectId("userId"),
+  validateObjectId("id"),
+  validateObjectId("userId"),
   async (req, res) => {
     try {
       const group = await Group.findById(req.params.id);
@@ -20370,7 +20384,7 @@ app.get(
         success: false,
         error: "Failed to fetch activity logs",
         ...(process.env.NODE_ENV === "development" && {
-          debug: sanitizeError(error),  // ✅ ADDED
+          debug: sanitizeError(error), // ✅ ADDED
         }),
       });
     }
@@ -20703,7 +20717,7 @@ app.get(
 // ============================================
 
 // GET all subjects
-app.get("/api/subjects",  publicRateLimiter,async (req, res) => {
+app.get("/api/subjects", publicRateLimiter, async (req, res) => {
   try {
     const { schoolId, category, isActive = true } = req.query;
 
@@ -20748,37 +20762,43 @@ app.get("/api/subjects",  publicRateLimiter,async (req, res) => {
 });
 
 // GET subject by ID
-app.get("/api/subjects/:id", publicRateLimiter, validateObjectId("id"), async (req, res) => {
-  try {
-    const subject = await Subject.findById(req.params.id);
+app.get(
+  "/api/subjects/:id",
+  publicRateLimiter,
+  validateObjectId("id"),
+  async (req, res) => {
+    try {
+      const subject = await Subject.findById(req.params.id);
 
-    if (!subject) {
-      return res.status(404).json({
+      if (!subject) {
+        return res.status(404).json({
+          success: false,
+          error: "Subject not found",
+        });
+      }
+
+      res.json({
+        success: true,
+        data: subject,
+      });
+    } catch (error) {
+      console.error("❌ Error fetching subject:", error);
+      res.status(500).json({
         success: false,
-        error: "Subject not found",
+        error: "Failed to fetch subject",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
-
-    res.json({
-      success: true,
-      data: subject,
-    });
-  } catch (error) {
-    console.error("❌ Error fetching subject:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to fetch subject",
-      ...(process.env.NODE_ENV === "development" && {
-        debug: sanitizeError(error),
-      }),
-    });
   }
-});
+);
 
 // CREATE subject (admin only)
 app.post(
   "/api/subjects",
-  authenticateToken, publicRateLimiter,
+  authenticateToken,
+  publicRateLimiter,
   authorizeRoles("super_admin", "national_official", "headmaster"),
   async (req, res) => {
     try {
@@ -20841,8 +20861,8 @@ app.post(
 app.put(
   "/api/subjects/:id",
   authenticateToken,
-  publicRateLimiter,  // ✅ FIXED: Moved before authorizeRoles
-  authorizeRoles("super_admin", "national_official", "headmaster"),  // ✅ FIXED: Removed syntax error
+  publicRateLimiter, // ✅ FIXED: Moved before authorizeRoles
+  authorizeRoles("super_admin", "national_official", "headmaster"), // ✅ FIXED: Removed syntax error
   validateObjectId("id"),
   async (req, res) => {
     try {
@@ -20888,8 +20908,8 @@ app.put(
 app.delete(
   "/api/subjects/:id",
   authenticateToken,
-  publicRateLimiter,  // ✅ FIXED
-  authorizeRoles("super_admin"),  // ✅ FIXED
+  publicRateLimiter, // ✅ FIXED
+  authorizeRoles("super_admin"), // ✅ FIXED
   validateObjectId("id"),
   async (req, res) => {
     try {
@@ -21286,8 +21306,8 @@ app.get(
       });
     } catch (error) {
       console.error("❌ Error fetching SMS logs:", error);
-      res.status(500).json({ 
-        success: false, 
+      res.status(500).json({
+        success: false,
         error: "Failed to fetch SMS logs",
         ...(process.env.NODE_ENV === "development" && {
           debug: sanitizeError(error),
@@ -21295,8 +21315,7 @@ app.get(
       });
     }
   }
-);  // ✅ FIXED: Closing app.get()
-
+); // ✅ FIXED: Closing app.get() for SMS Logs
 // ============================================
 // SMS STATISTICS ENDPOINT
 // ============================================
@@ -21340,8 +21359,9 @@ app.get(
         },
       });
     } catch (error) {
-      res.status(500).json({ 
-        success: false, 
+      console.error("❌ Error fetching SMS stats:", error);
+      res.status(500).json({
+        success: false,
         error: "Failed to fetch stats",
         ...(process.env.NODE_ENV === "development" && {
           debug: sanitizeError(error),
@@ -21349,7 +21369,7 @@ app.get(
       });
     }
   }
-);  // ✅ FIXED: Removed extra )
+); // ✅ FIXED: Closing app.get() for SMS Stats
 // ============================================
 // RESEND PASSWORD SMS (Manual Trigger for Admin)
 // ============================================
@@ -21403,7 +21423,6 @@ app.post(
           `Resent password to ${user.firstName} ${user.lastName}`,
           req
         );
-
         res.json({
           success: true,
           message: "Password SMS sent successfully",
@@ -21418,8 +21437,8 @@ app.post(
       }
     } catch (error) {
       console.error("❌ Error resending password:", error);
-      res.status(500).json({ 
-        success: false, 
+      res.status(500).json({
+        success: false,
         error: "Failed to resend password",
         ...(process.env.NODE_ENV === "development" && {
           debug: sanitizeError(error),
@@ -21427,7 +21446,7 @@ app.post(
       });
     }
   }
-);  // ✅ FIXED: Closing app.post()
+); // ✅ FIXED: Closing app.post() for Resend Password SMS
 // ============================================================================
 // EXPORT MODULE
 // ============================================================================
@@ -21508,7 +21527,7 @@ server.listen(PORT, () => {
   console.log("   ✅ Comprehensive Analytics");
   console.log("   ✅ Registration Type System");
   console.log("   ✅ Monthly Billing Automation");
-  console.log("   ✅ Optimized Location Loading"); // ✅ ADD THIS LINE
+  console.log("   ✅ Optimized Location Loading");
   console.log("═══════════════════════════════════════════════════════");
   console.log("");
 });
