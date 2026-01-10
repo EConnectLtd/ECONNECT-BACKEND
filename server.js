@@ -17337,6 +17337,1234 @@ app.delete(
 );
 
 // ============================================
+// DELETE User (SuperAdmin - Hard Delete)
+// ============================================
+app.delete(
+  "/api/superadmin/users/:userId",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  validateObjectId("userId"),
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+
+      console.log(`🗑️ Delete request for user: ${userId}`);
+
+      // Find user
+      const user = await User.findById(userId);
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          error: "User not found",
+        });
+      }
+
+      // Store user info for logging
+      const userName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.username;
+      const userRole = user.role;
+      const userEmail = user.email;
+
+      // ✅ HARD DELETE (permanent removal)
+      await User.findByIdAndDelete(userId);
+
+      // ✅ Clean up related data
+      await Promise.all([
+        // Delete student talents
+        StudentTalent.deleteMany({ studentId: userId }),
+        
+        // Delete grades
+        Grade.deleteMany({ studentId: userId }),
+        
+        // Delete attendance records
+        AttendanceRecord.deleteMany({ studentId: userId }),
+        
+        // Delete assignment submissions
+        AssignmentSubmission.deleteMany({ studentId: userId }),
+        
+        // Delete performance records
+        PerformanceRecord.deleteMany({ studentId: userId }),
+        
+        // Delete certificates
+        Certificate.deleteMany({ studentId: userId }),
+        
+        // Delete CTM membership
+        CTMMembership.deleteOne({ studentId: userId }),
+        
+        // Delete messages (sent and received)
+        Message.deleteMany({ $or: [{ senderId: userId }, { recipientId: userId }] }),
+        
+        // Delete notifications
+        Notification.deleteMany({ userId }),
+        
+        // Delete activity logs
+        ActivityLog.deleteMany({ userId }),
+        
+        // Delete event registrations
+        EventRegistration.deleteMany({ userId }),
+        
+        // Delete invoices
+        Invoice.deleteMany({ student_id: userId }),
+        
+        // Delete payment history
+        PaymentHistory.deleteMany({ userId }),
+        
+        // Delete payment reminders
+        PaymentReminder.deleteMany({ userId }),
+        
+        // Delete SMS logs
+        SMSLog.deleteMany({ userId }),
+        
+        // Delete todos
+        Todo.deleteMany({ userId }),
+        
+        // Delete work reports
+        WorkReport.deleteMany({ userId }),
+        
+        // Delete permission requests
+        PermissionRequest.deleteMany({ userId }),
+        
+        // Delete class level requests
+        ClassLevelRequest.deleteMany({ studentId: userId }),
+      ]);
+
+      // ✅ If entrepreneur, delete their businesses
+      if (userRole === "entrepreneur") {
+        const businesses = await Business.find({ ownerId: userId });
+        const businessIds = businesses.map(b => b._id);
+        
+        await Promise.all([
+          Business.deleteMany({ ownerId: userId }),
+          Product.deleteMany({ businessId: { $in: businessIds } }),
+          Transaction.deleteMany({ businessId: { $in: businessIds } }),
+          Revenue.deleteMany({ businessId: { $in: businessIds } }),
+        ]);
+        
+        console.log(`🗑️ Deleted ${businesses.length} businesses for entrepreneur ${userName}`);
+      }
+
+      // ✅ If teacher, clean up their classes
+      if (userRole === "teacher") {
+        await Promise.all([
+          Class.updateMany(
+            { teacherId: userId },
+            { isActive: false, updatedAt: new Date() }
+          ),
+          Assignment.updateMany(
+            { teacherId: userId },
+            { status: "closed", updatedAt: new Date() }
+          ),
+        ]);
+        
+        console.log(`📚 Deactivated classes for teacher ${userName}`);
+      }
+
+      // Log activity
+      await logActivity(
+        req.user.id,
+        "USER_DELETED",
+        `Permanently deleted ${userRole}: ${userName} (${userEmail})`,
+        req,
+        {
+          deletedUserId: userId,
+          deletedUserRole: userRole,
+          deletedUserName: userName,
+          deletedUserEmail: userEmail,
+          deletionType: "hard_delete",
+          initiatedBy: req.user.username,
+        }
+      );
+
+      console.log(`✅ Successfully deleted user: ${userName} (${userId})`);
+
+      res.json({
+        success: true,
+        message: `${userRole.charAt(0).toUpperCase() + userRole.slice(1)} deleted successfully`,
+        data: {
+          deletedUserId: userId,
+          deletedUserName: userName,
+          deletedUserRole: userRole,
+        },
+      });
+
+    } catch (error) {
+      console.error("❌ Error deleting user:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to delete user",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
+// ============================================
+// BULK APPROVE USERS (Multiple users at once)
+// ============================================
+app.post(
+  "/api/superadmin/users/bulk-approve",
+  authenticateToken,
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  async (req, res) => {
+    try {
+      const { userIds } = req.body;
+
+      console.log(`🔄 Bulk approval request for ${userIds?.length || 0} users`);
+
+      // Validate input
+      if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "User IDs array is required",
+        });
+      }
+
+      // Limit bulk operations
+      if (userIds.length > 50) {
+        return res.status(400).json({
+          success: false,
+          error: "Maximum 50 users can be approved at once",
+        });
+      }
+
+      // Results tracking
+      const results = {
+        success: [],
+        failed: [],
+        skipped: [],
+        stats: {
+          total: userIds.length,
+          approved: 0,
+          failed: 0,
+          skipped: 0,
+        },
+      };
+
+      // Process each user
+      for (const userId of userIds) {
+        try {
+          console.log(`\n📝 Processing user: ${userId}`);
+
+          // Validate ObjectId
+          if (!mongoose.Types.ObjectId.isValid(userId)) {
+            results.failed.push({
+              userId,
+              error: "Invalid user ID format",
+            });
+            results.stats.failed++;
+            continue;
+          }
+
+          // Find user
+          const user = await User.findById(userId);
+
+          if (!user) {
+            results.failed.push({
+              userId,
+              error: "User not found",
+            });
+            results.stats.failed++;
+            continue;
+          }
+
+          // Skip if already active
+          if (user.isActive) {
+            const userName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.username;
+            results.skipped.push({
+              userId,
+              username: user.username,
+              name: userName,
+              role: user.role,
+              reason: "Already active",
+            });
+            results.stats.skipped++;
+            console.log(`⏭️ Skipped ${userName} - already active`);
+            continue;
+          }
+
+          // Generate new password
+          const newPassword = generateRandomPassword();
+          const hashedPassword = await hashPassword(newPassword);
+
+          // Activate user
+          user.isActive = true;
+          user.password = hashedPassword;
+
+          // Update payment fields if applicable
+          if (user.payment_status) {
+            user.payment_status = "verified";
+          }
+          if (user.payment_reference) {
+            user.payment_verified_by = req.user.id;
+            user.payment_verified_at = new Date();
+          }
+
+          user.updatedAt = new Date();
+          await user.save();
+
+          console.log(`✅ User activated: ${user.username}`);
+
+          // Send SMS with password
+          const userName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.username;
+          let smsResult = { success: false, error: "Not sent" };
+
+          try {
+            smsResult = await smsService.sendPasswordSMS(
+              user.phoneNumber,
+              newPassword,
+              userName,
+              user._id.toString()
+            );
+
+            // Log SMS result
+            if (smsResult.success) {
+              console.log(`📱 SMS sent to ${user.phoneNumber}`);
+
+              await SMSLog.create({
+                userId: user._id,
+                phone: user.phoneNumber,
+                message: "Bulk approval password SMS",
+                type: "password",
+                status: "sent",
+                messageId: smsResult.messageId,
+                reference: `bulk_approval_${user._id}`,
+              });
+            } else {
+              console.warn(`⚠️ SMS failed for ${user.phoneNumber}: ${smsResult.error}`);
+
+              await SMSLog.create({
+                userId: user._id,
+                phone: user.phoneNumber,
+                message: "Bulk approval SMS (failed)",
+                type: "password",
+                status: "failed",
+                errorMessage: smsResult.error,
+                reference: `bulk_approval_${user._id}`,
+              });
+            }
+          } catch (smsError) {
+            console.error(`❌ SMS error for ${user.phoneNumber}:`, smsError);
+            smsResult = { success: false, error: smsError.message };
+          }
+
+          // Create notification
+          try {
+            await createNotification(
+              user._id,
+              "Account Approved! 🎉",
+              `Your ${user.role} account has been approved! Check your SMS at ${user.phoneNumber} for your login password.`,
+              "success"
+            );
+          } catch (notifError) {
+            console.error(`⚠️ Notification error:`, notifError);
+          }
+
+          // Update invoices if applicable
+          if (user.role === "student" || user.role === "entrepreneur") {
+            try {
+              await Invoice.updateMany(
+                {
+                  student_id: user._id,
+                  status: { $in: ["pending", "verification"] },
+                },
+                {
+                  status: "paid",
+                  paidDate: new Date(),
+                  "paymentProof.status": "verified",
+                  "paymentProof.verifiedBy": req.user.id,
+                  "paymentProof.verifiedAt": new Date(),
+                }
+              );
+            } catch (invoiceError) {
+              console.error(`⚠️ Invoice update error:`, invoiceError);
+            }
+          }
+
+          // Update payment history
+          try {
+            await PaymentHistory.updateMany(
+              { userId: user._id, status: { $in: ["pending", "submitted"] } },
+              {
+                status: "verified",
+                verifiedAt: new Date(),
+                verifiedBy: req.user.id,
+                $push: {
+                  statusHistory: {
+                    status: "verified",
+                    changedBy: req.user.id,
+                    changedAt: new Date(),
+                    reason: "Bulk approval by admin",
+                  },
+                },
+              }
+            );
+          } catch (paymentError) {
+            console.error(`⚠️ Payment history update error:`, paymentError);
+          }
+
+          // Add to success results
+          results.success.push({
+            userId: user._id.toString(),
+            username: user.username,
+            name: userName,
+            role: user.role,
+            phoneNumber: user.phoneNumber,
+            email: user.email,
+            smsSent: smsResult.success,
+            smsError: smsResult.success ? null : smsResult.error,
+          });
+          results.stats.approved++;
+
+          console.log(`✅ Successfully approved ${userName}`);
+
+        } catch (userError) {
+          console.error(`❌ Error processing user ${userId}:`, userError);
+          results.failed.push({
+            userId,
+            error: userError.message,
+          });
+          results.stats.failed++;
+        }
+      }
+
+      // Log bulk activity
+      await logActivity(
+        req.user.id,
+        "BULK_USER_APPROVAL",
+        `Bulk approved ${results.stats.approved} users (${results.stats.failed} failed, ${results.stats.skipped} skipped)`,
+        req,
+        {
+          totalRequested: userIds.length,
+          approved: results.stats.approved,
+          failed: results.stats.failed,
+          skipped: results.stats.skipped,
+          successUserIds: results.success.map(u => u.userId),
+          failedUserIds: results.failed.map(f => f.userId),
+        }
+      );
+
+      console.log(`\n✅ Bulk approval complete:`, results.stats);
+
+      // Determine response status
+      const allFailed = results.stats.approved === 0 && results.stats.failed > 0;
+      const partialSuccess = results.stats.approved > 0 && results.stats.failed > 0;
+
+      res.status(allFailed ? 500 : 200).json({
+        success: results.stats.approved > 0,
+        message: allFailed
+          ? "All approvals failed"
+          : partialSuccess
+          ? `Approved ${results.stats.approved} users. ${results.stats.failed} failed.`
+          : `Successfully approved ${results.stats.approved} user(s)`,
+        data: results,
+        summary: {
+          total: results.stats.total,
+          approved: results.stats.approved,
+          failed: results.stats.failed,
+          skipped: results.stats.skipped,
+          successRate: `${((results.stats.approved / results.stats.total) * 100).toFixed(1)}%`,
+        },
+      });
+
+    } catch (error) {
+      console.error("❌ Bulk approval error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Bulk approval failed",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
+// ============================================
+// BULK SEND PAYMENT REMINDERS (Multiple users at once)
+// ============================================
+app.post(
+  "/api/superadmin/users/bulk-payment-reminder",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { userIds } = req.body;
+
+      console.log(`💰 Bulk payment reminder request for ${userIds?.length || 0} users`);
+
+      // Validate input
+      if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "User IDs array is required",
+        });
+      }
+
+      // Limit bulk operations
+      if (userIds.length > 100) {
+        return res.status(400).json({
+          success: false,
+          error: "Maximum 100 users can receive reminders at once",
+        });
+      }
+
+      // Results tracking
+      const results = {
+        success: [],
+        failed: [],
+        skipped: [],
+        stats: {
+          total: userIds.length,
+          sent: 0,
+          failed: 0,
+          skipped: 0,
+          totalAmountDue: 0,
+        },
+      };
+
+      // Process each user
+      for (const userId of userIds) {
+        try {
+          console.log(`\n📝 Processing payment reminder for: ${userId}`);
+
+          // Validate ObjectId
+          if (!mongoose.Types.ObjectId.isValid(userId)) {
+            results.failed.push({
+              userId,
+              error: "Invalid user ID format",
+            });
+            results.stats.failed++;
+            continue;
+          }
+
+          // Find user
+          const user = await User.findById(userId).populate("schoolId", "name schoolCode");
+
+          if (!user) {
+            results.failed.push({
+              userId,
+              error: "User not found",
+            });
+            results.stats.failed++;
+            continue;
+          }
+
+          // Find pending invoices
+          const pendingInvoices = await Invoice.find({
+            student_id: userId,
+            status: { $in: ["pending", "verification"] },
+          }).sort({ dueDate: 1 });
+
+          if (pendingInvoices.length === 0) {
+            const userName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.username;
+            results.skipped.push({
+              userId,
+              username: user.username,
+              name: userName,
+              phoneNumber: user.phoneNumber,
+              reason: "No pending invoices",
+            });
+            results.stats.skipped++;
+            console.log(`⏭️ Skipped ${userName} - no pending invoices`);
+            continue;
+          }
+
+          // Calculate total amount due
+          const totalDue = pendingInvoices.reduce((sum, inv) => sum + inv.amount, 0);
+          results.stats.totalAmountDue += totalDue;
+
+          // Get most urgent invoice
+          const urgentInvoice = pendingInvoices[0];
+          const daysUntilDue = Math.ceil(
+            (new Date(urgentInvoice.dueDate) - new Date()) / (1000 * 60 * 60 * 24)
+          );
+
+          // Prepare SMS message
+          const userName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.username;
+          const smsMessage = `Hello ${userName}! Payment Reminder:\n\nAmount Due: TZS ${totalDue.toLocaleString()}\nDue Date: ${new Date(
+            urgentInvoice.dueDate
+          ).toLocaleDateString()}\n${
+            daysUntilDue > 0 ? `(${daysUntilDue} days remaining)` : "(OVERDUE)"
+          }\n\nPay via:\n- Vodacom Lipa: 5130676\n- CRDB: 0150814579600\n\nThank you!`;
+
+          // Send SMS
+          let smsResult = { success: false, error: "Not sent" };
+
+          try {
+            smsResult = await smsService.sendSMS(
+              user.phoneNumber,
+              smsMessage,
+              "payment_reminder"
+            );
+
+            // Log SMS result
+            if (smsResult.success) {
+              console.log(`📱 Payment reminder SMS sent to ${user.phoneNumber}`);
+
+              await SMSLog.create({
+                userId: user._id,
+                phone: user.phoneNumber,
+                message: smsMessage,
+                type: "payment_confirmation",
+                status: "sent",
+                messageId: smsResult.messageId,
+                reference: `bulk_payment_reminder_${user._id}`,
+              });
+            } else {
+              console.warn(`⚠️ SMS failed for ${user.phoneNumber}: ${smsResult.error}`);
+
+              await SMSLog.create({
+                userId: user._id,
+                phone: user.phoneNumber,
+                message: smsMessage,
+                type: "payment_confirmation",
+                status: "failed",
+                errorMessage: smsResult.error,
+                reference: `bulk_payment_reminder_${user._id}`,
+              });
+            }
+          } catch (smsError) {
+            console.error(`❌ SMS error for ${user.phoneNumber}:`, smsError);
+            smsResult = { success: false, error: smsError.message };
+          }
+
+          // Create in-app notification
+          try {
+            await createNotification(
+              user._id,
+              "Payment Reminder",
+              `You have ${pendingInvoices.length} pending invoice(s) totaling TZS ${totalDue.toLocaleString()}. Please complete payment by ${new Date(
+                urgentInvoice.dueDate
+              ).toLocaleDateString()}.`,
+              "warning",
+              `/invoices`
+            );
+          } catch (notifError) {
+            console.error(`⚠️ Notification error:`, notifError);
+          }
+
+          // Create payment reminder record
+          try {
+            await PaymentReminder.create({
+              userId: user._id,
+              invoiceId: urgentInvoice._id,
+              reminderType: daysUntilDue > 0 ? "second_reminder" : "overdue",
+              sentVia: smsResult.success ? "all" : "notification",
+              dueDate: urgentInvoice.dueDate,
+              amount: totalDue,
+              message: smsMessage,
+            });
+          } catch (reminderError) {
+            console.error(`⚠️ Payment reminder record error:`, reminderError);
+          }
+
+          // Add to success results
+          results.success.push({
+            userId: user._id.toString(),
+            username: user.username,
+            name: userName,
+            phoneNumber: user.phoneNumber,
+            email: user.email,
+            totalDue,
+            invoiceCount: pendingInvoices.length,
+            daysUntilDue,
+            isOverdue: daysUntilDue < 0,
+            smsSent: smsResult.success,
+            smsError: smsResult.success ? null : smsResult.error,
+          });
+          results.stats.sent++;
+
+          console.log(`✅ Payment reminder sent to ${userName}`);
+
+        } catch (userError) {
+          console.error(`❌ Error processing user ${userId}:`, userError);
+          results.failed.push({
+            userId,
+            error: userError.message,
+          });
+          results.stats.failed++;
+        }
+      }
+
+      // Log bulk activity
+      await logActivity(
+        req.user.id,
+        "BULK_PAYMENT_REMINDER",
+        `Sent ${results.stats.sent} payment reminders (${results.stats.failed} failed, ${results.stats.skipped} skipped)`,
+        req,
+        {
+          totalRequested: userIds.length,
+          sent: results.stats.sent,
+          failed: results.stats.failed,
+          skipped: results.stats.skipped,
+          totalAmountDue: results.stats.totalAmountDue,
+          successUserIds: results.success.map(u => u.userId),
+          failedUserIds: results.failed.map(f => f.userId),
+        }
+      );
+
+      console.log(`\n✅ Bulk payment reminder complete:`, results.stats);
+
+      // Determine response status
+      const allFailed = results.stats.sent === 0 && results.stats.failed > 0;
+      const partialSuccess = results.stats.sent > 0 && results.stats.failed > 0;
+
+      res.status(allFailed ? 500 : 200).json({
+        success: results.stats.sent > 0,
+        message: allFailed
+          ? "All reminders failed"
+          : partialSuccess
+          ? `Sent ${results.stats.sent} reminders. ${results.stats.failed} failed.`
+          : `Successfully sent ${results.stats.sent} payment reminder(s)`,
+        data: results,
+        summary: {
+          total: results.stats.total,
+          sent: results.stats.sent,
+          failed: results.stats.failed,
+          skipped: results.stats.skipped,
+          totalAmountDue: results.stats.totalAmountDue,
+          successRate: `${((results.stats.sent / results.stats.total) * 100).toFixed(1)}%`,
+        },
+      });
+
+    } catch (error) {
+      console.error("❌ Bulk payment reminder error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Bulk payment reminder failed",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
+// ============================================
+// BULK RESEND PASSWORD (Multiple users at once)
+// ============================================
+app.post(
+  "/api/superadmin/users/bulk-resend-password",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { userIds } = req.body;
+
+      console.log(`🔑 Bulk password resend request for ${userIds?.length || 0} users`);
+
+      // Validate input
+      if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "User IDs array is required",
+        });
+      }
+
+      // Limit bulk operations
+      if (userIds.length > 50) {
+        return res.status(400).json({
+          success: false,
+          error: "Maximum 50 users can receive password resets at once",
+        });
+      }
+
+      // Results tracking
+      const results = {
+        success: [],
+        failed: [],
+        skipped: [],
+        stats: {
+          total: userIds.length,
+          sent: 0,
+          failed: 0,
+          skipped: 0,
+        },
+      };
+
+      // Process each user
+      for (const userId of userIds) {
+        try {
+          console.log(`\n📝 Processing password reset for: ${userId}`);
+
+          // Validate ObjectId
+          if (!mongoose.Types.ObjectId.isValid(userId)) {
+            results.failed.push({
+              userId,
+              error: "Invalid user ID format",
+            });
+            results.stats.failed++;
+            continue;
+          }
+
+          // Find user
+          const user = await User.findById(userId);
+
+          if (!user) {
+            results.failed.push({
+              userId,
+              error: "User not found",
+            });
+            results.stats.failed++;
+            continue;
+          }
+
+          // Check if user has phone number
+          if (!user.phoneNumber) {
+            const userName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.username;
+            results.skipped.push({
+              userId,
+              username: user.username,
+              name: userName,
+              reason: "No phone number on file",
+            });
+            results.stats.skipped++;
+            console.log(`⏭️ Skipped ${userName} - no phone number`);
+            continue;
+          }
+
+          // Generate new password
+          const newPassword = generateRandomPassword();
+          const hashedPassword = await hashPassword(newPassword);
+
+          // Update user password
+          user.password = hashedPassword;
+          user.updatedAt = new Date();
+          await user.save();
+
+          console.log(`✅ Generated new password for: ${user.username}`);
+
+          // Send SMS with password
+          const userName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.username;
+          let smsResult = { success: false, error: "Not sent" };
+
+          try {
+            smsResult = await smsService.sendPasswordSMS(
+              user.phoneNumber,
+              newPassword,
+              userName,
+              user._id.toString()
+            );
+
+            // Log SMS result
+            if (smsResult.success) {
+              console.log(`📱 Password SMS sent to ${user.phoneNumber}`);
+
+              await SMSLog.create({
+                userId: user._id,
+                phone: user.phoneNumber,
+                message: "Bulk password reset by admin",
+                type: "password",
+                status: "sent",
+                messageId: smsResult.messageId,
+                reference: `bulk_pwd_reset_${user._id}`,
+              });
+            } else {
+              console.warn(`⚠️ SMS failed for ${user.phoneNumber}: ${smsResult.error}`);
+
+              await SMSLog.create({
+                userId: user._id,
+                phone: user.phoneNumber,
+                message: "Bulk password reset SMS (failed)",
+                type: "password",
+                status: "failed",
+                errorMessage: smsResult.error,
+                reference: `bulk_pwd_reset_${user._id}`,
+              });
+            }
+          } catch (smsError) {
+            console.error(`❌ SMS error for ${user.phoneNumber}:`, smsError);
+            smsResult = { success: false, error: smsError.message };
+          }
+
+          // Create notification
+          try {
+            await createNotification(
+              user._id,
+              "Password Reset",
+              `Your password has been reset by an administrator. Check your SMS at ${user.phoneNumber} for your new password.`,
+              "info"
+            );
+          } catch (notifError) {
+            console.error(`⚠️ Notification error:`, notifError);
+          }
+
+          // Add to success results
+          results.success.push({
+            userId: user._id.toString(),
+            username: user.username,
+            name: userName,
+            role: user.role,
+            phoneNumber: user.phoneNumber,
+            email: user.email,
+            smsSent: smsResult.success,
+            smsError: smsResult.success ? null : smsResult.error,
+          });
+          results.stats.sent++;
+
+          console.log(`✅ Password reset for ${userName}`);
+
+        } catch (userError) {
+          console.error(`❌ Error processing user ${userId}:`, userError);
+          results.failed.push({
+            userId,
+            error: userError.message,
+          });
+          results.stats.failed++;
+        }
+      }
+
+      // Log bulk activity
+      await logActivity(
+        req.user.id,
+        "BULK_PASSWORD_RESET",
+        `Reset passwords for ${results.stats.sent} users (${results.stats.failed} failed, ${results.stats.skipped} skipped)`,
+        req,
+        {
+          totalRequested: userIds.length,
+          sent: results.stats.sent,
+          failed: results.stats.failed,
+          skipped: results.stats.skipped,
+          successUserIds: results.success.map(u => u.userId),
+          failedUserIds: results.failed.map(f => f.userId),
+        }
+      );
+
+      console.log(`\n✅ Bulk password reset complete:`, results.stats);
+
+      // Determine response status
+      const allFailed = results.stats.sent === 0 && results.stats.failed > 0;
+      const partialSuccess = results.stats.sent > 0 && results.stats.failed > 0;
+
+      res.status(allFailed ? 500 : 200).json({
+        success: results.stats.sent > 0,
+        message: allFailed
+          ? "All password resets failed"
+          : partialSuccess
+          ? `Reset ${results.stats.sent} passwords. ${results.stats.failed} failed.`
+          : `Successfully reset ${results.stats.sent} password(s)`,
+        data: results,
+        summary: {
+          total: results.stats.total,
+          sent: results.stats.sent,
+          failed: results.stats.failed,
+          skipped: results.stats.skipped,
+          successRate: `${((results.stats.sent / results.stats.total) * 100).toFixed(1)}%`,
+        },
+      });
+
+    } catch (error) {
+      console.error("❌ Bulk password reset error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Bulk password reset failed",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
+// ============================================
+// BULK DELETE USERS (Multiple users at once)
+// ============================================
+app.post(
+  "/api/superadmin/users/bulk-delete",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { userIds, confirmationText } = req.body;
+
+      console.log(`🗑️ Bulk delete request for ${userIds?.length || 0} users`);
+
+      // Validate input
+      if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "User IDs array is required",
+        });
+      }
+
+      // Require confirmation for bulk delete
+      if (confirmationText !== "DELETE") {
+        return res.status(400).json({
+          success: false,
+          error: 'Confirmation text must be "DELETE"',
+        });
+      }
+
+      // Limit bulk operations
+      if (userIds.length > 50) {
+        return res.status(400).json({
+          success: false,
+          error: "Maximum 50 users can be deleted at once",
+        });
+      }
+
+      // Results tracking
+      const results = {
+        success: [],
+        failed: [],
+        skipped: [],
+        stats: {
+          total: userIds.length,
+          deleted: 0,
+          failed: 0,
+          skipped: 0,
+        },
+        deletedData: {
+          students: 0,
+          teachers: 0,
+          entrepreneurs: 0,
+          others: 0,
+          totalRecordsDeleted: 0,
+        },
+      };
+
+      // Process each user
+      for (const userId of userIds) {
+        try {
+          console.log(`\n📝 Processing deletion for: ${userId}`);
+
+          // Validate ObjectId
+          if (!mongoose.Types.ObjectId.isValid(userId)) {
+            results.failed.push({
+              userId,
+              error: "Invalid user ID format",
+            });
+            results.stats.failed++;
+            continue;
+          }
+
+          // Find user
+          const user = await User.findById(userId);
+
+          if (!user) {
+            results.failed.push({
+              userId,
+              error: "User not found",
+            });
+            results.stats.failed++;
+            continue;
+          }
+
+          // Prevent deleting super admin
+          if (user.role === "super_admin") {
+            const userName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.username;
+            results.skipped.push({
+              userId,
+              username: user.username,
+              name: userName,
+              role: user.role,
+              reason: "Cannot delete Super Admin accounts",
+            });
+            results.stats.skipped++;
+            console.log(`⏭️ Skipped ${userName} - super admin protected`);
+            continue;
+          }
+
+          // Store user info for logging
+          const userName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.username;
+          const userRole = user.role;
+          const userEmail = user.email;
+          let recordsDeleted = 0;
+
+          // Delete user (hard delete)
+          await User.findByIdAndDelete(userId);
+          recordsDeleted++;
+
+          // Clean up related data
+          const cleanupResults = await Promise.allSettled([
+            // Student talents
+            StudentTalent.deleteMany({ studentId: userId }),
+            
+            // Grades
+            Grade.deleteMany({ studentId: userId }),
+            
+            // Attendance records
+            AttendanceRecord.deleteMany({ studentId: userId }),
+            
+            // Assignment submissions
+            AssignmentSubmission.deleteMany({ studentId: userId }),
+            
+            // Performance records
+            PerformanceRecord.deleteMany({ studentId: userId }),
+            
+            // Certificates
+            Certificate.deleteMany({ studentId: userId }),
+            
+            // CTM membership
+            CTMMembership.deleteOne({ studentId: userId }),
+            
+            // Messages (sent and received)
+            Message.deleteMany({ $or: [{ senderId: userId }, { recipientId: userId }] }),
+            
+            // Notifications
+            Notification.deleteMany({ userId }),
+            
+            // Activity logs
+            ActivityLog.deleteMany({ userId }),
+            
+            // Event registrations
+            EventRegistration.deleteMany({ userId }),
+            
+            // Invoices
+            Invoice.deleteMany({ student_id: userId }),
+            
+            // Payment history
+            PaymentHistory.deleteMany({ userId }),
+            
+            // Payment reminders
+            PaymentReminder.deleteMany({ userId }),
+            
+            // SMS logs
+            SMSLog.deleteMany({ userId }),
+            
+            // Todos
+            Todo.deleteMany({ userId }),
+            
+            // Work reports
+            WorkReport.deleteMany({ userId }),
+            
+            // Permission requests
+            PermissionRequest.deleteMany({ userId }),
+            
+            // Class level requests
+            ClassLevelRequest.deleteMany({ studentId: userId }),
+          ]);
+
+          // Count successful deletions
+          cleanupResults.forEach((result) => {
+            if (result.status === "fulfilled" && result.value?.deletedCount) {
+              recordsDeleted += result.value.deletedCount;
+            }
+          });
+
+          // Role-specific cleanup
+          if (userRole === "entrepreneur") {
+            const businesses = await Business.find({ ownerId: userId });
+            const businessIds = businesses.map(b => b._id);
+            
+            const bizCleanup = await Promise.allSettled([
+              Business.deleteMany({ ownerId: userId }),
+              Product.deleteMany({ businessId: { $in: businessIds } }),
+              Transaction.deleteMany({ businessId: { $in: businessIds } }),
+              Revenue.deleteMany({ businessId: { $in: businessIds } }),
+            ]);
+
+            bizCleanup.forEach((result) => {
+              if (result.status === "fulfilled" && result.value?.deletedCount) {
+                recordsDeleted += result.value.deletedCount;
+              }
+            });
+
+            results.deletedData.entrepreneurs++;
+            console.log(`🗑️ Deleted ${businesses.length} businesses for entrepreneur ${userName}`);
+          } else if (userRole === "teacher") {
+            await Promise.allSettled([
+              Class.updateMany({ teacherId: userId }, { isActive: false, updatedAt: new Date() }),
+              Assignment.updateMany({ teacherId: userId }, { status: "closed", updatedAt: new Date() }),
+            ]);
+
+            results.deletedData.teachers++;
+            console.log(`📚 Deactivated classes for teacher ${userName}`);
+          } else if (userRole === "student") {
+            results.deletedData.students++;
+          } else {
+            results.deletedData.others++;
+          }
+
+          results.deletedData.totalRecordsDeleted += recordsDeleted;
+
+          // Add to success results
+          results.success.push({
+            userId,
+            username: user.username,
+            name: userName,
+            role: userRole,
+            email: userEmail,
+            recordsDeleted,
+          });
+          results.stats.deleted++;
+
+          console.log(`✅ Deleted user ${userName} (${recordsDeleted} total records)`);
+
+        } catch (userError) {
+          console.error(`❌ Error processing user ${userId}:`, userError);
+          results.failed.push({
+            userId,
+            error: userError.message,
+          });
+          results.stats.failed++;
+        }
+      }
+
+      // Log bulk activity
+      await logActivity(
+        req.user.id,
+        "BULK_USER_DELETION",
+        `Bulk deleted ${results.stats.deleted} users (${results.stats.failed} failed, ${results.stats.skipped} skipped)`,
+        req,
+        {
+          totalRequested: userIds.length,
+          deleted: results.stats.deleted,
+          failed: results.stats.failed,
+          skipped: results.stats.skipped,
+          deletedUserIds: results.success.map(u => u.userId),
+          failedUserIds: results.failed.map(f => f.userId),
+          totalRecordsDeleted: results.deletedData.totalRecordsDeleted,
+          byRole: {
+            students: results.deletedData.students,
+            teachers: results.deletedData.teachers,
+            entrepreneurs: results.deletedData.entrepreneurs,
+            others: results.deletedData.others,
+          },
+        }
+      );
+
+      console.log(`\n✅ Bulk deletion complete:`, results.stats);
+
+      // Determine response status
+      const allFailed = results.stats.deleted === 0 && results.stats.failed > 0;
+      const partialSuccess = results.stats.deleted > 0 && results.stats.failed > 0;
+
+      res.status(allFailed ? 500 : 200).json({
+        success: results.stats.deleted > 0,
+        message: allFailed
+          ? "All deletions failed"
+          : partialSuccess
+          ? `Deleted ${results.stats.deleted} users. ${results.stats.failed} failed.`
+          : `Successfully deleted ${results.stats.deleted} user(s)`,
+        data: results,
+        summary: {
+          total: results.stats.total,
+          deleted: results.stats.deleted,
+          failed: results.stats.failed,
+          skipped: results.stats.skipped,
+          totalRecordsDeleted: results.deletedData.totalRecordsDeleted,
+          byRole: results.deletedData,
+          successRate: `${((results.stats.deleted / results.stats.total) * 100).toFixed(1)}%`,
+        },
+      });
+
+    } catch (error) {
+      console.error("❌ Bulk deletion error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Bulk deletion failed",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
+// ============================================
 // APPROVE USER ENDPOINT (Students/Entrepreneurs)
 // ============================================
 
