@@ -2654,11 +2654,10 @@ const isValidObjectId = (id) => {
 // AUTHENTICATION ENDPOINTS
 // ============================================
 
-// ============================================
-// AUTHENTICATION ENDPOINTS
-// ============================================
+// ============================================================================
+// ✅ UPDATED REGISTRATION ENDPOINT WITH NEW SMS SERVICE
+// ============================================================================
 
-// Register with OTP
 app.post(
   "/api/auth/register",
   authLimiter,
@@ -2968,160 +2967,183 @@ app.post(
       });
 
       // ============================================================================
-      // ✅ SEND CONGRATULATIONS SMS (NOT PASSWORD - JUST INSTRUCTIONS)
+      // ✅ SEND REGISTRATION SMS USING NEW SMS SERVICE
       // ============================================================================
 
-      if (role === "student" || role === "entrepreneur") {
-        const userName = `${names.first} ${names.last}`;
+      const userName = `${names.first} ${names.last}`;
 
-        // ✅ Determine message based on registration type
-        let smsMessage = "";
-
-        if (role === "student" && student?.registration_type) {
-          // Student with package - needs to send payment receipt
-          const packageNames = {
-            normal: "CTM Club Membership",
-            silver: "Silver Package",
-            gold: "Gold Package",
-            platinum: "Platinum Package",
-          };
-
-          const packageName =
-            packageNames[student.registration_type] || "Package";
-
-          // Check if payment info was already submitted
-          if (payment && payment.reference) {
-            // User already submitted payment
-            smsMessage = `Hongera ${userName}! 🎉\n\nUmesajiliwa kwa mafanikio kwenye ECONNECT - ${packageName}.\n\nRisiti yako ya malipo imepokelewa na inasubiri kuthibitishwa.\n\nUtapokea neno la siri baada ya kuthibitisha malipo.\n\nAsante!\nECONNECT`;
-          } else {
-            // User needs to send payment
-            smsMessage = `Hongera ${userName}! 🎉\n\nUmesajiliwa kwa mafanikio kwenye ECONNECT - ${packageName}.\n\nHATUA IFUATAYO:\n1. Fanya malipo\n2. Tuma risiti kwa +255758061582\n3. Tutathibitisha malipo\n4. Utapokea neno la siri\n\nAsante!\nECONNECT`;
-          }
-        } else if (role === "entrepreneur") {
-          // Entrepreneur - needs approval
-          smsMessage = `Hongera ${userName}! 🎉\n\nUmesajiliwa kwa mafanikio kwenye ECONNECT kama Mjasiriamali.\n\nAkaunti yako inasubiri idhini. Utapokea neno la siri baada ya kuidhinishwa.\n\nAsante!\nECONNECT`;
-        } else {
-          // Regular student without package
-          smsMessage = `Hongera ${userName}! 🎉\n\nUmesajiliwa kwa mafanikio kwenye ECONNECT.\n\nTuma risiti ya malipo kwa +255758061582 ili kuendelea.\n\nUtapokea neno la siri baada ya kuthibitishwa.\n\nAsante!\nECONNECT`;
-        }
-
-        // Send the SMS
-        const smsResult = await smsService.sendSMS(
-          phone,
-          smsMessage,
-          `registration_congrats_${user._id}`
-        );
-
-        if (smsResult.success) {
-          console.log(`📱 Congratulations SMS sent successfully to ${phone}`);
-
-          await SMSLog.create({
-            userId: user._id,
-            phone: phone,
-            message: "Registration congratulations SMS",
-            type: "general",
-            status: "sent",
-            messageId: smsResult.messageId,
-            reference: `reg_congrats_${user._id}`,
-          });
-        } else {
-          console.warn(
-            `⚠️ Failed to send congratulations SMS to ${phone}:`,
-            smsResult.error
+      try {
+        // ✅ ENTREPRENEUR - Send entrepreneur registration SMS
+        if (role === "entrepreneur") {
+          const smsResult = await smsService.sendEntrepreneurRegistrationSMS(
+            phone,
+            userName
           );
 
-          await SMSLog.create({
-            userId: user._id,
-            phone: phone,
-            message: "Registration congratulations SMS (failed)",
-            type: "general",
-            status: "failed",
-            errorMessage: smsResult.error || "Unknown error",
-            reference: `reg_congrats_${user._id}`,
-          });
+          if (smsResult.success) {
+            console.log(`📱 Entrepreneur registration SMS sent to ${phone}`);
+            await SMSLog.create({
+              userId: user._id,
+              phone: phone,
+              message: "Entrepreneur registration SMS",
+              type: "general",
+              status: "sent",
+              messageId: smsResult.messageId,
+              reference: `entrepreneur_registration`,
+            });
+          } else {
+            console.warn(
+              `⚠️ Failed to send entrepreneur SMS to ${phone}:`,
+              smsResult.error
+            );
+            await SMSLog.create({
+              userId: user._id,
+              phone: phone,
+              message: "Entrepreneur registration SMS (failed)",
+              type: "general",
+              status: "failed",
+              errorMessage: smsResult.error || "Unknown error",
+              reference: `entrepreneur_registration`,
+            });
+          }
         }
-      }
 
-      // ✅ For teachers - send pending approval message
-      if (role === "teacher") {
-        const userName = `${names.first} ${names.last}`;
+        // ✅ STUDENT - Send student registration SMS
+        if (role === "student") {
+          // Determine package type and payment requirement
+          let packageType = "Free";
+          let requiresPayment = false;
 
-        const smsMessage = `Hongera ${userName}! 🎉\n\nUmesajiliwa kwa mafanikio kwenye ECONNECT kama Mwalimu.\n\nAkaunti yako inasubiri idhini kutoka kwa Mkuu wa Shule. Utapokea neno la siri baada ya kuidhinishwa.\n\nAsante!\nECONNECT`;
+          if (student?.registration_type) {
+            const packageMap = {
+              normal: "CTM",
+              silver: "Silver",
+              gold: "Gold",
+              platinum: "Platinum",
+            };
+            packageType = packageMap[student.registration_type] || "Free";
+            requiresPayment = ["silver", "gold", "platinum"].includes(
+              student.registration_type
+            );
+          }
 
-        const smsResult = await smsService.sendSMS(
-          phone,
-          smsMessage,
-          `teacher_pending_${user._id}`
-        );
+          const smsResult = await smsService.sendStudentRegistrationSMS(
+            phone,
+            userName,
+            requiresPayment,
+            packageType
+          );
 
-        if (smsResult.success) {
-          console.log(`📱 Teacher registration SMS sent to ${phone}`);
-
-          await SMSLog.create({
-            userId: user._id,
-            phone: phone,
-            message: "Teacher registration congratulations",
-            type: "general",
-            status: "sent",
-            messageId: smsResult.messageId,
-            reference: `teacher_reg_${user._id}`,
-          });
-        } else {
-          await SMSLog.create({
-            userId: user._id,
-            phone: phone,
-            message: "Teacher registration SMS (failed)",
-            type: "general",
-            status: "failed",
-            errorMessage: smsResult.error,
-            reference: `teacher_reg_${user._id}`,
-          });
+          if (smsResult.success) {
+            console.log(
+              `📱 Student registration SMS sent to ${phone} (${packageType})`
+            );
+            await SMSLog.create({
+              userId: user._id,
+              phone: phone,
+              message: `Student registration SMS - ${packageType} package`,
+              type: "general",
+              status: "sent",
+              messageId: smsResult.messageId,
+              reference: `student_registration`,
+            });
+          } else {
+            console.warn(
+              `⚠️ Failed to send student SMS to ${phone}:`,
+              smsResult.error
+            );
+            await SMSLog.create({
+              userId: user._id,
+              phone: phone,
+              message: `Student registration SMS (failed) - ${packageType}`,
+              type: "general",
+              status: "failed",
+              errorMessage: smsResult.error || "Unknown error",
+              reference: `student_registration`,
+            });
+          }
         }
-      }
 
-      // ✅ For staff/officials - send pending approval message
-      if (
-        [
-          "staff",
-          "district_official",
-          "regional_official",
-          "national_official",
-          "headmaster",
-        ].includes(role)
-      ) {
-        const userName = `${names.first} ${names.last}`;
+        // ✅ TEACHER - Send teacher registration SMS
+        if (role === "teacher") {
+          const smsResult = await smsService.sendTeacherRegistrationSMS(
+            phone,
+            userName
+          );
 
-        const smsMessage = `Hongera ${userName}! 🎉\n\nUmesajiliwa kwa mafanikio kwenye ECONNECT.\n\nAkaunti yako inasubiri idhini. Utapokea neno la siri baada ya kuidhinishwa na Msimamizi.\n\nAsante!\nECONNECT`;
-
-        const smsResult = await smsService.sendSMS(
-          phone,
-          smsMessage,
-          `${role}_pending_${user._id}`
-        );
-
-        if (smsResult.success) {
-          console.log(`📱 ${role} registration SMS sent to ${phone}`);
-
-          await SMSLog.create({
-            userId: user._id,
-            phone: phone,
-            message: `${role} registration congratulations`,
-            type: "general",
-            status: "sent",
-            messageId: smsResult.messageId,
-            reference: `${role}_reg_${user._id}`,
-          });
-        } else {
-          await SMSLog.create({
-            userId: user._id,
-            phone: phone,
-            message: `${role} registration SMS (failed)`,
-            type: "general",
-            status: "failed",
-            errorMessage: smsResult.error,
-            reference: `${role}_reg_${user._id}`,
-          });
+          if (smsResult.success) {
+            console.log(`📱 Teacher registration SMS sent to ${phone}`);
+            await SMSLog.create({
+              userId: user._id,
+              phone: phone,
+              message: "Teacher registration SMS",
+              type: "general",
+              status: "sent",
+              messageId: smsResult.messageId,
+              reference: `teacher_registration`,
+            });
+          } else {
+            console.warn(
+              `⚠️ Failed to send teacher SMS to ${phone}:`,
+              smsResult.error
+            );
+            await SMSLog.create({
+              userId: user._id,
+              phone: phone,
+              message: "Teacher registration SMS (failed)",
+              type: "general",
+              status: "failed",
+              errorMessage: smsResult.error || "Unknown error",
+              reference: `teacher_registration`,
+            });
+          }
         }
+
+        // ✅ HEADMASTER / STAFF / OFFICIALS - Generic pending approval SMS
+        if (
+          [
+            "headmaster",
+            "staff",
+            "district_official",
+            "regional_official",
+            "national_official",
+            "tamisemi",
+          ].includes(role)
+        ) {
+          const smsMessage = `Hongera ${userName}!\n\nUsajili wako umefanikiwa ECONNECT.\n\nAkaunti yako inasubiri idhini. Utapokea neno la siri baada ya kuidhinishwa.\n\nAsante!\nECONNECT`;
+
+          const smsResult = await smsService.sendSMS(
+            phone,
+            smsMessage,
+            `${role}_registration`
+          );
+
+          if (smsResult.success) {
+            console.log(`📱 ${role} registration SMS sent to ${phone}`);
+            await SMSLog.create({
+              userId: user._id,
+              phone: phone,
+              message: `${role} registration SMS`,
+              type: "general",
+              status: "sent",
+              messageId: smsResult.messageId,
+              reference: `${role}_registration`,
+            });
+          } else {
+            await SMSLog.create({
+              userId: user._id,
+              phone: phone,
+              message: `${role} registration SMS (failed)`,
+              type: "general",
+              status: "failed",
+              errorMessage: smsResult.error,
+              reference: `${role}_registration`,
+            });
+          }
+        }
+      } catch (smsError) {
+        console.error("❌ SMS sending error:", smsError);
+        // Don't fail registration if SMS fails - just log it
       }
 
       // ============================================================================
