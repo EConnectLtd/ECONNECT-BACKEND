@@ -23584,12 +23584,11 @@ app.post(
 
       console.log(`💳 Payment record request for user: ${userId}`);
 
-      // Validate required fields
-      if (!userId || !amount || !payment_method || !payment_reference) {
+      // ✅ UPDATED: Only userId and amount are required (payment_method and payment_reference are optional)
+      if (!userId || !amount) {
         return res.status(400).json({
           success: false,
-          error:
-            "User ID, amount, payment method, and payment reference are required",
+          error: "User ID and amount are required",
         });
       }
 
@@ -23625,9 +23624,13 @@ app.post(
 
       console.log(`💰 Recording payment for ${userName}: TZS ${amount}`);
 
-      // Update user payment information
-      user.payment_reference = payment_reference;
-      user.payment_method = payment_method;
+      // ✅ UPDATED: Only update fields if they are provided
+      if (payment_reference) {
+        user.payment_reference = payment_reference;
+      }
+      if (payment_method) {
+        user.payment_method = payment_method;
+      }
       user.payment_status = "submitted"; // Will be "verified" upon approval
       user.payment_date = payment_date ? new Date(payment_date) : new Date();
       user.updatedAt = new Date();
@@ -23643,11 +23646,13 @@ app.post(
       if (invoice) {
         // Update existing invoice
         invoice.amount = amount;
-        invoice.paymentMethod = payment_method;
+        if (payment_method) {
+          invoice.paymentMethod = payment_method;
+        }
         invoice.status = "verification";
         invoice.paymentProof = {
-          reference: payment_reference,
-          method: payment_method,
+          reference: payment_reference || "Pending",
+          method: payment_method || "Pending",
           submittedAt: new Date(),
           status: "pending",
           notes: notes || "",
@@ -23679,10 +23684,10 @@ app.post(
               total: amount,
             },
           ],
-          paymentMethod: payment_method,
+          paymentMethod: payment_method || "Pending",
           paymentProof: {
-            reference: payment_reference,
-            method: payment_method,
+            reference: payment_reference || "Pending",
+            method: payment_method || "Pending",
             submittedAt: new Date(),
             status: "pending",
             notes: notes || "",
@@ -23697,8 +23702,8 @@ app.post(
         userId: userId,
         schoolId: user.schoolId,
         amount: amount,
-        paymentMethod: payment_method,
-        paymentReference: payment_reference,
+        paymentMethod: payment_method || "Not specified",
+        paymentReference: payment_reference || `AUTO-${Date.now()}`,
         paymentDate: payment_date ? new Date(payment_date) : new Date(),
         status: "submitted",
         invoiceId: invoice._id,
@@ -23729,15 +23734,17 @@ app.post(
       await logActivity(
         req.user.id,
         "PAYMENT_RECORDED",
-        `Recorded payment for ${userName}: TZS ${amount} (${payment_method})`,
+        `Recorded payment for ${userName}: TZS ${amount}${
+          payment_method ? ` (${payment_method})` : ""
+        }`,
         req,
         {
           userId: user._id,
           userName: userName,
           userRole: user.role,
           amount: amount,
-          payment_method: payment_method,
-          payment_reference: payment_reference,
+          payment_method: payment_method || "Not specified",
+          payment_reference: payment_reference || "Not provided",
           invoiceId: invoice._id,
           paymentHistoryId: paymentHistory._id,
         }
@@ -23755,8 +23762,8 @@ app.post(
           role: user.role,
           payment: {
             amount: amount,
-            method: payment_method,
-            reference: payment_reference,
+            method: payment_method || "Not specified",
+            reference: payment_reference || "Not provided",
             date: user.payment_date,
             status: user.payment_status,
           },
