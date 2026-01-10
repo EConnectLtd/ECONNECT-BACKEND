@@ -2967,13 +2967,15 @@ app.post(
       });
 
       // ============================================================================
-      // ✅ SEND REGISTRATION SMS USING NEW SMS SERVICE
+      // ✅ SEND REGISTRATION SMS USING CONFIRMED MESSAGES
       // ============================================================================
 
       const userName = `${names.first} ${names.last}`;
 
       try {
-        // ✅ ENTREPRENEUR - Send entrepreneur registration SMS
+        // ============================================================================
+        // 1️⃣ ENTREPRENEUR - Simple approval message
+        // ============================================================================
         if (role === "entrepreneur") {
           const smsResult = await smsService.sendEntrepreneurRegistrationSMS(
             phone,
@@ -3008,7 +3010,9 @@ app.post(
           }
         }
 
-        // ✅ STUDENT - Send student registration SMS
+        // ============================================================================
+        // 2️⃣ STUDENT - Package-specific messages (Free, CTM, Silver, Gold, Platinum)
+        // ============================================================================
         if (role === "student") {
           // Determine package type and payment requirement
           let packageType = "Free";
@@ -3016,12 +3020,15 @@ app.post(
 
           if (student?.registration_type) {
             const packageMap = {
-              normal: "CTM",
-              silver: "Silver",
-              gold: "Gold",
-              platinum: "Platinum",
+              normal: "CTM", // CTM Club
+              silver: "Silver", // Silver Package
+              gold: "Gold", // Gold Package
+              platinum: "Platinum", // Platinum Package
             };
+
             packageType = packageMap[student.registration_type] || "Free";
+
+            // Only Silver, Gold, Platinum require payment
             requiresPayment = ["silver", "gold", "platinum"].includes(
               student.registration_type
             );
@@ -3064,7 +3071,9 @@ app.post(
           }
         }
 
-        // ✅ TEACHER - Send teacher registration SMS
+        // ============================================================================
+        // 3️⃣ TEACHER - Headmaster approval message
+        // ============================================================================
         if (role === "teacher") {
           const smsResult = await smsService.sendTeacherRegistrationSMS(
             phone,
@@ -3099,7 +3108,9 @@ app.post(
           }
         }
 
-        // ✅ HEADMASTER / STAFF / OFFICIALS - Generic pending approval SMS
+        // ============================================================================
+        // 4️⃣ HEADMASTER / STAFF / OFFICIALS - Generic pending approval message
+        // ============================================================================
         if (
           [
             "headmaster",

@@ -259,7 +259,7 @@ class SMSService {
    * @returns {Promise} SMS send response
    */
   async sendEntrepreneurRegistrationSMS(phone, userName) {
-    const message = `Hongera ${userName}!\nUmefanikiwa kujisajili EConnect kama Mjasiriamali.\nUtapokea neno la siri baada ya kuidhinishwa.\n\nAsante!\nECONNECT`;
+    const message = `Hongera ${userName}!\n\nUmefanikiwa kujisajili EConnect kama Mjasiriamali.\n\nUtapokea neno la siri baada ya kuidhinishwa.\n\nAsante!\nECONNECT`;
 
     return await this.sendSMS(phone, message, "entrepreneur_registration");
   }
@@ -283,9 +283,16 @@ class SMSService {
     // Special message for CTM package
     if (packageType === "CTM") {
       message = `Hongera ${userName}!\n\nUsajili wako umefanikiwa EConnect - CTM Club ili kuendeleza kipaji chako.\nKamilisha utaratibu ili kuwa mshiriki hai.\n\nAsante!\nECONNECT`;
-    } else if (requiresPayment) {
-      message = `Hongera ${userName}!\nUmefanikiwa kujisajili EConnect kama Mwanafunzi.\nTafadhali fanya malipo ili kupata ufikiaji kamili.\n\nAsante!\nECONNECT`;
-    } else {
+    }
+    // Paid packages (Silver, Gold, Platinum) - with payment instructions
+    else if (
+      requiresPayment &&
+      ["Silver", "Gold", "Platinum"].includes(packageType)
+    ) {
+      message = `Hongera ${userName}!\n\nUsajili wako umefanikiwa EConnect - ${packageType} Package kuendeleza kipaji.\n\nHATUA IFUATAYO:\n1. Fanya malipo\n2. Tuma risiti kwa +255758061582\n3. Tutathibitisha malipo\n4. Utapokea neno la siri\n\nAsante!\nECONNECT`;
+    }
+    // Free package - standard congratulations
+    else {
       message = `Hongera ${userName}!\nUmefanikiwa kujisajili EConnect kama Mwanafunzi.\nUtapokea neno la siri baada ya kuidhinishwa.\n\nAsante!\nECONNECT`;
     }
 
