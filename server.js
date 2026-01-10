@@ -24460,6 +24460,602 @@ app.post(
 );
 
 // ============================================
+// PAYMENT HISTORY ENDPOINT
+// ============================================
+
+// GET /api/superadmin/users/:userId/payment-history - Get user's payment history
+app.get(
+  "/api/superadmin/users/:userId/payment-history",
+  authenticateToken,
+  validateObjectId("userId"),
+  authorizeRoles(
+    "super_admin",
+    "national_official",
+    "headmaster",
+    "district_official"
+  ),
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const { page = 1, limit = 20, status } = req.query;
+
+      console.log(`📊 Fetching payment history for user: ${userId}`);
+
+      // Verify user exists
+      const user = await User.findById(userId);
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          error: "User not found",
+        });
+      }
+
+      // Build query
+      const query = { userId };
+      if (status) {
+        query.status = status;
+      }
+
+      // Fetch payment history
+      const paymentHistory = await PaymentHistory.find(query)
+        .sort({ paymentDate: -1, createdAt: -1 })
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .populate("recordedBy", "firstName lastName username")
+        .populate("verifiedBy", "firstName lastName username")
+        .populate("invoiceId", "invoice_number amount status");
+
+      const total = await PaymentHistory.countDocuments(query);
+
+      // Calculate total paid amount
+      const totalPaid = await PaymentHistory.aggregate([
+        {
+          $match: {
+            userId: new mongoose.Types.ObjectId(userId),
+            status: { $in: ["verified", "submitted"] },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: "$amount" },
+          },
+        },
+      ]);
+
+      const totalPaidAmount = totalPaid[0]?.total || 0;
+
+      // Get statistics
+      const stats = await PaymentHistory.aggregate([
+        { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+        {
+          $group: {
+            _id: "$status",
+            count: { $sum: 1 },
+            totalAmount: { $sum: "$amount" },
+          },
+        },
+      ]);
+
+      const statusStats = stats.reduce((acc, item) => {
+        acc[item._id] = {
+          count: item.count,
+          totalAmount: item.totalAmount,
+        };
+        return acc;
+      }, {});
+
+      console.log(
+        `✅ Found ${paymentHistory.length} payment records for user ${userId}`
+      );
+
+      res.json({
+        success: true,
+        data: paymentHistory,
+        meta: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit)),
+        },
+        summary: {
+          totalPaid: totalPaidAmount,
+          totalRecords: total,
+          byStatus: statusStats,
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error fetching payment history:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch payment history",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
+// ============================================
+// GET PAYMENT HISTORY FOR CURRENT USER (Student/Entrepreneur Portal)
+// ============================================
+
+// GET /api/payments/my-history - Get current user's payment history
+app.get(
+  "/api/payments/my-history",
+  authenticateToken,
+  authorizeRoles("student", "entrepreneur", "nonstudent"),
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 20 } = req.query;
+
+      console.log(
+        `📊 Fetching payment history for current user: ${req.user.id}`
+      );
+
+      // Fetch payment history
+      const paymentHistory = await PaymentHistory.find({ userId: req.user.id })
+        .sort({ paymentDate: -1, createdAt: -1 })
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .populate("recordedBy", "firstName lastName username")
+        .populate("verifiedBy", "firstName lastName username")
+        .populate("invoiceId", "invoice_number amount status dueDate");
+
+      const total = await PaymentHistory.countDocuments({
+        userId: req.user.id,
+      });
+
+      // Calculate total paid amount
+      const totalPaid = await PaymentHistory.aggregate([
+        {
+          $match: {
+            userId: new mongoose.Types.ObjectId(req.user.id),
+            status: { $in: ["verified", "submitted"] },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: "$amount" },
+          },
+        },
+      ]);
+
+      const totalPaidAmount = totalPaid[0]?.total || 0;
+
+      console.log(`✅ Found ${paymentHistory.length} payment records`);
+
+      res.json({
+        success: true,
+        data: paymentHistory,
+        meta: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit)),
+        },
+        summary: {
+          totalPaid: totalPaidAmount,
+          totalRecords: total,
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error fetching payment history:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch payment history",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
+// ============================================
+// GET SINGLE PAYMENT RECORD DETAILS
+// ============================================
+
+// GET /api/superadmin/payments/:paymentId - Get single payment record details
+app.get(
+  "/api/superadmin/payments/:paymentId",
+  authenticateToken,
+  validateObjectId("paymentId"),
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  async (req, res) => {
+    try {
+      const payment = await PaymentHistory.findById(req.params.paymentId)
+        .populate(
+          "userId",
+          "firstName lastName email phoneNumber username role"
+        )
+        .populate("recordedBy", "firstName lastName username")
+        .populate("verifiedBy", "firstName lastName username")
+        .populate("invoiceId", "invoice_number amount status dueDate paidDate")
+        .populate("schoolId", "name schoolCode");
+
+      if (!payment) {
+        return res.status(404).json({
+          success: false,
+          error: "Payment record not found",
+        });
+      }
+
+      console.log(`✅ Retrieved payment record: ${payment._id}`);
+
+      res.json({
+        success: true,
+        data: payment,
+      });
+    } catch (error) {
+      console.error("❌ Error fetching payment record:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch payment record",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
+// ============================================
+// UPDATE PAYMENT STATUS (Verify/Reject)
+// ============================================
+
+// PATCH /api/superadmin/payments/:paymentId/status - Update payment status
+app.patch(
+  "/api/superadmin/payments/:paymentId/status",
+  authenticateToken,
+  validateObjectId("paymentId"),
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  async (req, res) => {
+    try {
+      const { status, reason } = req.body;
+
+      if (!status || !["verified", "rejected", "pending"].includes(status)) {
+        return res.status(400).json({
+          success: false,
+          error: "Valid status is required (verified, rejected, pending)",
+        });
+      }
+
+      const payment = await PaymentHistory.findById(
+        req.params.paymentId
+      ).populate("userId", "firstName lastName email phoneNumber");
+
+      if (!payment) {
+        return res.status(404).json({
+          success: false,
+          error: "Payment record not found",
+        });
+      }
+
+      const previousStatus = payment.status;
+
+      // Update payment status
+      payment.status = status;
+
+      // Add to status history
+      payment.statusHistory.push({
+        status,
+        changedBy: req.user.id,
+        changedAt: new Date(),
+        reason: reason || `Status changed to ${status}`,
+      });
+
+      // Set verification fields if verified
+      if (status === "verified") {
+        payment.verifiedBy = req.user.id;
+        payment.verifiedAt = new Date();
+
+        // Update user payment status
+        await User.findByIdAndUpdate(payment.userId._id, {
+          payment_status: "verified",
+          payment_verified_by: req.user.id,
+          payment_verified_at: new Date(),
+        });
+
+        // Update invoice if exists
+        if (payment.invoiceId) {
+          await Invoice.findByIdAndUpdate(payment.invoiceId, {
+            status: "paid",
+            paidDate: new Date(),
+            "paymentProof.status": "verified",
+            "paymentProof.verifiedBy": req.user.id,
+            "paymentProof.verifiedAt": new Date(),
+          });
+        }
+      }
+
+      await payment.save();
+
+      // Send notification to user
+      const userName = `${payment.userId.firstName || ""} ${
+        payment.userId.lastName || ""
+      }`.trim();
+
+      if (status === "verified") {
+        await createNotification(
+          payment.userId._id,
+          "Payment Verified ✅",
+          `Your payment of TZS ${payment.amount.toLocaleString()} has been verified and approved.`,
+          "success",
+          `/payments`
+        );
+      } else if (status === "rejected") {
+        await createNotification(
+          payment.userId._id,
+          "Payment Rejected ❌",
+          `Your payment of TZS ${payment.amount.toLocaleString()} has been rejected. ${
+            reason || "Please contact support."
+          }`,
+          "error",
+          `/payments`
+        );
+      }
+
+      // Log activity
+      await logActivity(
+        req.user.id,
+        "PAYMENT_STATUS_UPDATED",
+        `Updated payment status from ${previousStatus} to ${status} for ${userName}`,
+        req,
+        {
+          paymentId: payment._id,
+          userId: payment.userId._id,
+          previousStatus,
+          newStatus: status,
+          amount: payment.amount,
+          reason: reason || "",
+        }
+      );
+
+      console.log(`✅ Payment status updated: ${payment._id} -> ${status}`);
+
+      res.json({
+        success: true,
+        message: `Payment ${status} successfully`,
+        data: payment,
+      });
+    } catch (error) {
+      console.error("❌ Error updating payment status:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to update payment status",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
+// ============================================
+// GENERATE PAYMENT RECEIPT
+// ============================================
+
+// GET /api/superadmin/payments/:paymentId/receipt - Generate payment receipt
+app.get(
+  "/api/superadmin/payments/:paymentId/receipt",
+  authenticateToken,
+  validateObjectId("paymentId"),
+  async (req, res) => {
+    try {
+      const payment = await PaymentHistory.findById(req.params.paymentId)
+        .populate(
+          "userId",
+          "firstName lastName email phoneNumber username studentId"
+        )
+        .populate("recordedBy", "firstName lastName username")
+        .populate("verifiedBy", "firstName lastName username")
+        .populate("invoiceId", "invoice_number amount status dueDate paidDate")
+        .populate("schoolId", "name schoolCode logo address");
+
+      if (!payment) {
+        return res.status(404).json({
+          success: false,
+          error: "Payment record not found",
+        });
+      }
+
+      // Generate receipt data
+      const receiptData = {
+        receiptNumber: `RCP-${payment._id.toString().slice(-8).toUpperCase()}`,
+        paymentId: payment._id,
+        issueDate: new Date(),
+
+        // User details
+        payer: {
+          name:
+            `${payment.userId.firstName || ""} ${
+              payment.userId.lastName || ""
+            }`.trim() || payment.userId.username,
+          email: payment.userId.email,
+          phone: payment.userId.phoneNumber,
+          studentId: payment.userId.studentId || "N/A",
+        },
+
+        // School details (if applicable)
+        school: payment.schoolId
+          ? {
+              name: payment.schoolId.name,
+              code: payment.schoolId.schoolCode,
+              logo: payment.schoolId.logo,
+              address: payment.schoolId.address,
+            }
+          : null,
+
+        // Payment details
+        payment: {
+          amount: payment.amount,
+          currency: payment.currency || "TZS",
+          paymentMethod: payment.paymentMethod,
+          paymentReference: payment.paymentReference,
+          paymentDate: payment.paymentDate,
+          status: payment.status,
+          notes: payment.notes,
+        },
+
+        // Invoice details (if linked)
+        invoice: payment.invoiceId
+          ? {
+              number: payment.invoiceId.invoice_number,
+              amount: payment.invoiceId.amount,
+              status: payment.invoiceId.status,
+              dueDate: payment.invoiceId.dueDate,
+              paidDate: payment.invoiceId.paidDate,
+            }
+          : null,
+
+        // Verification details
+        verification: {
+          verifiedBy: payment.verifiedBy
+            ? `${payment.verifiedBy.firstName || ""} ${
+                payment.verifiedBy.lastName || ""
+              }`.trim() || payment.verifiedBy.username
+            : null,
+          verifiedAt: payment.verifiedAt,
+          recordedBy: payment.recordedBy
+            ? `${payment.recordedBy.firstName || ""} ${
+                payment.recordedBy.lastName || ""
+              }`.trim() || payment.recordedBy.username
+            : null,
+        },
+
+        // System details
+        system: {
+          name: "ECONNECT Multi-School & Talent Management System",
+          generatedAt: new Date(),
+          generatedBy:
+            `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() ||
+            req.user.username,
+        },
+      };
+
+      // Log activity
+      await logActivity(
+        req.user.id,
+        "RECEIPT_GENERATED",
+        `Generated receipt for payment ${payment._id}`,
+        req,
+        {
+          paymentId: payment._id,
+          receiptNumber: receiptData.receiptNumber,
+          amount: payment.amount,
+          userId: payment.userId._id,
+        }
+      );
+
+      console.log(`✅ Generated receipt: ${receiptData.receiptNumber}`);
+
+      res.json({
+        success: true,
+        data: receiptData,
+      });
+    } catch (error) {
+      console.error("❌ Error generating receipt:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to generate receipt",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
+// ============================================
+// DOWNLOAD RECEIPT AS PDF (Student/Admin)
+// ============================================
+
+// GET /api/payments/:paymentId/receipt/download - Download receipt as PDF
+app.get(
+  "/api/payments/:paymentId/receipt/download",
+  authenticateToken,
+  validateObjectId("paymentId"),
+  async (req, res) => {
+    try {
+      const payment = await PaymentHistory.findById(req.params.paymentId)
+        .populate("userId", "firstName lastName email phoneNumber username")
+        .populate("verifiedBy", "firstName lastName username")
+        .populate("schoolId", "name schoolCode logo");
+
+      if (!payment) {
+        return res.status(404).json({
+          success: false,
+          error: "Payment record not found",
+        });
+      }
+
+      // Check permissions - user can only download their own receipt
+      if (
+        req.user.role !== "super_admin" &&
+        req.user.role !== "national_official" &&
+        req.user.role !== "headmaster" &&
+        payment.userId._id.toString() !== req.user.id
+      ) {
+        return res.status(403).json({
+          success: false,
+          error: "You can only download your own payment receipts",
+        });
+      }
+
+      // In a real implementation, you would generate a PDF here
+      // For now, return receipt data that frontend can use
+      const receiptNumber = `RCP-${payment._id
+        .toString()
+        .slice(-8)
+        .toUpperCase()}`;
+
+      console.log(`✅ Receipt download requested: ${receiptNumber}`);
+
+      res.json({
+        success: true,
+        message: "Receipt data retrieved successfully",
+        data: {
+          receiptNumber,
+          paymentId: payment._id,
+          amount: payment.amount,
+          paymentMethod: payment.paymentMethod,
+          paymentReference: payment.paymentReference,
+          paymentDate: payment.paymentDate,
+          status: payment.status,
+          payer: {
+            name: `${payment.userId.firstName || ""} ${
+              payment.userId.lastName || ""
+            }`.trim(),
+            email: payment.userId.email,
+            phone: payment.userId.phoneNumber,
+          },
+          school: payment.schoolId
+            ? {
+                name: payment.schoolId.name,
+                code: payment.schoolId.schoolCode,
+              }
+            : null,
+          generatedAt: new Date(),
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error downloading receipt:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to download receipt",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
+// ============================================
 // 🛡️ APPLY ERROR HANDLERS (MUST BE LAST!)
 // ============================================
 
