@@ -23563,6 +23563,903 @@ app.post(
 );
 
 // ============================================
+// RECORD PAYMENT ENDPOINT (for PaymentModal)
+// ============================================
+
+// POST /api/superadmin/payment/record - Record payment information for a user
+app.post(
+  "/api/superadmin/payment/record",
+  authenticateToken,
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  async (req, res) => {
+    try {
+      const {
+        userId,
+        amount,
+        payment_method,
+        payment_reference,
+        notes,
+        payment_date,
+      } = req.body;
+
+      console.log(`💳 Payment record request for user: ${userId}`);
+
+      // Validate required fields
+      if (!userId || !amount || !payment_method || !payment_reference) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "User ID, amount, payment method, and payment reference are required",
+        });
+      }
+
+      // Validate amount
+      if (amount <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: "Payment amount must be greater than zero",
+        });
+      }
+
+      // Find the user
+      const user = await User.findById(userId);
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          error: "User not found",
+        });
+      }
+
+      // Validate user role (only students/entrepreneurs need payment)
+      if (!["student", "entrepreneur", "nonstudent"].includes(user.role)) {
+        return res.status(400).json({
+          success: false,
+          error: `Payment recording is not applicable for ${user.role} role`,
+        });
+      }
+
+      const userName =
+        `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
+        user.username;
+
+      console.log(`💰 Recording payment for ${userName}: TZS ${amount}`);
+
+      // Update user payment information
+      user.payment_reference = payment_reference;
+      user.payment_method = payment_method;
+      user.payment_status = "submitted"; // Will be "verified" upon approval
+      user.payment_date = payment_date ? new Date(payment_date) : new Date();
+      user.updatedAt = new Date();
+
+      await user.save();
+
+      // Create or update Invoice
+      let invoice = await Invoice.findOne({
+        student_id: userId,
+        status: { $in: ["pending", "verification"] },
+      });
+
+      if (invoice) {
+        // Update existing invoice
+        invoice.amount = amount;
+        invoice.paymentMethod = payment_method;
+        invoice.status = "verification";
+        invoice.paymentProof = {
+          reference: payment_reference,
+          method: payment_method,
+          submittedAt: new Date(),
+          status: "pending",
+          notes: notes || "",
+        };
+        invoice.updatedAt = new Date();
+        await invoice.save();
+
+        console.log(`📄 Updated existing invoice: ${invoice._id}`);
+      } else {
+        // Create new invoice
+        invoice = await Invoice.create({
+          student_id: userId,
+          schoolId: user.schoolId,
+          invoice_number: `INV-${Date.now()}-${Math.random()
+            .toString(36)
+            .substring(2, 9)
+            .toUpperCase()}`,
+          amount: amount,
+          dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
+          status: "verification",
+          items: [
+            {
+              description:
+                user.role === "student"
+                  ? user.registrationType || "Registration Fee"
+                  : "Entrepreneur Registration",
+              quantity: 1,
+              unitPrice: amount,
+              total: amount,
+            },
+          ],
+          paymentMethod: payment_method,
+          paymentProof: {
+            reference: payment_reference,
+            method: payment_method,
+            submittedAt: new Date(),
+            status: "pending",
+            notes: notes || "",
+          },
+        });
+
+        console.log(`📄 Created new invoice: ${invoice._id}`);
+      }
+
+      // Create PaymentHistory entry
+      const paymentHistory = await PaymentHistory.create({
+        userId: userId,
+        schoolId: user.schoolId,
+        amount: amount,
+        paymentMethod: payment_method,
+        paymentReference: payment_reference,
+        paymentDate: payment_date ? new Date(payment_date) : new Date(),
+        status: "submitted",
+        invoiceId: invoice._id,
+        notes: notes || "",
+        recordedBy: req.user.id,
+        statusHistory: [
+          {
+            status: "submitted",
+            changedBy: req.user.id,
+            changedAt: new Date(),
+            reason: "Payment information recorded by admin",
+          },
+        ],
+      });
+
+      console.log(`💾 Created payment history: ${paymentHistory._id}`);
+
+      // Create notification for user
+      await createNotification(
+        userId,
+        "Payment Information Recorded",
+        `Your payment of TZS ${amount.toLocaleString()} has been recorded and is pending verification.`,
+        "info",
+        `/invoices`
+      );
+
+      // Log activity
+      await logActivity(
+        req.user.id,
+        "PAYMENT_RECORDED",
+        `Recorded payment for ${userName}: TZS ${amount} (${payment_method})`,
+        req,
+        {
+          userId: user._id,
+          userName: userName,
+          userRole: user.role,
+          amount: amount,
+          payment_method: payment_method,
+          payment_reference: payment_reference,
+          invoiceId: invoice._id,
+          paymentHistoryId: paymentHistory._id,
+        }
+      );
+
+      console.log(`✅ Payment recorded successfully for ${userName}`);
+
+      res.status(201).json({
+        success: true,
+        message: `Payment information recorded successfully for ${userName}`,
+        data: {
+          userId: user._id,
+          username: user.username,
+          name: userName,
+          role: user.role,
+          payment: {
+            amount: amount,
+            method: payment_method,
+            reference: payment_reference,
+            date: user.payment_date,
+            status: user.payment_status,
+          },
+          invoice: {
+            id: invoice._id,
+            invoice_number: invoice.invoice_number,
+            amount: invoice.amount,
+            status: invoice.status,
+          },
+          paymentHistory: {
+            id: paymentHistory._id,
+            status: paymentHistory.status,
+          },
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error recording payment:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to record payment",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
+// ============================================
+// BATCH PAYMENT RECORDING ENDPOINT
+// ============================================
+
+// POST /api/superadmin/payment/batch-record - Record multiple payments at once
+app.post(
+  "/api/superadmin/payment/batch-record",
+  authenticateToken,
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  async (req, res) => {
+    try {
+      const { payments, sendNotifications = true } = req.body;
+
+      console.log(`📦 Batch payment recording request received`);
+
+      // Validate input
+      if (!payments || !Array.isArray(payments) || payments.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "Payments array is required and must not be empty",
+        });
+      }
+
+      // Limit batch size for performance
+      if (payments.length > 100) {
+        return res.status(400).json({
+          success: false,
+          error: "Maximum 100 payments can be recorded at once",
+        });
+      }
+
+      // Results tracking
+      const results = {
+        success: [],
+        failed: [],
+        skipped: [],
+        stats: {
+          total: payments.length,
+          recorded: 0,
+          failed: 0,
+          skipped: 0,
+          totalAmount: 0,
+        },
+        summary: {
+          byPaymentMethod: {},
+          byUserRole: {},
+          invoicesCreated: 0,
+          invoicesUpdated: 0,
+        },
+      };
+
+      console.log(`📊 Processing ${payments.length} payment records...`);
+
+      // Process each payment
+      for (let i = 0; i < payments.length; i++) {
+        const payment = payments[i];
+        const recordNumber = i + 1;
+
+        try {
+          console.log(
+            `\n📝 [${recordNumber}/${payments.length}] Processing payment for user: ${payment.userId}`
+          );
+
+          // Validate required fields for this payment
+          if (
+            !payment.userId ||
+            !payment.amount ||
+            !payment.payment_method ||
+            !payment.payment_reference
+          ) {
+            results.failed.push({
+              recordNumber,
+              userId: payment.userId || "unknown",
+              error:
+                "Missing required fields (userId, amount, payment_method, payment_reference)",
+              data: payment,
+            });
+            results.stats.failed++;
+            console.log(
+              `❌ [${recordNumber}] Validation failed - missing required fields`
+            );
+            continue;
+          }
+
+          // Validate amount
+          if (payment.amount <= 0) {
+            results.failed.push({
+              recordNumber,
+              userId: payment.userId,
+              error: "Payment amount must be greater than zero",
+              data: payment,
+            });
+            results.stats.failed++;
+            console.log(
+              `❌ [${recordNumber}] Validation failed - invalid amount`
+            );
+            continue;
+          }
+
+          // Validate payment method
+          const validMethods = [
+            "crdb_bank",
+            "vodacom_lipa",
+            "azampay",
+            "tigopesa",
+            "halopesa",
+            "cash",
+            "other",
+          ];
+          if (!validMethods.includes(payment.payment_method)) {
+            results.failed.push({
+              recordNumber,
+              userId: payment.userId,
+              error: `Invalid payment method. Must be one of: ${validMethods.join(
+                ", "
+              )}`,
+              data: payment,
+            });
+            results.stats.failed++;
+            console.log(
+              `❌ [${recordNumber}] Validation failed - invalid payment method`
+            );
+            continue;
+          }
+
+          // Find the user
+          const user = await User.findById(payment.userId);
+
+          if (!user) {
+            results.failed.push({
+              recordNumber,
+              userId: payment.userId,
+              error: "User not found",
+              data: payment,
+            });
+            results.stats.failed++;
+            console.log(`❌ [${recordNumber}] User not found`);
+            continue;
+          }
+
+          // Validate user role
+          if (!["student", "entrepreneur", "nonstudent"].includes(user.role)) {
+            results.skipped.push({
+              recordNumber,
+              userId: payment.userId,
+              username: user.username,
+              name: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
+              role: user.role,
+              reason: `Payment recording not applicable for ${user.role} role`,
+            });
+            results.stats.skipped++;
+            console.log(`⏭️ [${recordNumber}] Skipped - role not applicable`);
+            continue;
+          }
+
+          // Check if payment reference already exists
+          const existingPayment = await PaymentHistory.findOne({
+            paymentReference: payment.payment_reference,
+          });
+
+          if (existingPayment) {
+            results.skipped.push({
+              recordNumber,
+              userId: payment.userId,
+              username: user.username,
+              name: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
+              role: user.role,
+              reason: "Payment reference already exists in system",
+              existingPaymentId: existingPayment._id,
+            });
+            results.stats.skipped++;
+            console.log(`⏭️ [${recordNumber}] Skipped - duplicate reference`);
+            continue;
+          }
+
+          const userName =
+            `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
+            user.username;
+
+          // ========================================
+          // UPDATE USER PAYMENT INFORMATION
+          // ========================================
+
+          user.payment_reference = payment.payment_reference;
+          user.payment_method = payment.payment_method;
+          user.payment_status = "submitted"; // Will be "verified" upon approval
+          user.payment_date = payment.payment_date
+            ? new Date(payment.payment_date)
+            : new Date();
+          user.updatedAt = new Date();
+
+          await user.save();
+
+          console.log(`✅ [${recordNumber}] Updated user payment fields`);
+
+          // ========================================
+          // CREATE OR UPDATE INVOICE
+          // ========================================
+
+          let invoice = await Invoice.findOne({
+            student_id: payment.userId,
+            status: { $in: ["pending", "verification"] },
+          });
+
+          let invoiceAction = "";
+
+          if (invoice) {
+            // Update existing invoice
+            invoice.amount = payment.amount;
+            invoice.paymentMethod = payment.payment_method;
+            invoice.status = "verification";
+            invoice.paymentProof = {
+              reference: payment.payment_reference,
+              method: payment.payment_method,
+              submittedAt: new Date(),
+              status: "pending",
+              notes: payment.notes || `Batch recorded by ${req.user.username}`,
+            };
+            invoice.updatedAt = new Date();
+            await invoice.save();
+
+            invoiceAction = "updated";
+            results.summary.invoicesUpdated++;
+
+            console.log(
+              `📄 [${recordNumber}] Updated existing invoice: ${invoice._id}`
+            );
+          } else {
+            // Create new invoice
+            const invoiceNumber = `INV-${Date.now()}-${Math.random()
+              .toString(36)
+              .substring(2, 9)
+              .toUpperCase()}`;
+
+            // Determine registration type description
+            const getRegistrationDescription = (role, regType) => {
+              if (role === "student") {
+                const types = {
+                  normal: "Normal Registration - CTM Club",
+                  premier: "Premier Registration - CTM Club (Monthly)",
+                  silver: "Silver Registration - Non-CTM",
+                  diamond: "Diamond Registration - Non-CTM (Monthly)",
+                };
+                return types[regType] || "Student Registration Fee";
+              } else if (role === "entrepreneur") {
+                return "Entrepreneur Registration Fee";
+              } else {
+                return "Non-Student Registration Fee";
+              }
+            };
+
+            invoice = await Invoice.create({
+              student_id: payment.userId,
+              schoolId: user.schoolId,
+              invoice_number: invoiceNumber,
+              amount: payment.amount,
+              dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
+              status: "verification",
+              type: user.role === "student" ? "ctm_membership" : "registration",
+              items: [
+                {
+                  description: getRegistrationDescription(
+                    user.role,
+                    user.registrationType
+                  ),
+                  quantity: 1,
+                  unitPrice: payment.amount,
+                  total: payment.amount,
+                },
+              ],
+              paymentMethod: payment.payment_method,
+              paymentProof: {
+                reference: payment.payment_reference,
+                method: payment.payment_method,
+                submittedAt: new Date(),
+                status: "pending",
+                notes:
+                  payment.notes || `Batch recorded by ${req.user.username}`,
+              },
+            });
+
+            invoiceAction = "created";
+            results.summary.invoicesCreated++;
+
+            console.log(
+              `📄 [${recordNumber}] Created new invoice: ${invoiceNumber}`
+            );
+          }
+
+          // ========================================
+          // CREATE PAYMENT HISTORY ENTRY
+          // ========================================
+
+          const paymentHistory = await PaymentHistory.create({
+            userId: payment.userId,
+            schoolId: user.schoolId,
+            amount: payment.amount,
+            paymentMethod: payment.payment_method,
+            paymentReference: payment.payment_reference,
+            paymentDate: payment.payment_date
+              ? new Date(payment.payment_date)
+              : new Date(),
+            status: "submitted",
+            invoiceId: invoice._id,
+            notes: payment.notes || "",
+            recordedBy: req.user.id,
+            statusHistory: [
+              {
+                status: "submitted",
+                changedBy: req.user.id,
+                changedAt: new Date(),
+                reason: "Payment information recorded via batch import",
+              },
+            ],
+            metadata: {
+              batchImport: true,
+              batchRecordNumber: recordNumber,
+              totalInBatch: payments.length,
+              recordedByUsername: req.user.username,
+              ipAddress: req.ip || req.connection?.remoteAddress,
+            },
+          });
+
+          console.log(
+            `💾 [${recordNumber}] Created payment history: ${paymentHistory._id}`
+          );
+
+          // ========================================
+          // SEND NOTIFICATION (if enabled)
+          // ========================================
+
+          if (sendNotifications) {
+            await createNotification(
+              payment.userId,
+              "Payment Information Recorded 💳",
+              `Your payment of TZS ${payment.amount.toLocaleString()} has been recorded and is pending verification. Reference: ${
+                payment.payment_reference
+              }`,
+              "info",
+              `/invoices/${invoice._id}`
+            );
+
+            console.log(`🔔 [${recordNumber}] Notification sent to user`);
+          }
+
+          // ========================================
+          // UPDATE STATS
+          // ========================================
+
+          // Track by payment method
+          if (!results.summary.byPaymentMethod[payment.payment_method]) {
+            results.summary.byPaymentMethod[payment.payment_method] = {
+              count: 0,
+              totalAmount: 0,
+            };
+          }
+          results.summary.byPaymentMethod[payment.payment_method].count++;
+          results.summary.byPaymentMethod[payment.payment_method].totalAmount +=
+            payment.amount;
+
+          // Track by user role
+          if (!results.summary.byUserRole[user.role]) {
+            results.summary.byUserRole[user.role] = {
+              count: 0,
+              totalAmount: 0,
+            };
+          }
+          results.summary.byUserRole[user.role].count++;
+          results.summary.byUserRole[user.role].totalAmount += payment.amount;
+
+          // Add to success results
+          results.success.push({
+            recordNumber,
+            userId: payment.userId,
+            username: user.username,
+            name: userName,
+            role: user.role,
+            amount: payment.amount,
+            paymentMethod: payment.payment_method,
+            paymentReference: payment.payment_reference,
+            invoiceId: invoice._id,
+            invoiceNumber: invoice.invoice_number,
+            invoiceAction: invoiceAction,
+            paymentHistoryId: paymentHistory._id,
+          });
+
+          results.stats.recorded++;
+          results.stats.totalAmount += payment.amount;
+
+          console.log(
+            `✅ [${recordNumber}] Successfully processed: ${userName} - TZS ${payment.amount.toLocaleString()}`
+          );
+        } catch (paymentError) {
+          console.error(
+            `❌ [${recordNumber}] Error processing payment:`,
+            paymentError
+          );
+
+          results.failed.push({
+            recordNumber,
+            userId: payment.userId,
+            error: paymentError.message,
+            data: payment,
+          });
+          results.stats.failed++;
+        }
+      }
+
+      // ========================================
+      // LOG BULK ACTIVITY
+      // ========================================
+
+      await logActivity(
+        req.user.id,
+        "BATCH_PAYMENT_RECORDED",
+        `Batch recorded ${
+          results.stats.recorded
+        } payments totaling TZS ${results.stats.totalAmount.toLocaleString()} (${
+          results.stats.failed
+        } failed, ${results.stats.skipped} skipped)`,
+        req,
+        {
+          totalRequested: results.stats.total,
+          recorded: results.stats.recorded,
+          failed: results.stats.failed,
+          skipped: results.stats.skipped,
+          totalAmount: results.stats.totalAmount,
+          byPaymentMethod: results.summary.byPaymentMethod,
+          byUserRole: results.summary.byUserRole,
+          invoicesCreated: results.summary.invoicesCreated,
+          invoicesUpdated: results.summary.invoicesUpdated,
+          recordedUserIds: results.success.map((r) => r.userId),
+          failedUserIds: results.failed.map((f) => f.userId),
+          skippedUserIds: results.skipped.map((s) => s.userId),
+        }
+      );
+
+      console.log(`\n✅ Batch payment recording complete:`, results.stats);
+      console.log(
+        `💰 Total amount recorded: TZS ${results.stats.totalAmount.toLocaleString()}`
+      );
+
+      // ========================================
+      // DETERMINE RESPONSE STATUS
+      // ========================================
+
+      const allFailed =
+        results.stats.recorded === 0 && results.stats.failed > 0;
+      const partialSuccess =
+        results.stats.recorded > 0 && results.stats.failed > 0;
+
+      res.status(allFailed ? 500 : 200).json({
+        success: results.stats.recorded > 0,
+        message: allFailed
+          ? "All payment recordings failed"
+          : partialSuccess
+          ? `Recorded ${results.stats.recorded} payments. ${results.stats.failed} failed, ${results.stats.skipped} skipped.`
+          : `Successfully recorded ${results.stats.recorded} payment(s)`,
+        data: results,
+        summary: {
+          total: results.stats.total,
+          recorded: results.stats.recorded,
+          failed: results.stats.failed,
+          skipped: results.stats.skipped,
+          totalAmount: results.stats.totalAmount,
+          totalAmountFormatted: `TZS ${results.stats.totalAmount.toLocaleString()}`,
+          invoicesCreated: results.summary.invoicesCreated,
+          invoicesUpdated: results.summary.invoicesUpdated,
+          byPaymentMethod: results.summary.byPaymentMethod,
+          byUserRole: results.summary.byUserRole,
+          successRate: `${(
+            (results.stats.recorded / results.stats.total) *
+            100
+          ).toFixed(1)}%`,
+          notificationsSent: sendNotifications,
+        },
+      });
+    } catch (error) {
+      console.error("❌ Batch payment recording error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Batch payment recording failed",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
+// ============================================
+// BATCH PAYMENT VALIDATION ENDPOINT (Preview)
+// ============================================
+
+// POST /api/superadmin/payment/batch-validate - Validate batch payments before recording
+app.post(
+  "/api/superadmin/payment/batch-validate",
+  authenticateToken,
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  async (req, res) => {
+    try {
+      const { payments } = req.body;
+
+      console.log(`🔍 Batch payment validation request received`);
+
+      // Validate input
+      if (!payments || !Array.isArray(payments) || payments.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "Payments array is required and must not be empty",
+        });
+      }
+
+      // Limit batch size
+      if (payments.length > 100) {
+        return res.status(400).json({
+          success: false,
+          error: "Maximum 100 payments can be validated at once",
+        });
+      }
+
+      const validationResults = {
+        valid: [],
+        invalid: [],
+        warnings: [],
+        stats: {
+          total: payments.length,
+          valid: 0,
+          invalid: 0,
+          warnings: 0,
+          estimatedTotalAmount: 0,
+        },
+      };
+
+      const validMethods = [
+        "crdb_bank",
+        "vodacom_lipa",
+        "azampay",
+        "tigopesa",
+        "halopesa",
+        "cash",
+        "other",
+      ];
+
+      // Validate each payment
+      for (let i = 0; i < payments.length; i++) {
+        const payment = payments[i];
+        const recordNumber = i + 1;
+        const errors = [];
+        const warnings = [];
+
+        // Check required fields
+        if (!payment.userId) errors.push("Missing userId");
+        if (!payment.amount) errors.push("Missing amount");
+        if (!payment.payment_method) errors.push("Missing payment_method");
+        if (!payment.payment_reference)
+          errors.push("Missing payment_reference");
+
+        // Validate amount
+        if (payment.amount !== undefined && payment.amount <= 0) {
+          errors.push("Amount must be greater than zero");
+        }
+
+        // Validate payment method
+        if (
+          payment.payment_method &&
+          !validMethods.includes(payment.payment_method)
+        ) {
+          errors.push(
+            `Invalid payment method. Must be one of: ${validMethods.join(", ")}`
+          );
+        }
+
+        // Check if user exists (if userId provided)
+        if (payment.userId) {
+          const user = await User.findById(payment.userId);
+
+          if (!user) {
+            errors.push("User not found");
+          } else {
+            // Check if role is applicable
+            if (
+              !["student", "entrepreneur", "nonstudent"].includes(user.role)
+            ) {
+              warnings.push(
+                `Payment recording not typically used for ${user.role} role`
+              );
+            }
+
+            // Check for duplicate payment reference
+            const existingPayment = await PaymentHistory.findOne({
+              paymentReference: payment.payment_reference,
+            });
+
+            if (existingPayment) {
+              warnings.push("Payment reference already exists in system");
+            }
+
+            // Check if user already has payment recorded
+            if (
+              user.payment_reference &&
+              user.payment_reference !== payment.payment_reference
+            ) {
+              warnings.push(
+                `User already has payment reference: ${user.payment_reference}`
+              );
+            }
+          }
+        }
+
+        // Categorize result
+        if (errors.length > 0) {
+          validationResults.invalid.push({
+            recordNumber,
+            payment,
+            errors,
+            warnings,
+          });
+          validationResults.stats.invalid++;
+        } else {
+          if (warnings.length > 0) {
+            validationResults.warnings.push({
+              recordNumber,
+              payment,
+              warnings,
+            });
+            validationResults.stats.warnings++;
+          }
+
+          validationResults.valid.push({
+            recordNumber,
+            payment,
+            warnings,
+          });
+          validationResults.stats.valid++;
+          validationResults.stats.estimatedTotalAmount += payment.amount || 0;
+        }
+      }
+
+      console.log(
+        `✅ Validation complete: ${validationResults.stats.valid} valid, ${validationResults.stats.invalid} invalid, ${validationResults.stats.warnings} warnings`
+      );
+
+      res.json({
+        success: true,
+        message: `Validated ${payments.length} payment(s)`,
+        canProceed: validationResults.stats.invalid === 0,
+        data: validationResults,
+        summary: {
+          total: validationResults.stats.total,
+          valid: validationResults.stats.valid,
+          invalid: validationResults.stats.invalid,
+          warnings: validationResults.stats.warnings,
+          estimatedTotalAmount: validationResults.stats.estimatedTotalAmount,
+          estimatedTotalAmountFormatted: `TZS ${validationResults.stats.estimatedTotalAmount.toLocaleString()}`,
+          validationRate: `${(
+            (validationResults.stats.valid / validationResults.stats.total) *
+            100
+          ).toFixed(1)}%`,
+        },
+      });
+    } catch (error) {
+      console.error("❌ Batch validation error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Batch validation failed",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
+// ============================================
 // 🛡️ APPLY ERROR HANDLERS (MUST BE LAST!)
 // ============================================
 
