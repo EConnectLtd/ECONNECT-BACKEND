@@ -4,7 +4,7 @@
 // Version: 2.0.0
 // ============================================
 
-const dotenv = require("dotenv").config({ silent: true });
+const dotenv = require("dotenv");
 // Load environment variables
 dotenv.config();
 
