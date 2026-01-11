@@ -4380,11 +4380,7 @@ app.get("/api/payment-history/:id", authenticateToken, async (req, res) => {
   try {
     const paymentHistory = await PaymentHistory.findById(req.params.id)
       .populate("userId", "firstName lastName email phoneNumber")
-      .populate("invoiceId")
-      .populate({
-        path: "statusHistory.changedBy",
-        select: "firstName lastName role",
-      });
+      .populate("invoiceId");
 
     if (!paymentHistory) {
       return res.status(404).json({
@@ -25134,7 +25130,6 @@ app.get(
         .sort({ paymentDate: -1, createdAt: -1 })
         .limit(parseInt(limit))
         .skip((parseInt(page) - 1) * parseInt(limit))
-        .populate("verifiedBy", "firstName lastName username")
         .populate("invoiceId", "invoice_number amount status dueDate");
 
       const total = await PaymentHistory.countDocuments({
