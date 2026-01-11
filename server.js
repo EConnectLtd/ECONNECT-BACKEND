@@ -1850,7 +1850,6 @@ const paymentHistorySchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Invoice",
       required: false,
-      // ✅ NO field-level index here (using explicit index below)
       description: "Reference to related invoice",
     },
 
@@ -2067,6 +2066,7 @@ paymentHistorySchema.index({ schoolId: 1, createdAt: -1 }); // School payments
 paymentHistorySchema.index({ paymentDate: -1 }); // Date-based queries
 paymentHistorySchema.index({ transactionType: 1, status: 1 }); // Transaction filtering
 paymentHistorySchema.index({ isDeleted: 1, createdAt: -1 }); // Soft delete queries
+paymentHistorySchema.index({ invoiceId: 1 });
 
 // ============================================
 // VIRTUAL FIELDS
