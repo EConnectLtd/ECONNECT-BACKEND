@@ -42,8 +42,6 @@ const { body, validationResult, param, query } = require("express-validator");
 const compression = require("compression");
 const cron = require("node-cron");
 
-const FailedJob = require("./models/FailedJob");
-const jobRetryService = require("./models/jobRetryService");
 const smsService = require("./services/smsService");
 
 // Initialize Express app
@@ -25824,94 +25822,47 @@ applyErrorHandlers(app);
 console.log("✅ Error handlers applied successfully!\n");
 
 // ============================================
-// AUTOMATED JOBS WITH RETRY MECHANISM
+// AUTOMATED PAYMENT REMINDER CRON JOB
 // ============================================
 
 // ✅ Only run cron jobs in production
 if (process.env.NODE_ENV === "production") {
-  // 📅 DAILY PAYMENT REMINDERS - 9:00 AM
+  // Schedule task to run daily at 9:00 AM
   cron.schedule("0 9 * * *", async () => {
-    console.log("\n🕐 ========================================");
-    console.log("🕐  DAILY PAYMENT REMINDER JOB");
-    console.log("🕐 ========================================\n");
+    console.log("🕐 Running automated payment reminder job...");
 
     try {
       const result = await sendBulkPaymentReminders();
-
-      console.log(`✅ Automated reminders completed:`);
-      console.log(`   📊 Total: ${result.total}`);
-      console.log(`   ✅ Sent: ${result.sentCount}`);
-      console.log(`   ❌ Failed: ${result.failedCount}`);
-      console.log(
-        `   💰 Total Amount: TZS ${result.totalAmount?.toLocaleString()}`
-      );
-
-      // If there were failures, record them
-      if (result.failedCount > 0) {
-        console.warn(
-          `⚠️ Recording ${result.failedCount} failed reminders for retry`
-        );
-
-        await jobRetryService.recordFailedJob(
-          "payment_reminder",
-          new Error(`${result.failedCount} payment reminders failed`),
-          {
-            totalUsers: result.total,
-            successCount: result.sentCount,
-            failedCount: result.failedCount,
-            totalAmount: result.totalAmount,
-            affectedUsers: result.failed?.map((f) => ({
-              userId: f.userId,
-              status: "failed",
-              error: f.error,
-            })),
-          }
-        );
-      }
+      console.log(`✅ Automated reminders completed: ${result.sentCount} sent`);
     } catch (error) {
-      console.error("❌ Payment reminder job FAILED:", error);
+      console.error("❌ Automated reminder job failed:", error);
 
-      // Record the complete failure
-      await jobRetryService.recordFailedJob("payment_reminder", error, {
-        errorType: "complete_failure",
-        timestamp: new Date(),
-      });
+      // ✅ Notify SuperAdmin of failure
+      try {
+        const superAdmins = await User.find({ role: "super_admin" }).distinct(
+          "_id"
+        );
+        await Promise.all(
+          superAdmins.map((adminId) =>
+            createNotification(
+              adminId,
+              "Payment Reminder Job Failed",
+              `Automated payment reminders failed: ${error.message}`,
+              "error"
+            )
+          )
+        );
+      } catch (notifError) {
+        console.error("❌ Failed to send error notification:", notifError);
+      }
     }
-
-    console.log("\n========================================\n");
   });
 
   console.log("✅ Payment reminder cron job scheduled (daily at 9:00 AM)");
-
-  // 🔄 RETRY FAILED JOBS - Every 30 minutes
-  cron.schedule("*/30 * * * *", async () => {
-    console.log("\n🔄 ========================================");
-    console.log("🔄  CHECKING FOR FAILED JOBS TO RETRY");
-    console.log("🔄 ========================================\n");
-
-    try {
-      const retryResults = await jobRetryService.retryFailedJobs();
-
-      if (retryResults.retried > 0) {
-        console.log(`🔄 Retry Summary:`);
-        console.log(`   📊 Retried: ${retryResults.retried}`);
-        console.log(`   ✅ Succeeded: ${retryResults.succeeded}`);
-        console.log(`   ❌ Failed: ${retryResults.failed}`);
-        console.log(`   🚫 Max Attempts: ${retryResults.maxAttemptsReached}`);
-      } else {
-        console.log("✅ No failed jobs to retry");
-      }
-    } catch (error) {
-      console.error("❌ Retry job service error:", error);
-    }
-
-    console.log("\n========================================\n");
-  });
-
-  console.log("✅ Failed job retry cron scheduled (every 30 minutes)");
 } else {
   console.log("ℹ️  Cron jobs disabled (not in production environment)");
 }
+
 
 // Start server
 server.listen(PORT, () => {
