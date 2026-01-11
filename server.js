@@ -2077,10 +2077,10 @@ paymentHistorySchema.index({ invoiceId: 1 }); // ✅ SINGLE index on invoiceId
 // ✅ NEW: Additional useful indexes
 paymentHistorySchema.index({ paymentReference: 1 }, { sparse: true }); // Duplicate checking (already defined in field, this is explicit)
 paymentHistorySchema.index({ reconciled: 1, reconciledAt: -1 }); // Reconciliation queries
-paymentHistorySchema.index({ 
-  userId: 1, 
-  status: 1, 
-  paymentDate: -1 
+paymentHistorySchema.index({
+  userId: 1,
+  status: 1,
+  paymentDate: -1,
 }); // Combined query optimization
 
 // ============================================
@@ -2114,8 +2114,8 @@ paymentHistorySchema.virtual("formattedAmount").get(function () {
 });
 
 // Enable virtuals in JSON
-paymentHistorySchema.set('toJSON', { virtuals: true });
-paymentHistorySchema.set('toObject', { virtuals: true });
+paymentHistorySchema.set("toJSON", { virtuals: true });
+paymentHistorySchema.set("toObject", { virtuals: true });
 
 // ============================================
 // INSTANCE METHODS
@@ -2274,7 +2274,9 @@ paymentHistorySchema.statics.getPaymentStats = async function (
 };
 
 // ✅ NEW: Get unreconciled payments
-paymentHistorySchema.statics.getUnreconciledPayments = async function (schoolId = null) {
+paymentHistorySchema.statics.getUnreconciledPayments = async function (
+  schoolId = null
+) {
   const query = {
     reconciled: false,
     status: { $in: ["verified", "approved", "completed"] },
@@ -2304,9 +2306,11 @@ paymentHistorySchema.statics.getOverduePayments = async function () {
 };
 
 // ✅ NEW: Check for duplicate payment reference
-paymentHistorySchema.statics.checkDuplicateReference = async function (paymentReference) {
+paymentHistorySchema.statics.checkDuplicateReference = async function (
+  paymentReference
+) {
   if (!paymentReference) return null;
-  
+
   return await this.findOne({
     paymentReference: paymentReference,
     isDeleted: false,
@@ -2357,7 +2361,9 @@ paymentHistorySchema.pre("save", async function (next) {
     });
 
     if (duplicate) {
-      return next(new Error(`Payment reference ${this.paymentReference} already exists`));
+      return next(
+        new Error(`Payment reference ${this.paymentReference} already exists`)
+      );
     }
   }
 
@@ -2387,9 +2393,6 @@ paymentHistorySchema.query.pending = function () {
 // EXPORT MODEL
 // ============================================
 const PaymentHistory = mongoose.model("PaymentHistory", paymentHistorySchema);
-
-
-
 
 // ============================================
 // PAYMENT REMINDER SCHEMA
@@ -25557,6 +25560,267 @@ app.get(
         ...(process.env.NODE_ENV === "development" && {
           debug: sanitizeError(error),
         }),
+      });
+    }
+  }
+);
+
+app.post(
+  "/api/superadmin/migrate/cleanup-indexes",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      console.log("\n" + "=".repeat(60));
+      console.log("🔧 STARTING INDEX CLEANUP MIGRATION");
+      console.log("=".repeat(60));
+
+      // Get PaymentHistory model
+      const PaymentHistory = mongoose.model("PaymentHistory");
+      const collection = PaymentHistory.collection;
+
+      // ============================================
+      // STEP 1: List current indexes
+      // ============================================
+      console.log("\n📋 STEP 1: Listing current indexes...");
+      const currentIndexes = await collection.indexes();
+      console.log(`   Found ${currentIndexes.length} indexes`);
+
+      const indexList = currentIndexes.map((idx) => ({
+        name: idx.name,
+        keys: Object.keys(idx.key).join(", "),
+        unique: idx.unique || false,
+        sparse: idx.sparse || false,
+      }));
+
+      // Log each index
+      indexList.forEach((idx, i) => {
+        console.log(
+          `   ${i + 1}. ${idx.name} → [${idx.keys}]${
+            idx.unique ? " UNIQUE" : ""
+          }${idx.sparse ? " SPARSE" : ""}`
+        );
+      });
+
+      // Check for duplicate invoiceId indexes
+      const invoiceIdIndexes = currentIndexes.filter(
+        (idx) => idx.key && idx.key.invoiceId !== undefined
+      );
+
+      if (invoiceIdIndexes.length > 1) {
+        console.log(
+          `\n⚠️  WARNING: Found ${invoiceIdIndexes.length} indexes on 'invoiceId':`
+        );
+        invoiceIdIndexes.forEach((idx) => {
+          console.log(`      - ${idx.name}`);
+        });
+      } else if (invoiceIdIndexes.length === 1) {
+        console.log(`\n✅ Currently 1 index on 'invoiceId' (will recreate)`);
+      } else {
+        console.log(`\n⚠️  No index on 'invoiceId' found`);
+      }
+
+      // ============================================
+      // STEP 2: Drop all indexes (except _id)
+      // ============================================
+      console.log("\n🗑️  STEP 2: Dropping all indexes (except _id)...");
+
+      try {
+        const result = await collection.dropIndexes();
+        console.log(
+          `   ✅ Dropped indexes: ${result.ok ? "SUCCESS" : "FAILED"}`
+        );
+      } catch (dropError) {
+        if (dropError.message.includes("ns not found")) {
+          console.log("   ℹ️  No indexes to drop");
+        } else {
+          throw dropError;
+        }
+      }
+
+      // ============================================
+      // STEP 3: Recreate indexes from schema
+      // ============================================
+      console.log("\n🔨 STEP 3: Recreating indexes from schema...");
+
+      try {
+        await PaymentHistory.createIndexes();
+        console.log("   ✅ Indexes recreated from schema");
+      } catch (createError) {
+        console.error("   ❌ Error creating indexes:", createError.message);
+        throw createError;
+      }
+
+      // ============================================
+      // STEP 4: Verify new indexes
+      // ============================================
+      console.log("\n🔍 STEP 4: Verifying new indexes...");
+
+      const newIndexes = await collection.indexes();
+      console.log(`   Found ${newIndexes.length} indexes`);
+
+      const newIndexList = newIndexes.map((idx) => ({
+        name: idx.name,
+        keys: Object.keys(idx.key).join(", "),
+        unique: idx.unique || false,
+        sparse: idx.sparse || false,
+      }));
+
+      // Log each new index
+      newIndexList.forEach((idx, i) => {
+        console.log(
+          `   ${i + 1}. ${idx.name} → [${idx.keys}]${
+            idx.unique ? " UNIQUE" : ""
+          }${idx.sparse ? " SPARSE" : ""}`
+        );
+      });
+
+      // Check for duplicate invoiceId indexes (again)
+      const newInvoiceIdIndexes = newIndexes.filter(
+        (idx) => idx.key && idx.key.invoiceId !== undefined
+      );
+
+      console.log("\n" + "=".repeat(60));
+      if (newInvoiceIdIndexes.length === 1) {
+        console.log("✅ SUCCESS: Only ONE index on 'invoiceId'");
+        console.log(`   Index name: ${newInvoiceIdIndexes[0].name}`);
+      } else if (newInvoiceIdIndexes.length > 1) {
+        console.log(
+          `⚠️  WARNING: Still ${newInvoiceIdIndexes.length} indexes on 'invoiceId':`
+        );
+        newInvoiceIdIndexes.forEach((idx) => {
+          console.log(`      - ${idx.name}`);
+        });
+      } else {
+        console.log("⚠️  WARNING: No index on 'invoiceId' found");
+      }
+      console.log("=".repeat(60));
+
+      // ============================================
+      // STEP 5: Build response
+      // ============================================
+      const result = {
+        success: true,
+        message: "Index cleanup completed successfully",
+        timestamp: new Date().toISOString(),
+        before: {
+          totalIndexes: currentIndexes.length,
+          invoiceIdIndexCount: invoiceIdIndexes.length,
+          indexes: indexList,
+        },
+        after: {
+          totalIndexes: newIndexes.length,
+          invoiceIdIndexCount: newInvoiceIdIndexes.length,
+          indexes: newIndexList,
+        },
+        status:
+          newInvoiceIdIndexes.length === 1
+            ? "✅ PERFECT - Only one invoiceId index"
+            : newInvoiceIdIndexes.length > 1
+            ? "⚠️  WARNING - Multiple invoiceId indexes still exist"
+            : "⚠️  WARNING - No invoiceId index found",
+        nextSteps:
+          newInvoiceIdIndexes.length === 1
+            ? [
+                "✅ Migration successful!",
+                "🗑️  Remove this migration endpoint from your code",
+                "🚀 Deploy again to clean up the endpoint",
+                "🎉 Your system is now optimized!",
+              ]
+            : [
+                "⚠️  Migration needs attention",
+                "📧 Contact support or check schema definition",
+                "🔍 Verify PaymentHistory schema has correct indexes",
+              ],
+      };
+
+      console.log("\n🎉 MIGRATION COMPLETE!\n");
+
+      // Log activity
+      await logActivity(
+        req.user.id,
+        "INDEX_CLEANUP_MIGRATION",
+        `Cleaned up PaymentHistory indexes: ${currentIndexes.length} → ${newIndexes.length}`,
+        req,
+        {
+          beforeCount: currentIndexes.length,
+          afterCount: newIndexes.length,
+          invoiceIdIndexBefore: invoiceIdIndexes.length,
+          invoiceIdIndexAfter: newInvoiceIdIndexes.length,
+          status: result.status,
+        }
+      );
+
+      res.json(result);
+    } catch (error) {
+      console.error("\n❌ MIGRATION FAILED:");
+      console.error(error);
+
+      res.status(500).json({
+        success: false,
+        error: "Index cleanup migration failed",
+        message: error.message,
+        details:
+          process.env.NODE_ENV === "development"
+            ? error.stack
+            : "Check server logs for details",
+      });
+    }
+  }
+);
+
+// ============================================
+// 🧪 TEST ENDPOINT (Optional - for verification)
+// ============================================
+//
+// This endpoint lets you check indexes without modifying them
+// Safe to call anytime
+//
+
+app.get(
+  "/api/superadmin/migrate/check-indexes",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const PaymentHistory = mongoose.model("PaymentHistory");
+      const collection = PaymentHistory.collection;
+
+      const indexes = await collection.indexes();
+
+      const invoiceIdIndexes = indexes.filter(
+        (idx) => idx.key && idx.key.invoiceId !== undefined
+      );
+
+      const indexList = indexes.map((idx) => ({
+        name: idx.name,
+        keys: idx.key,
+        unique: idx.unique || false,
+        sparse: idx.sparse || false,
+      }));
+
+      res.json({
+        success: true,
+        totalIndexes: indexes.length,
+        invoiceIdIndexCount: invoiceIdIndexes.length,
+        status:
+          invoiceIdIndexes.length === 1
+            ? "✅ Healthy - One invoiceId index"
+            : invoiceIdIndexes.length > 1
+            ? "⚠️  Warning - Multiple invoiceId indexes"
+            : "⚠️  Warning - No invoiceId index",
+        indexes: indexList,
+        invoiceIdIndexes: invoiceIdIndexes.map((idx) => ({
+          name: idx.name,
+          keys: idx.key,
+        })),
+      });
+    } catch (error) {
+      console.error("❌ Error checking indexes:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to check indexes",
+        message: error.message,
       });
     }
   }
