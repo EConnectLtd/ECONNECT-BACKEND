@@ -541,20 +541,42 @@ const userSchema = new mongoose.Schema({
 // ✅ ADDED: Pre-save middleware to sync registration type fields
 // ============================================
 userSchema.pre("save", function (next) {
-  // Sync registrationType with registration_type for consistency
-  if (this.registration_type && !this.registrationType) {
-    this.registrationType = this.registration_type;
-  } else if (this.registrationType && !this.registration_type) {
-    this.registration_type = this.registrationType;
-  }
+  try {
+    // ✅ SAFETY CHECK: Ensure next is a function
+    if (typeof next !== 'function') {
+      console.error('❌ PRE-SAVE ERROR: next is not a function', {
+        operation: this.isNew ? 'create' : 'update',
+        username: this.username
+      });
+      return; // Exit gracefully
+    }
 
-  // ✅ Handle legacy "normal" value migration to "ctm-club"
-  if (this.registration_type === "normal") {
-    this.registration_type = "ctm-club";
-    this.registrationType = "ctm-club";
-  }
+    // Sync registrationType with registration_type for consistency
+    if (this.registration_type && !this.registrationType) {
+      this.registrationType = this.registration_type;
+    } else if (this.registrationType && !this.registration_type) {
+      this.registration_type = this.registrationType;
+    }
 
-  next();
+    // ✅ Handle legacy "normal" value migration to "ctm-club"
+    if (this.registration_type === "normal") {
+      this.registration_type = "ctm-club";
+      this.registrationType = "ctm-club";
+    }
+
+    next();
+  } catch (error) {
+    console.error('❌ CRITICAL: userSchema pre-save error:', {
+      error: error.message,
+      stack: error.stack,
+      userId: this._id,
+      username: this.username
+    });
+    
+    if (typeof next === 'function') {
+      next(error);
+    }
+  }
 });
 
 // Add indexes for performance optimization
@@ -1708,7 +1730,6 @@ const paymentHistorySchema = new mongoose.Schema(
     invoiceId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Invoice",
-      index: true,
     },
     transactionType: {
       type: String,
@@ -1782,7 +1803,7 @@ const paymentHistorySchema = new mongoose.Schema(
 // Indexes for performance
 paymentHistorySchema.index({ userId: 1, createdAt: -1 });
 paymentHistorySchema.index({ status: 1, createdAt: -1 });
-paymentHistorySchema.index({ invoiceId: 1 });
+paymentHistorySchema.index({ invoiceId: 1 }); 
 
 const PaymentHistory = mongoose.model("PaymentHistory", paymentHistorySchema);
 
@@ -22381,8 +22402,8 @@ app.post(
 // UPDATE subject
 app.put(
   "/api/subjects/:id",
+    publicRateLimiter,
   authenticateToken,
-  publicRateLimiter, // ✅ FIXED: Moved before authorizeRoles
   authorizeRoles("super_admin", "national_official", "headmaster"), // ✅ FIXED: Removed syntax error
   validateObjectId("id"),
   async (req, res) => {
