@@ -2069,7 +2069,8 @@ paymentHistorySchema.index({ schoolId: 1, createdAt: -1 }); // School payments
 paymentHistorySchema.index({ paymentDate: -1 }); // Date-based queries
 paymentHistorySchema.index({ transactionType: 1, status: 1 }); // Transaction filtering
 paymentHistorySchema.index({ isDeleted: 1, createdAt: -1 }); // Soft delete queries
-paymentHistorySchema.index({ invoiceId: 1 }); // ✅ SINGLE index on invoiceId
+// ✅ ONLY index on invoiceId (no duplicate in field definition)
+paymentHistorySchema.index({ invoiceId: 1 }, { sparse: true });
 
 // ✅ Index for payment reference (with sparse option for null values)
 paymentHistorySchema.index({ paymentReference: 1 }, { sparse: true });
