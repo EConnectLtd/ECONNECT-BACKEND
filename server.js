@@ -22990,7 +22990,7 @@ app.post(
 // UPDATE subject
 app.put(
   "/api/subjects/:id",
-  authenticateToken, 
+  authenticateToken,
   publicRateLimiter,
   authorizeRoles("super_admin", "national_official", "headmaster"), // ✅ FIXED: Removed syntax error
   validateObjectId("id"),
@@ -24791,7 +24791,7 @@ app.post(
 // BATCH PAYMENT VALIDATION ENDPOINT (Preview)
 // ============================================
 
-// POST /api/superadmin/payment/batch-validate - Validate batch payments before recording
+// POST /api/superadmin/payment/batch-validate
 app.post(
   "/api/superadmin/payment/batch-validate",
   authenticateToken,
@@ -24802,7 +24802,6 @@ app.post(
 
       console.log(`🔍 Batch payment validation request received`);
 
-      // Validate input
       if (!payments || !Array.isArray(payments) || payments.length === 0) {
         return res.status(400).json({
           success: false,
@@ -24810,7 +24809,6 @@ app.post(
         });
       }
 
-      // Limit batch size
       if (payments.length > 100) {
         return res.status(400).json({
           success: false,
@@ -24841,7 +24839,41 @@ app.post(
         "other",
       ];
 
-      // Validate each payment
+      // ✅ NEW: Fetch all data needed ONCE before the loop
+      console.log("📊 Pre-fetching validation data...");
+
+      // Get all payment references in one query
+      const allReferences = payments
+        .map((p) => p.payment_reference)
+        .filter((ref) => ref); // Remove undefined/null
+
+      const existingPayments = await PaymentHistory.find({
+        paymentReference: { $in: allReferences },
+      }).distinct("paymentReference");
+
+      // Convert to Set for O(1) lookup
+      const existingReferencesSet = new Set(existingPayments);
+
+      // Get all user IDs in one query
+      const allUserIds = payments
+        .map((p) => p.userId)
+        .filter((id) => id && mongoose.Types.ObjectId.isValid(id));
+
+      const existingUsers = await User.find({
+        _id: { $in: allUserIds },
+      }).select("_id role payment_reference");
+
+      // Create user lookup map
+      const userMap = new Map();
+      existingUsers.forEach((user) => {
+        userMap.set(user._id.toString(), user);
+      });
+
+      console.log(
+        `✅ Pre-fetch complete: ${existingReferencesSet.size} existing refs, ${userMap.size} users found`
+      );
+
+      // ✅ NOW validate each payment (no more DB queries!)
       for (let i = 0; i < payments.length; i++) {
         const payment = payments[i];
         const recordNumber = i + 1;
@@ -24870,9 +24902,9 @@ app.post(
           );
         }
 
-        // Check if user exists (if userId provided)
-        if (payment.userId) {
-          const user = await User.findById(payment.userId);
+        // ✅ IMPROVED: Check user from pre-fetched map (no DB query!)
+        if (payment.userId && mongoose.Types.ObjectId.isValid(payment.userId)) {
+          const user = userMap.get(payment.userId);
 
           if (!user) {
             errors.push("User not found");
@@ -24886,12 +24918,8 @@ app.post(
               );
             }
 
-            // Check for duplicate payment reference
-            const existingPayment = await PaymentHistory.findOne({
-              paymentReference: payment.payment_reference,
-            });
-
-            if (existingPayment) {
+            // ✅ IMPROVED: Check duplicate from pre-fetched Set (no DB query!)
+            if (existingReferencesSet.has(payment.payment_reference)) {
               warnings.push("Payment reference already exists in system");
             }
 
@@ -24905,6 +24933,8 @@ app.post(
               );
             }
           }
+        } else if (payment.userId) {
+          errors.push("Invalid user ID format");
         }
 
         // Categorize result
