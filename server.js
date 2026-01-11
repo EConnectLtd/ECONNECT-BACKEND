@@ -362,7 +362,7 @@ function generateRandomPassword() {
 // MONGODB SCHEMAS
 // ============================================
 
-// User Schema (Enhanced with all roles)
+// User Schema (Enhanced with all roles) - ✅ FIXED TO MATCH FRONTEND
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true, trim: true },
   email: {
@@ -386,6 +386,7 @@ const userSchema = new mongoose.Schema({
       "national_official",
       "tamisemi",
       "super_admin",
+      "nonstudent", // ✅ ADDED: Missing role from NonStudentRegistrationForm
     ],
     required: true,
   },
@@ -426,10 +427,10 @@ const userSchema = new mongoose.Schema({
 
   // Teacher-specific fields
   employeeId: String,
-  subjects: [String], // Array of subject names
-  otherSubjects: String, // Custom subjects if "Others" selected
+  subjects: [String],
+  otherSubjects: String,
 
-  // Business/Entrepreneur fields (biz object for backward compatibility with seeded data)
+  // Business/Entrepreneur fields (biz object for backward compatibility)
   biz: {
     categories: [String],
     business_name: String,
@@ -440,66 +441,92 @@ const userSchema = new mongoose.Schema({
   // Entrepreneur-specific fields
   businessName: String,
   businessType: String,
-  businessStatus: String, // "Registered" or "Not Registered"
+  businessStatus: String,
   businessWebsite: String,
-  businessCategories: [String], // Array of categories,
+  businessCategories: [String],
   businessRegistrationNumber: String,
   tinNumber: String,
   businessId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Business",
-    sparse: true, // Only for entrepreneurs
+    sparse: true,
   },
+
   // Staff-specific fields
   staffPosition: String,
   department: String,
   salary: Number,
   hireDate: Date,
 
-  // ✅ NEW GUARDIAN FIELDS
+  // Guardian fields
   guardianEmail: String,
   guardianOccupation: String,
   guardianNationalId: String,
 
-  // ✅ NEW PARENT/GUARDIAN LOCATION FIELDS
+  // Parent/Guardian location fields
   parentRegionId: { type: mongoose.Schema.Types.ObjectId, ref: "Region" },
   parentDistrictId: { type: mongoose.Schema.Types.ObjectId, ref: "District" },
   parentWardId: { type: mongoose.Schema.Types.ObjectId, ref: "Ward" },
   parentAddress: String,
-  // ✅ NEW: Parent location as embedded document
   parentLocation: {
     regionName: String,
     districtName: String,
     wardName: String,
   },
-  // ✅ NEW STUDENT FIELDS
-  institutionType: { type: String, enum: ["government", "private"] },
-  classLevel: String, // Primary, Secondary, College, University
 
-  // Registration Type (for students)
+  // Student institution fields
+  institutionType: { type: String, enum: ["government", "private"] },
+  classLevel: String,
+
+  // ============================================
+  // ✅ FIXED: Registration Type (CRITICAL FIX)
+  // ============================================
   registration_type: {
     type: String,
     enum: [
-      "normal", // CTM Club at School
-      "silver", // EConnect Talent Hub - Silver
-      "gold", // EConnect Talent Hub - Gold
-      "platinum", // EConnect Talent Hub - Platinum
+      "ctm-club", // ✅ CHANGED FROM "normal" - CTM Club at School/University
+      "silver", // EConnect Talent Hub - Silver Package
+      "gold", // EConnect Talent Hub - Gold Package
+      "platinum", // EConnect Talent Hub - Platinum Package
     ],
+    default: "ctm-club", // ✅ ADDED: Default value changed from "normal"
   },
+
+  // ✅ ADDED: Alias field for frontend compatibility (camelCase version)
+  registrationType: {
+    type: String,
+    enum: ["ctm-club", "silver", "gold", "platinum"],
+  },
+
   registration_fee_paid: { type: Number, default: 0 },
   registration_date: Date,
   next_billing_date: Date,
   is_ctm_student: { type: Boolean, default: true },
+
+  // ============================================
+  // ✅ FIXED: Payment fields
+  // ============================================
   payment_method: {
     type: String,
-    enum: ["crdb_bank", "vodacom_lipa", ""],
+    enum: [
+      "crdb_bank", // ✅ Bank transfer via CRDB
+      "vodacom_lipa", // ✅ Vodacom M-Pesa Lipa
+      "azampay", // ✅ ADDED: AzamPay
+      "tigopesa", // ✅ ADDED: TigoPesa
+      "halopesa", // ✅ ADDED: HaloPesa
+      "cash", // ✅ ADDED: Cash payment
+      "other", // ✅ ADDED: Other methods
+      "", // ✅ ADDED: Empty string for optional field
+    ],
   },
   payment_reference: String,
-  payment_status: {
-    type: String,
-    enum: ["pending", "verified", "rejected"],
-    default: "pending",
-  },
+  payment_date: Date, // ✅ ADDED: Field to store payment date
+
+  // ✅ REMOVED: payment_status field
+  // This field caused ValidationError when trying to set 'submitted' status
+  // Payment status is now tracked exclusively in PaymentHistory model
+  // where it has proper enum: ['pending', 'verified', 'rejected', 'submitted']
+
   payment_verified_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   payment_verified_at: Date,
 
@@ -510,14 +537,34 @@ const userSchema = new mongoose.Schema({
   passwordResetExpires: Date,
 });
 
+// ============================================
+// ✅ ADDED: Pre-save middleware to sync registration type fields
+// ============================================
+userSchema.pre("save", function (next) {
+  // Sync registrationType with registration_type for consistency
+  if (this.registration_type && !this.registrationType) {
+    this.registrationType = this.registration_type;
+  } else if (this.registrationType && !this.registration_type) {
+    this.registration_type = this.registrationType;
+  }
+
+  // ✅ Handle legacy "normal" value migration to "ctm-club"
+  if (this.registration_type === "normal") {
+    this.registration_type = "ctm-club";
+    this.registrationType = "ctm-club";
+  }
+
+  next();
+});
+
 // Add indexes for performance optimization
 userSchema.index({ schoolId: 1, role: 1 });
 userSchema.index({ regionId: 1, role: 1 });
 userSchema.index({ districtId: 1, role: 1 });
-userSchema.index({ isActive: 1, role: 1 }); // For filtering active users by role
-userSchema.index({ registration_type: 1, next_billing_date: 1 }); // For monthly billing queries
-userSchema.index({ createdAt: -1 }); // For sorting by creation date
-userSchema.index({ lastLogin: -1 }); // For sorting by last login
+userSchema.index({ isActive: 1, role: 1 });
+userSchema.index({ registration_type: 1, next_billing_date: 1 });
+userSchema.index({ createdAt: -1 });
+userSchema.index({ lastLogin: -1 });
 
 const classLevelRequestSchema = new mongoose.Schema({
   studentId: {
@@ -17620,10 +17667,10 @@ app.post(
           user.isActive = true;
           user.password = hashedPassword;
 
-          // Update payment fields if applicable
-          if (user.payment_status) {
-            user.payment_status = "verified";
-          }
+          // ✅ REMOVED: user.payment_status = "verified" (field doesn't exist in User schema)
+          // Payment status is tracked in PaymentHistory model only
+
+          // Update payment verification fields if payment exists
           if (user.payment_reference) {
             user.payment_verified_by = req.user.id;
             user.payment_verified_at = new Date();
@@ -17694,7 +17741,11 @@ app.post(
           }
 
           // Update invoices if applicable
-          if (user.role === "student" || user.role === "entrepreneur") {
+          if (
+            user.role === "student" ||
+            user.role === "entrepreneur" ||
+            user.role === "nonstudent"
+          ) {
             try {
               await Invoice.updateMany(
                 {
@@ -18638,195 +18689,6 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Bulk deletion failed",
-        ...(process.env.NODE_ENV === "development" && {
-          debug: sanitizeError(error),
-        }),
-      });
-    }
-  }
-);
-
-// ============================================
-// APPROVE USER ENDPOINT (Students/Entrepreneurs)
-// ============================================
-
-// POST /api/superadmin/users/:userId/approve - Approve paid inactive user
-app.post(
-  "/api/superadmin/users/:userId/approve",
-  authenticateToken,
-  authorizeRoles("super_admin", "national_official", "headmaster"),
-  async (req, res) => {
-    try {
-      const { userId } = req.params;
-
-      console.log(`🔍 Approval request for user: ${userId}`);
-
-      // Find the user
-      const user = await User.findById(userId);
-
-      if (!user) {
-        return res.status(404).json({
-          success: false,
-          error: "User not found",
-        });
-      }
-
-      // Check if user is already active
-      if (user.isActive) {
-        return res.status(400).json({
-          success: false,
-          error: "User is already active",
-        });
-      }
-
-      // Check payment status (for students/entrepreneurs)
-      if (user.role === "student" || user.role === "entrepreneur") {
-        if (!user.payment_reference && user.payment_status === "pending") {
-          return res.status(400).json({
-            success: false,
-            error: "User has not submitted payment information",
-          });
-        }
-      }
-
-      // Generate new password
-      const newPassword = generateRandomPassword();
-      const hashedPassword = await hashPassword(newPassword);
-
-      // Activate user and update payment verification
-      user.isActive = true;
-      user.password = hashedPassword;
-      user.payment_status = "verified";
-      user.payment_verified_by = req.user.id;
-      user.payment_verified_at = new Date();
-      user.updatedAt = new Date();
-
-      await user.save();
-
-      console.log(`✅ User activated: ${user.username} (${user.role})`);
-
-      // Send SMS with password
-      const userName =
-        `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
-        user.username;
-      const smsResult = await smsService.sendPasswordSMS(
-        user.phoneNumber,
-        newPassword,
-        userName,
-        user._id.toString()
-      );
-
-      // Log SMS result
-      if (smsResult.success) {
-        console.log(`📱 Approval SMS sent to ${user.phoneNumber}`);
-
-        await SMSLog.create({
-          userId: user._id,
-          phone: user.phoneNumber,
-          message: "Account approval password SMS",
-          type: "password",
-          status: "sent",
-          messageId: smsResult.messageId,
-          reference: `approval_${user._id}`,
-        });
-      } else {
-        console.error(`❌ Failed to send approval SMS:`, smsResult.error);
-
-        await SMSLog.create({
-          userId: user._id,
-          phone: user.phoneNumber,
-          message: "Account approval SMS (failed)",
-          type: "password",
-          status: "failed",
-          errorMessage: smsResult.error,
-          reference: `approval_${user._id}`,
-        });
-      }
-
-      // Create in-app notification
-      await createNotification(
-        user._id,
-        "Account Approved! 🎉",
-        `Your ${user.role} account has been approved! Check your SMS at ${user.phoneNumber} for your login password.`,
-        "success"
-      );
-
-      // Update invoice status if exists
-      if (user.role === "student" || user.role === "entrepreneur") {
-        const invoiceUpdate = await Invoice.updateMany(
-          {
-            student_id: user._id,
-            status: { $in: ["pending", "verification"] },
-          },
-          {
-            status: "paid",
-            paidDate: new Date(),
-            "paymentProof.status": "verified",
-            "paymentProof.verifiedBy": req.user.id,
-            "paymentProof.verifiedAt": new Date(),
-          }
-        );
-
-        console.log(`📄 Updated ${invoiceUpdate.modifiedCount} invoices`);
-      }
-
-      // Update payment history if exists
-      await PaymentHistory.updateMany(
-        { userId: user._id, status: "pending" },
-        {
-          status: "verified",
-          verifiedAt: new Date(),
-          verifiedBy: req.user.id,
-          $push: {
-            statusHistory: {
-              status: "verified",
-              changedBy: req.user.id,
-              changedAt: new Date(),
-              reason: "Account approved by admin",
-            },
-          },
-        }
-      );
-
-      // Log activity
-      await logActivity(
-        req.user.id,
-        "USER_APPROVED",
-        `Approved ${user.role}: ${userName} (${user.username})`,
-        req,
-        {
-          userId: user._id,
-          userRole: user.role,
-          phoneNumber: user.phoneNumber,
-          smsSent: smsResult.success,
-          payment_reference: user.payment_reference,
-        }
-      );
-
-      console.log(`✅ Approval complete for ${user.username}`);
-
-      res.json({
-        success: true,
-        message: `${
-          user.role.charAt(0).toUpperCase() + user.role.slice(1)
-        } approved successfully. Password sent via SMS to ${user.phoneNumber}.`,
-        data: {
-          userId: user._id,
-          username: user.username,
-          name: userName,
-          role: user.role,
-          phoneNumber: user.phoneNumber,
-          email: user.email,
-          smsSent: smsResult.success,
-          isActive: user.isActive,
-          payment_status: user.payment_status,
-        },
-      });
-    } catch (error) {
-      console.error("❌ Error approving user:", error);
-      res.status(500).json({
-        success: false,
-        error: "Failed to approve user",
         ...(process.env.NODE_ENV === "development" && {
           debug: sanitizeError(error),
         }),
@@ -23111,7 +22973,7 @@ app.post(
 ); // ✅ FIXED: Closing app.post() for Resend Password SMS
 
 // ============================================
-// APPROVE USER ENDPOINT (Students/Entrepreneurs)
+// APPROVE USER ENDPOINT (Students/Entrepreneurs/NonStudents)
 // ============================================
 
 // POST /api/superadmin/users/:userId/approve - Approve inactive user (with or without payment)
@@ -23143,8 +23005,8 @@ app.post(
         });
       }
 
-      // ✅ REMOVED: Payment status check - approve regardless of payment
-      // Admin can now approve users even without payment proof
+      // ✅ Admin can approve users regardless of payment status
+      // Payment verification is optional and tracked separately in PaymentHistory
 
       // Generate new password
       const newPassword = generateRandomPassword();
@@ -23154,10 +23016,10 @@ app.post(
       user.isActive = true;
       user.password = hashedPassword;
 
-      // ✅ Only update payment fields if they exist
-      if (user.payment_status) {
-        user.payment_status = "verified";
-      }
+      // ✅ REMOVED: user.payment_status = "verified" (field doesn't exist in User schema)
+      // Payment status is now tracked exclusively in PaymentHistory model
+
+      // Update payment verification fields if payment reference exists
       if (user.payment_reference) {
         user.payment_verified_by = req.user.id;
         user.payment_verified_at = new Date();
@@ -23216,7 +23078,11 @@ app.post(
       );
 
       // Update invoice status if exists
-      if (user.role === "student" || user.role === "entrepreneur") {
+      if (
+        user.role === "student" ||
+        user.role === "entrepreneur" ||
+        user.role === "nonstudent"
+      ) {
         const invoiceUpdate = await Invoice.updateMany(
           {
             student_id: user._id,
@@ -23270,6 +23136,11 @@ app.post(
 
       console.log(`✅ Approval complete for ${user.username}`);
 
+      // ✅ Get payment status from PaymentHistory (since it's not on User model)
+      const paymentHistoryRecord = await PaymentHistory.findOne({
+        userId: user._id,
+      }).sort({ createdAt: -1 });
+
       res.json({
         success: true,
         message: `${
@@ -23284,7 +23155,9 @@ app.post(
           email: user.email,
           smsSent: smsResult.success,
           isActive: user.isActive,
-          payment_status: user.payment_status,
+          payment_status: paymentHistoryRecord?.status || "not_recorded", // ✅ Get from PaymentHistory
+          payment_verified_at: user.payment_verified_at,
+          payment_verified_by: user.payment_verified_by,
         },
       });
     } catch (error) {
@@ -23786,7 +23659,7 @@ app.post(
             method: payment_method || "Not specified",
             reference: payment_reference || "Not provided",
             date: user.payment_date,
-            status: user.payment_status,
+            status: paymentHistoryRecord?.status || "pending", // ✅ FIXED: Get from PaymentHistory
           },
           invoice: {
             id: invoice._id,
@@ -24785,7 +24658,6 @@ app.patch(
 
         // Update user payment status
         await User.findByIdAndUpdate(payment.userId._id, {
-          payment_status: "verified",
           payment_verified_by: req.user.id,
           payment_verified_at: new Date(),
         });
