@@ -1642,7 +1642,7 @@ const Invoice = mongoose.model("Invoice", invoiceSchema);
 module.exports = Invoice;
 
 // ============================================
-// PAYMENT HISTORY SCHEMA (ADD AFTER INVOICE SCHEMA)
+// PAYMENT HISTORY SCHEMA
 // ============================================
 
 const paymentHistorySchema = new mongoose.Schema(
@@ -1651,6 +1651,11 @@ const paymentHistorySchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
+      index: true,
+    },
+    schoolId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "School",
       index: true,
     },
     invoiceId: {
@@ -1680,9 +1685,18 @@ const paymentHistorySchema = new mongoose.Schema(
     },
     paymentMethod: {
       type: String,
-      enum: ["crdb_bank", "vodacom_lipa", "azampay", "cash", "other"],
+      enum: [
+        "crdb_bank",
+        "vodacom_lipa",
+        "azampay",
+        "tigopesa",
+        "halopesa",
+        "cash",
+        "other",
+      ],
     },
     paymentReference: String,
+    paymentDate: Date,
     status: {
       type: String,
       enum: ["pending", "submitted", "verified", "rejected", "cancelled"],
@@ -1697,12 +1711,14 @@ const paymentHistorySchema = new mongoose.Schema(
         reason: String,
       },
     ],
+    notes: String,
     submittedAt: Date,
     verifiedAt: Date,
     verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     rejectedAt: Date,
     rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     rejectionReason: String,
+    recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     metadata: {
       registrationType: String,
       packageName: String,
@@ -1716,8 +1732,10 @@ const paymentHistorySchema = new mongoose.Schema(
   }
 );
 
+// Indexes for performance
 paymentHistorySchema.index({ userId: 1, createdAt: -1 });
 paymentHistorySchema.index({ status: 1, createdAt: -1 });
+paymentHistorySchema.index({ invoiceId: 1 });
 
 const PaymentHistory = mongoose.model("PaymentHistory", paymentHistorySchema);
 
@@ -1768,6 +1786,7 @@ const paymentReminderSchema = new mongoose.Schema(
 );
 
 paymentReminderSchema.index({ userId: 1, sentAt: -1 });
+paymentReminderSchema.index({ invoiceId: 1 });
 
 const PaymentReminder = mongoose.model(
   "PaymentReminder",
@@ -17698,7 +17717,7 @@ app.post(
           // Update payment history
           try {
             await PaymentHistory.updateMany(
-              { userId: user._id, status: { $in: ["pending", "submitted"] } },
+              { userId: user._id, status: "pending" },
               {
                 status: "verified",
                 verifiedAt: new Date(),
@@ -18753,7 +18772,7 @@ app.post(
 
       // Update payment history if exists
       await PaymentHistory.updateMany(
-        { userId: user._id, status: { $in: ["pending", "submitted"] } },
+        { userId: user._id, status: "pending" },
         {
           status: "verified",
           verifiedAt: new Date(),
@@ -23217,7 +23236,7 @@ app.post(
 
       // Update payment history if exists
       await PaymentHistory.updateMany(
-        { userId: user._id, status: { $in: ["pending", "submitted"] } },
+        { userId: user._id, status: "pending" },
         {
           status: "verified",
           verifiedAt: new Date(),
@@ -23631,7 +23650,8 @@ app.post(
       if (payment_method) {
         user.payment_method = payment_method;
       }
-      user.payment_status = "submitted"; // Will be "verified" upon approval
+      // ✅ REMOVED: Do not set payment_status on User model (causes validation error)
+      // The payment_status is tracked in PaymentHistory instead
       user.payment_date = payment_date ? new Date(payment_date) : new Date();
       user.updatedAt = new Date();
 
@@ -23701,17 +23721,18 @@ app.post(
       const paymentHistory = await PaymentHistory.create({
         userId: userId,
         schoolId: user.schoolId,
+        transactionType: "registration_fee",
         amount: amount,
         paymentMethod: payment_method || "Not specified",
         paymentReference: payment_reference || `AUTO-${Date.now()}`,
         paymentDate: payment_date ? new Date(payment_date) : new Date(),
-        status: "submitted",
+        status: "pending", // ✅ FIXED: Changed from "submitted" to "pending"
         invoiceId: invoice._id,
         notes: notes || "",
-        recordedBy: req.user.id,
+        // ✅ FIXED: Removed recordedBy field (doesn't exist in PaymentHistory schema)
         statusHistory: [
           {
-            status: "submitted",
+            status: "pending", // ✅ FIXED: Changed from "submitted" to "pending"
             changedBy: req.user.id,
             changedAt: new Date(),
             reason: "Payment information recorded by admin",
@@ -23977,7 +23998,8 @@ app.post(
 
           user.payment_reference = payment.payment_reference;
           user.payment_method = payment.payment_method;
-          user.payment_status = "submitted"; // Will be "verified" upon approval
+          // ✅ REMOVED: Do not set payment_status on User model (causes validation error)
+          // The payment_status is tracked in PaymentHistory instead
           user.payment_date = payment.payment_date
             ? new Date(payment.payment_date)
             : new Date();
@@ -24088,19 +24110,20 @@ app.post(
           const paymentHistory = await PaymentHistory.create({
             userId: payment.userId,
             schoolId: user.schoolId,
+            transactionType: "registration_fee",
             amount: payment.amount,
             paymentMethod: payment.payment_method,
             paymentReference: payment.payment_reference,
             paymentDate: payment.payment_date
               ? new Date(payment.payment_date)
               : new Date(),
-            status: "submitted",
+            status: "pending", // ✅ FIXED: Changed from "submitted" to "pending"
             invoiceId: invoice._id,
             notes: payment.notes || "",
-            recordedBy: req.user.id,
+            // ✅ FIXED: Removed recordedBy field (doesn't exist in PaymentHistory schema)
             statusHistory: [
               {
-                status: "submitted",
+                status: "pending", // ✅ FIXED: Changed from "submitted" to "pending"
                 changedBy: req.user.id,
                 changedAt: new Date(),
                 reason: "Payment information recorded via batch import",
