@@ -43,7 +43,7 @@ const compression = require("compression");
 const cron = require("node-cron");
 
 const FailedJob = require("./models/FailedJob");
-const jobRetryService = require("./services/jobRetryService");
+const jobRetryService = require("./models/jobRetryService");
 const smsService = require("./services/smsService");
 
 // Initialize Express app
@@ -303,13 +303,27 @@ mongoose
     console.error("   Retrying in 5 seconds...");
 
     // Retry connection after 5 seconds
-    setTimeout(() => {
-      mongoose.connect(MONGODB_URI).catch((e) => {
-        console.error("❌ MongoDB Retry Failed:", e.message);
+// Use exponential backoff
+const retryDelay = 5000;
+const maxRetries = 3;
+let retryCount = 0;
+
+const connectWithRetry = () => {
+  mongoose.connect(MONGODB_URI)
+    .catch((err) => {
+      console.error(`❌ MongoDB Connection Error (Attempt ${retryCount + 1}/${maxRetries}):`, err.message);
+      
+      if (retryCount < maxRetries) {
+        retryCount++;
+        const delay = retryDelay * Math.pow(2, retryCount - 1); // Exponential backoff
+        console.log(`⏳ Retrying in ${delay/1000} seconds...`);
+        setTimeout(connectWithRetry, delay);
+      } else {
+        console.error("❌ Max retries reached. Exiting...");
         process.exit(1);
-      });
-    }, 5000);
-  });
+      }
+    });
+};
 
 // Monitor connection pool
 mongoose.connection.on("connected", () => {
@@ -18189,7 +18203,11 @@ app.delete(
 app.post(
   "/api/superadmin/users/bulk-approve",
   authenticateToken,
-  authorizeRoles("super_admin", "national_official", "headmaster"),
+  authorizeRoles("super_admin", "national_official", "headmaster"), [
+    body('userIds').isArray({ min: 1, max: 50 }).withMessage('userIds must be an array of 1-50 items'),
+    body('userIds.*').isMongoId().withMessage('Each userId must be a valid MongoDB ObjectId'),
+  ],
+  handleValidationErrors,
   async (req, res) => {
     try {
       const { userIds } = req.body;
