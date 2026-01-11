@@ -4242,9 +4242,7 @@ app.get(
         .sort({ createdAt: -1 })
         .limit(parseInt(limit))
         .skip((parseInt(page) - 1) * parseInt(limit))
-        .populate("invoiceId", "invoiceNumber amount currency dueDate")
-        .populate("verifiedBy", "firstName lastName")
-        .populate("rejectedBy", "firstName lastName");
+        .populate("invoiceId", "invoiceNumber amount currency dueDate");
 
       const total = await PaymentHistory.countDocuments(query);
 
@@ -4338,10 +4336,7 @@ app.get(
         .limit(parseInt(limit))
         .skip((parseInt(page) - 1) * parseInt(limit))
         .populate("userId", "firstName lastName email username phoneNumber")
-        .populate("invoiceId", "invoiceNumber amount currency dueDate")
-        .populate("verifiedBy", "firstName lastName")
-        .populate("rejectedBy", "firstName lastName");
-
+        .populate("invoiceId", "invoiceNumber amount currency dueDate");
       const total = await PaymentHistory.countDocuments(query);
 
       // Get summary statistics
@@ -4386,8 +4381,6 @@ app.get("/api/payment-history/:id", authenticateToken, async (req, res) => {
     const paymentHistory = await PaymentHistory.findById(req.params.id)
       .populate("userId", "firstName lastName email phoneNumber")
       .populate("invoiceId")
-      .populate("verifiedBy", "firstName lastName email")
-      .populate("rejectedBy", "firstName lastName email")
       .populate({
         path: "statusHistory.changedBy",
         select: "firstName lastName role",
@@ -25045,8 +25038,6 @@ app.get(
         .sort({ paymentDate: -1, createdAt: -1 })
         .limit(parseInt(limit))
         .skip((parseInt(page) - 1) * parseInt(limit))
-        .populate("recordedBy", "firstName lastName username")
-        .populate("verifiedBy", "firstName lastName username")
         .populate("invoiceId", "invoice_number amount status");
 
       const total = await PaymentHistory.countDocuments(query);
@@ -25143,7 +25134,6 @@ app.get(
         .sort({ paymentDate: -1, createdAt: -1 })
         .limit(parseInt(limit))
         .skip((parseInt(page) - 1) * parseInt(limit))
-        .populate("recordedBy", "firstName lastName username")
         .populate("verifiedBy", "firstName lastName username")
         .populate("invoiceId", "invoice_number amount status dueDate");
 
@@ -25215,7 +25205,6 @@ app.get(
           "userId",
           "firstName lastName email phoneNumber username role"
         )
-        .populate("recordedBy", "firstName lastName username")
         .populate("verifiedBy", "firstName lastName username")
         .populate("invoiceId", "invoice_number amount status dueDate paidDate")
         .populate("schoolId", "name schoolCode");
@@ -25393,7 +25382,6 @@ app.get(
           "userId",
           "firstName lastName email phoneNumber username studentId"
         )
-        .populate("recordedBy", "firstName lastName username")
         .populate("verifiedBy", "firstName lastName username")
         .populate("invoiceId", "invoice_number amount status dueDate paidDate")
         .populate("schoolId", "name schoolCode logo address");
