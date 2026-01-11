@@ -2408,7 +2408,6 @@ const paymentReminderSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Invoice",
       required: true,
-      index: true,
     },
     reminderType: {
       type: String,
