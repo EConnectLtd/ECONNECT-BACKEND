@@ -302,12 +302,14 @@ mongoose
     console.error("❌ MongoDB Connection Error:", err.message);
     console.error("   Retrying in 5 seconds...");
 
-setTimeout(() => {
-  mongoose.connect(MONGODB_URI).catch((e) => {
-    console.error("❌ MongoDB Retry Failed:", e.message);
-    process.exit(1);
-  });
-}, 5000); // Hardcoded 5 seconds
+    setTimeout(() => {
+      mongoose.connect(MONGODB_URI).catch((e) => {
+        console.error("❌ MongoDB Retry Failed:", e.message);
+        process.exit(1);
+      });
+    }, 5000);
+  }); // ✅ ADDED THIS CLOSING BRACE
+
 // Monitor connection pool
 mongoose.connection.on("connected", () => {
   console.log("✅ Mongoose connected to MongoDB");
