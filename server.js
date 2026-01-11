@@ -302,29 +302,12 @@ mongoose
     console.error("❌ MongoDB Connection Error:", err.message);
     console.error("   Retrying in 5 seconds...");
 
-    // Retry connection after 5 seconds
-// Use exponential backoff
-const retryDelay = 5000;
-const maxRetries = 3;
-let retryCount = 0;
-
-const connectWithRetry = () => {
-  mongoose.connect(MONGODB_URI)
-    .catch((err) => {
-      console.error(`❌ MongoDB Connection Error (Attempt ${retryCount + 1}/${maxRetries}):`, err.message);
-      
-      if (retryCount < maxRetries) {
-        retryCount++;
-        const delay = retryDelay * Math.pow(2, retryCount - 1); // Exponential backoff
-        console.log(`⏳ Retrying in ${delay/1000} seconds...`);
-        setTimeout(connectWithRetry, delay);
-      } else {
-        console.error("❌ Max retries reached. Exiting...");
-        process.exit(1);
-      }
-    });
-};
-
+setTimeout(() => {
+  mongoose.connect(MONGODB_URI).catch((e) => {
+    console.error("❌ MongoDB Retry Failed:", e.message);
+    process.exit(1);
+  });
+}, 5000); // Hardcoded 5 seconds
 // Monitor connection pool
 mongoose.connection.on("connected", () => {
   console.log("✅ Mongoose connected to MongoDB");
