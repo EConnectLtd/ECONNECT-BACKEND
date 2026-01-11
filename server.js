@@ -4,7 +4,7 @@
 // Version: 2.0.0
 // ============================================
 
-const dotenv = require("dotenv");
+const dotenv = require("dotenv").config({ silent: true });
 // Load environment variables
 dotenv.config();
 
@@ -2063,7 +2063,6 @@ const paymentHistorySchema = new mongoose.Schema(
 // ============================================
 paymentHistorySchema.index({ userId: 1, createdAt: -1 }); // User payment history
 paymentHistorySchema.index({ status: 1, createdAt: -1 }); // Status filtering
-paymentHistorySchema.index({ invoiceId: 1 }); // Invoice lookup (SINGLE INDEX)
 paymentHistorySchema.index({ schoolId: 1, createdAt: -1 }); // School payments
 paymentHistorySchema.index({ paymentDate: -1 }); // Date-based queries
 paymentHistorySchema.index({ transactionType: 1, status: 1 }); // Transaction filtering
