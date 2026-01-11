@@ -1714,7 +1714,6 @@ module.exports = Invoice;
 // PAYMENT HISTORY SCHEMA
 // ============================================
 
-
 const paymentHistorySchema = new mongoose.Schema(
   {
     // ============================================
@@ -1727,7 +1726,7 @@ const paymentHistorySchema = new mongoose.Schema(
       index: true,
       description: "Reference to the user making the payment",
     },
-    
+
     schoolId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "School",
@@ -1828,16 +1827,16 @@ const paymentHistorySchema = new mongoose.Schema(
     status: {
       type: String,
       enum: [
-        "pending",        // Payment recorded but not yet verified
-        "submitted",      // Payment proof submitted, awaiting review
-        "verified",       // Payment verified by admin
-        "approved",       // Payment approved and processed
-        "rejected",       // Payment rejected
-        "failed",         // Payment transaction failed
-        "cancelled",      // Payment cancelled
-        "refunded",       // Payment refunded
+        "pending", // Payment recorded but not yet verified
+        "submitted", // Payment proof submitted, awaiting review
+        "verified", // Payment verified by admin
+        "approved", // Payment approved and processed
+        "rejected", // Payment rejected
+        "failed", // Payment transaction failed
+        "cancelled", // Payment cancelled
+        "refunded", // Payment refunded
         "partially_paid", // Partial payment made
-        "completed",      // Payment fully completed
+        "completed", // Payment fully completed
       ],
       default: "pending",
       required: true,
@@ -2263,7 +2262,6 @@ paymentHistorySchema.pre("save", function (next) {
 // EXPORT MODEL
 // ============================================
 const PaymentHistory = mongoose.model("PaymentHistory", paymentHistorySchema);
-
 
 // ============================================
 // PAYMENT REMINDER SCHEMA
