@@ -24195,7 +24195,7 @@ app.post(
         schoolId: user.schoolId,
         transactionType: "registration_fee",
         amount: amount,
-        paymentMethod: payment_method || "Not specified",
+        paymentMethod: payment_method || "not_specified",
         paymentReference: payment_reference || `AUTO-${Date.now()}`,
         paymentDate: payment_date ? new Date(payment_date) : new Date(),
         status: "pending", // ✅ FIXED: Changed from "submitted" to "pending"
