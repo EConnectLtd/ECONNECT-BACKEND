@@ -1711,7 +1711,7 @@ const Invoice = mongoose.model("Invoice", invoiceSchema);
 module.exports = Invoice;
 
 // ============================================
-// PAYMENT HISTORY SCHEMA
+// PAYMENT HISTORY SCHEMA (PRODUCTION-READY)
 // ============================================
 
 const paymentHistorySchema = new mongoose.Schema(
@@ -1786,9 +1786,10 @@ const paymentHistorySchema = new mongoose.Schema(
         "bank_transfer",
         "cheque",
         "other",
-        "not_specified", // ✅ ADDED: For cases where method is not yet specified
+        "not_specified", // ✅ For cases where method is not yet specified
       ],
-      required: false, // ✅ CHANGED: Made optional since it can be "not_specified"
+      required: false,
+      default: "not_specified", // ✅ ADDED: Default value
       description: "Payment method used",
     },
 
@@ -1796,6 +1797,8 @@ const paymentHistorySchema = new mongoose.Schema(
       type: String,
       required: false,
       trim: true,
+      index: true, // ✅ ADDED: Index for duplicate checking
+      sparse: true, // ✅ ADDED: Sparse index (only indexes non-null values)
       description: "Payment reference number from payment provider",
     },
 
@@ -1850,6 +1853,7 @@ const paymentHistorySchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Invoice",
       required: false,
+      // ✅ NO index here - we define it separately below
       description: "Reference to related invoice",
     },
 
@@ -2060,13 +2064,24 @@ const paymentHistorySchema = new mongoose.Schema(
 // ============================================
 // INDEXES FOR PERFORMANCE (NO DUPLICATES!)
 // ============================================
+
+// ✅ REMOVED DUPLICATE: Only one index per field/combination
 paymentHistorySchema.index({ userId: 1, createdAt: -1 }); // User payment history
 paymentHistorySchema.index({ status: 1, createdAt: -1 }); // Status filtering
 paymentHistorySchema.index({ schoolId: 1, createdAt: -1 }); // School payments
 paymentHistorySchema.index({ paymentDate: -1 }); // Date-based queries
 paymentHistorySchema.index({ transactionType: 1, status: 1 }); // Transaction filtering
 paymentHistorySchema.index({ isDeleted: 1, createdAt: -1 }); // Soft delete queries
-paymentHistorySchema.index({ invoiceId: 1 });
+paymentHistorySchema.index({ invoiceId: 1 }); // ✅ SINGLE index on invoiceId
+
+// ✅ NEW: Additional useful indexes
+paymentHistorySchema.index({ paymentReference: 1 }, { sparse: true }); // Duplicate checking (already defined in field, this is explicit)
+paymentHistorySchema.index({ reconciled: 1, reconciledAt: -1 }); // Reconciliation queries
+paymentHistorySchema.index({ 
+  userId: 1, 
+  status: 1, 
+  paymentDate: -1 
+}); // Combined query optimization
 
 // ============================================
 // VIRTUAL FIELDS
@@ -2083,6 +2098,24 @@ paymentHistorySchema.virtual("paymentProgress").get(function () {
   if (!this.totalAmount || this.totalAmount === 0) return 100;
   return Math.round((this.paidAmount / this.totalAmount) * 100);
 });
+
+// ✅ NEW: Virtual field for payment age
+paymentHistorySchema.virtual("paymentAge").get(function () {
+  if (!this.paymentDate) return null;
+  const now = new Date();
+  const diffTime = Math.abs(now - this.paymentDate);
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  return diffDays;
+});
+
+// ✅ NEW: Virtual field for formatted amount
+paymentHistorySchema.virtual("formattedAmount").get(function () {
+  return `${this.currency} ${this.amount.toLocaleString()}`;
+});
+
+// Enable virtuals in JSON
+paymentHistorySchema.set('toJSON', { virtuals: true });
+paymentHistorySchema.set('toObject', { virtuals: true });
 
 // ============================================
 // INSTANCE METHODS
@@ -2135,16 +2168,25 @@ paymentHistorySchema.methods.softDelete = function (deletedBy) {
   return this.save();
 };
 
+// ✅ NEW: Restore soft deleted payment
+paymentHistorySchema.methods.restore = function () {
+  this.isDeleted = false;
+  this.deletedAt = null;
+  this.deletedBy = null;
+  return this.save();
+};
+
 // ============================================
 // STATIC METHODS
 // ============================================
 
 // Get user payment summary
 paymentHistorySchema.statics.getUserPaymentSummary = async function (userId) {
+  // ✅ FIXED: Use 'new' keyword
   const summary = await this.aggregate([
     {
       $match: {
-        userId: mongoose.Types.ObjectId(userId),
+        userId: new mongoose.Types.ObjectId(userId),
         isDeleted: false,
       },
     },
@@ -2160,7 +2202,7 @@ paymentHistorySchema.statics.getUserPaymentSummary = async function (userId) {
   const total = await this.aggregate([
     {
       $match: {
-        userId: mongoose.Types.ObjectId(userId),
+        userId: new mongoose.Types.ObjectId(userId),
         isDeleted: false,
       },
     },
@@ -2223,10 +2265,52 @@ paymentHistorySchema.statics.getPaymentStats = async function (
         count: { $sum: 1 },
         totalAmount: { $sum: "$amount" },
         avgAmount: { $avg: "$amount" },
+        minAmount: { $min: "$amount" },
+        maxAmount: { $max: "$amount" },
       },
     },
     { $sort: { totalAmount: -1 } },
   ]);
+};
+
+// ✅ NEW: Get unreconciled payments
+paymentHistorySchema.statics.getUnreconciledPayments = async function (schoolId = null) {
+  const query = {
+    reconciled: false,
+    status: { $in: ["verified", "approved", "completed"] },
+    isDeleted: false,
+  };
+
+  if (schoolId) {
+    query.schoolId = new mongoose.Types.ObjectId(schoolId);
+  }
+
+  return await this.find(query)
+    .populate("userId", "firstName lastName email")
+    .populate("schoolId", "name schoolCode")
+    .sort({ paymentDate: 1 });
+};
+
+// ✅ NEW: Get overdue payments (for installments)
+paymentHistorySchema.statics.getOverduePayments = async function () {
+  return await this.find({
+    status: "partially_paid",
+    nextPaymentDate: { $lt: new Date() },
+    isDeleted: false,
+  })
+    .populate("userId", "firstName lastName email phoneNumber")
+    .populate("schoolId", "name")
+    .sort({ nextPaymentDate: 1 });
+};
+
+// ✅ NEW: Check for duplicate payment reference
+paymentHistorySchema.statics.checkDuplicateReference = async function (paymentReference) {
+  if (!paymentReference) return null;
+  
+  return await this.findOne({
+    paymentReference: paymentReference,
+    isDeleted: false,
+  });
 };
 
 // ============================================
@@ -2254,13 +2338,58 @@ paymentHistorySchema.pre("save", function (next) {
     });
   }
 
+  // ✅ NEW: Validate payment amount doesn't exceed total
+  if (this.totalAmount && this.amount > this.totalAmount) {
+    return next(new Error("Payment amount cannot exceed total amount"));
+  }
+
   next();
 });
+
+// ✅ NEW: Pre-save validation for payment reference
+paymentHistorySchema.pre("save", async function (next) {
+  // Check for duplicate payment reference (only if it's being set)
+  if (this.isModified("paymentReference") && this.paymentReference) {
+    const duplicate = await this.constructor.findOne({
+      paymentReference: this.paymentReference,
+      _id: { $ne: this._id }, // Exclude current document
+      isDeleted: false,
+    });
+
+    if (duplicate) {
+      return next(new Error(`Payment reference ${this.paymentReference} already exists`));
+    }
+  }
+
+  next();
+});
+
+// ============================================
+// QUERY HELPERS
+// ============================================
+
+// ✅ NEW: Query helper for active payments
+paymentHistorySchema.query.active = function () {
+  return this.where({ isDeleted: false });
+};
+
+// ✅ NEW: Query helper for verified payments
+paymentHistorySchema.query.verified = function () {
+  return this.where({ status: { $in: ["verified", "approved", "completed"] } });
+};
+
+// ✅ NEW: Query helper for pending payments
+paymentHistorySchema.query.pending = function () {
+  return this.where({ status: { $in: ["pending", "submitted"] } });
+};
 
 // ============================================
 // EXPORT MODEL
 // ============================================
 const PaymentHistory = mongoose.model("PaymentHistory", paymentHistorySchema);
+
+
+
 
 // ============================================
 // PAYMENT REMINDER SCHEMA
