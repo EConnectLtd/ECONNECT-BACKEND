@@ -543,10 +543,10 @@ const userSchema = new mongoose.Schema({
 userSchema.pre("save", function (next) {
   try {
     // ✅ SAFETY CHECK: Ensure next is a function
-    if (typeof next !== 'function') {
-      console.error('❌ PRE-SAVE ERROR: next is not a function', {
-        operation: this.isNew ? 'create' : 'update',
-        username: this.username
+    if (typeof next !== "function") {
+      console.error("❌ PRE-SAVE ERROR: next is not a function", {
+        operation: this.isNew ? "create" : "update",
+        username: this.username,
       });
       return; // Exit gracefully
     }
@@ -566,14 +566,14 @@ userSchema.pre("save", function (next) {
 
     next();
   } catch (error) {
-    console.error('❌ CRITICAL: userSchema pre-save error:', {
+    console.error("❌ CRITICAL: userSchema pre-save error:", {
       error: error.message,
       stack: error.stack,
       userId: this._id,
-      username: this.username
+      username: this.username,
     });
-    
-    if (typeof next === 'function') {
+
+    if (typeof next === "function") {
       next(error);
     }
   }
@@ -1761,7 +1761,9 @@ const paymentHistorySchema = new mongoose.Schema(
         "halopesa",
         "cash",
         "other",
+        "not_specified",
       ],
+      required: false, // ✅ ADD THIS LINE
     },
     paymentReference: String,
     paymentDate: Date,
@@ -1803,7 +1805,7 @@ const paymentHistorySchema = new mongoose.Schema(
 // Indexes for performance
 paymentHistorySchema.index({ userId: 1, createdAt: -1 });
 paymentHistorySchema.index({ status: 1, createdAt: -1 });
-paymentHistorySchema.index({ invoiceId: 1 }); 
+paymentHistorySchema.index({ invoiceId: 1 });
 
 const PaymentHistory = mongoose.model("PaymentHistory", paymentHistorySchema);
 
@@ -22402,7 +22404,7 @@ app.post(
 // UPDATE subject
 app.put(
   "/api/subjects/:id",
-    publicRateLimiter,
+  publicRateLimiter,
   authenticateToken,
   authorizeRoles("super_admin", "national_official", "headmaster"), // ✅ FIXED: Removed syntax error
   validateObjectId("id"),
@@ -23677,10 +23679,10 @@ app.post(
           role: user.role,
           payment: {
             amount: amount,
-            method: payment_method || "Not specified",
+            method: payment_method || "not specified",
             reference: payment_reference || "Not provided",
             date: user.payment_date,
-            status: paymentHistoryRecord?.status || "pending", // ✅ FIXED: Get from PaymentHistory
+            status: paymentHistory.status, // ✅ FIXED (variable name was wrong)
           },
           invoice: {
             id: invoice._id,
