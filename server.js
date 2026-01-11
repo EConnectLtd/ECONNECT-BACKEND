@@ -1714,43 +1714,65 @@ module.exports = Invoice;
 // PAYMENT HISTORY SCHEMA
 // ============================================
 
+
 const paymentHistorySchema = new mongoose.Schema(
   {
+    // ============================================
+    // USER & SCHOOL REFERENCES
+    // ============================================
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
       index: true,
+      description: "Reference to the user making the payment",
     },
+    
     schoolId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "School",
+      required: false,
       index: true,
+      description: "Reference to the user's school (if applicable)",
     },
-    invoiceId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Invoice",
-    },
+
+    // ============================================
+    // TRANSACTION DETAILS
+    // ============================================
     transactionType: {
       type: String,
       enum: [
         "registration_fee",
-        "monthly_subscription",
-        "certificate_fee",
-        "event_fee",
+        "tuition_fee",
+        "exam_fee",
+        "ctm_membership",
         "book_purchase",
+        "event_registration",
+        "certification_fee",
         "other",
       ],
       required: true,
+      default: "registration_fee",
+      description: "Type of transaction/payment",
     },
+
     amount: {
       type: Number,
       required: true,
+      min: [0, "Amount cannot be negative"],
+      description: "Payment amount in TZS",
     },
+
     currency: {
       type: String,
       default: "TZS",
+      enum: ["TZS", "USD", "EUR"],
+      description: "Currency code",
     },
+
+    // ============================================
+    // PAYMENT METHOD & REFERENCE
+    // ============================================
     paymentMethod: {
       type: String,
       enum: [
@@ -1759,55 +1781,489 @@ const paymentHistorySchema = new mongoose.Schema(
         "azampay",
         "tigopesa",
         "halopesa",
+        "airtel_money",
+        "mpesa",
         "cash",
+        "bank_transfer",
+        "cheque",
         "other",
-        "not_specified",
+        "not_specified", // ✅ ADDED: For cases where method is not yet specified
       ],
-      required: false, // ✅ ADD THIS LINE
+      required: false, // ✅ CHANGED: Made optional since it can be "not_specified"
+      description: "Payment method used",
     },
-    paymentReference: String,
-    paymentDate: Date,
+
+    paymentReference: {
+      type: String,
+      required: false,
+      trim: true,
+      description: "Payment reference number from payment provider",
+    },
+
+    // ============================================
+    // PAYMENT DATES
+    // ============================================
+    paymentDate: {
+      type: Date,
+      default: Date.now,
+      required: true,
+      description: "Date when payment was made",
+    },
+
+    nextPaymentDate: {
+      type: Date,
+      required: false,
+      description: "Next payment due date (for installments/partial payments)",
+    },
+
+    dueDate: {
+      type: Date,
+      required: false,
+      description: "Original due date for the payment",
+    },
+
+    // ============================================
+    // PAYMENT STATUS
+    // ============================================
     status: {
       type: String,
-      enum: ["pending", "submitted", "verified", "rejected", "cancelled"],
+      enum: [
+        "pending",        // Payment recorded but not yet verified
+        "submitted",      // Payment proof submitted, awaiting review
+        "verified",       // Payment verified by admin
+        "approved",       // Payment approved and processed
+        "rejected",       // Payment rejected
+        "failed",         // Payment transaction failed
+        "cancelled",      // Payment cancelled
+        "refunded",       // Payment refunded
+        "partially_paid", // Partial payment made
+        "completed",      // Payment fully completed
+      ],
       default: "pending",
-      index: true,
+      required: true,
+      description: "Current status of the payment",
     },
+
+    // ============================================
+    // INVOICE REFERENCE
+    // ============================================
+    invoiceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Invoice",
+      required: false,
+      // ✅ NO field-level index here (using explicit index below)
+      description: "Reference to related invoice",
+    },
+
+    // ============================================
+    // PAYMENT BREAKDOWN (for partial payments)
+    // ============================================
+    totalAmount: {
+      type: Number,
+      required: false,
+      description: "Total amount to be paid (if this is a partial payment)",
+    },
+
+    paidAmount: {
+      type: Number,
+      required: false,
+      description: "Amount paid so far (including this payment)",
+    },
+
+    remainingAmount: {
+      type: Number,
+      required: false,
+      description: "Remaining amount to be paid",
+    },
+
+    // ============================================
+    // VERIFICATION & APPROVAL
+    // ============================================
+    verifiedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: false,
+      description: "Admin who verified the payment",
+    },
+
+    verifiedAt: {
+      type: Date,
+      required: false,
+      description: "Date when payment was verified",
+    },
+
+    approvedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: false,
+      description: "Admin who approved the payment",
+    },
+
+    approvedAt: {
+      type: Date,
+      required: false,
+      description: "Date when payment was approved",
+    },
+
+    // ============================================
+    // PAYMENT PROOF
+    // ============================================
+    paymentProof: {
+      fileUrl: {
+        type: String,
+        required: false,
+        description: "URL to payment receipt/proof document",
+      },
+      fileName: {
+        type: String,
+        required: false,
+        description: "Original file name of payment proof",
+      },
+      fileType: {
+        type: String,
+        required: false,
+        description: "MIME type of payment proof file",
+      },
+      uploadedAt: {
+        type: Date,
+        required: false,
+        description: "Date when proof was uploaded",
+      },
+    },
+
+    // ============================================
+    // STATUS HISTORY (AUDIT TRAIL)
+    // ============================================
     statusHistory: [
       {
-        status: String,
-        changedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-        changedAt: { type: Date, default: Date.now },
-        reason: String,
+        status: {
+          type: String,
+          required: true,
+          enum: [
+            "pending",
+            "submitted",
+            "verified",
+            "approved",
+            "rejected",
+            "failed",
+            "cancelled",
+            "refunded",
+            "partially_paid",
+            "completed",
+          ],
+        },
+        changedBy: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+          required: false,
+          description: "User who changed the status",
+        },
+        changedAt: {
+          type: Date,
+          default: Date.now,
+          required: true,
+        },
+        reason: {
+          type: String,
+          required: false,
+          trim: true,
+          maxlength: 1000,
+          description: "Reason for status change",
+        },
+        notes: {
+          type: String,
+          required: false,
+          trim: true,
+          maxlength: 2000,
+          description: "Additional notes about the status change",
+        },
       },
     ],
-    notes: String,
-    submittedAt: Date,
-    verifiedAt: Date,
-    verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    rejectedAt: Date,
-    rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    rejectionReason: String,
-    recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+
+    // ============================================
+    // ADDITIONAL INFORMATION
+    // ============================================
+    notes: {
+      type: String,
+      required: false,
+      trim: true,
+      maxlength: 2000,
+      description: "Additional notes about the payment",
+    },
+
+    description: {
+      type: String,
+      required: false,
+      trim: true,
+      maxlength: 500,
+      description: "Payment description",
+    },
+
+    // ============================================
+    // METADATA
+    // ============================================
     metadata: {
-      registrationType: String,
-      packageName: String,
-      notes: String,
-      ipAddress: String,
-      userAgent: String,
+      type: Map,
+      of: mongoose.Schema.Types.Mixed,
+      required: false,
+      description: "Additional metadata (flexible key-value storage)",
+    },
+
+    // ============================================
+    // RECONCILIATION
+    // ============================================
+    reconciled: {
+      type: Boolean,
+      default: false,
+      description: "Whether payment has been reconciled with bank statement",
+    },
+
+    reconciledAt: {
+      type: Date,
+      required: false,
+      description: "Date when payment was reconciled",
+    },
+
+    reconciledBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: false,
+      description: "User who reconciled the payment",
+    },
+
+    // ============================================
+    // SOFT DELETE
+    // ============================================
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      description: "Soft delete flag",
+    },
+
+    deletedAt: {
+      type: Date,
+      required: false,
+      description: "Date when payment record was deleted",
+    },
+
+    deletedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: false,
+      description: "User who deleted the payment record",
     },
   },
   {
-    timestamps: true,
+    timestamps: true, // Adds createdAt and updatedAt automatically
+    collection: "paymenthistories",
   }
 );
 
-// Indexes for performance
-paymentHistorySchema.index({ userId: 1, createdAt: -1 });
-paymentHistorySchema.index({ status: 1, createdAt: -1 });
-paymentHistorySchema.index({ invoiceId: 1 });
+// ============================================
+// INDEXES FOR PERFORMANCE (NO DUPLICATES!)
+// ============================================
+paymentHistorySchema.index({ userId: 1, createdAt: -1 }); // User payment history
+paymentHistorySchema.index({ status: 1, createdAt: -1 }); // Status filtering
+paymentHistorySchema.index({ invoiceId: 1 }); // Invoice lookup (SINGLE INDEX)
+paymentHistorySchema.index({ schoolId: 1, createdAt: -1 }); // School payments
+paymentHistorySchema.index({ paymentDate: -1 }); // Date-based queries
+paymentHistorySchema.index({ transactionType: 1, status: 1 }); // Transaction filtering
+paymentHistorySchema.index({ isDeleted: 1, createdAt: -1 }); // Soft delete queries
 
+// ============================================
+// VIRTUAL FIELDS
+// ============================================
+paymentHistorySchema.virtual("isPartialPayment").get(function () {
+  return this.totalAmount && this.amount < this.totalAmount;
+});
+
+paymentHistorySchema.virtual("isFullyPaid").get(function () {
+  return this.totalAmount && this.paidAmount >= this.totalAmount;
+});
+
+paymentHistorySchema.virtual("paymentProgress").get(function () {
+  if (!this.totalAmount || this.totalAmount === 0) return 100;
+  return Math.round((this.paidAmount / this.totalAmount) * 100);
+});
+
+// ============================================
+// INSTANCE METHODS
+// ============================================
+
+// Add status change to history
+paymentHistorySchema.methods.changeStatus = function (
+  newStatus,
+  changedBy,
+  reason = "",
+  notes = ""
+) {
+  this.status = newStatus;
+
+  this.statusHistory.push({
+    status: newStatus,
+    changedBy: changedBy,
+    changedAt: new Date(),
+    reason: reason,
+    notes: notes,
+  });
+
+  // Update verification/approval fields
+  if (newStatus === "verified") {
+    this.verifiedBy = changedBy;
+    this.verifiedAt = new Date();
+  }
+
+  if (newStatus === "approved") {
+    this.approvedBy = changedBy;
+    this.approvedAt = new Date();
+  }
+
+  return this.save();
+};
+
+// Mark as reconciled
+paymentHistorySchema.methods.reconcile = function (reconciledBy) {
+  this.reconciled = true;
+  this.reconciledAt = new Date();
+  this.reconciledBy = reconciledBy;
+  return this.save();
+};
+
+// Soft delete
+paymentHistorySchema.methods.softDelete = function (deletedBy) {
+  this.isDeleted = true;
+  this.deletedAt = new Date();
+  this.deletedBy = deletedBy;
+  return this.save();
+};
+
+// ============================================
+// STATIC METHODS
+// ============================================
+
+// Get user payment summary
+paymentHistorySchema.statics.getUserPaymentSummary = async function (userId) {
+  const summary = await this.aggregate([
+    {
+      $match: {
+        userId: mongoose.Types.ObjectId(userId),
+        isDeleted: false,
+      },
+    },
+    {
+      $group: {
+        _id: "$status",
+        count: { $sum: 1 },
+        totalAmount: { $sum: "$amount" },
+      },
+    },
+  ]);
+
+  const total = await this.aggregate([
+    {
+      $match: {
+        userId: mongoose.Types.ObjectId(userId),
+        isDeleted: false,
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalPaid: {
+          $sum: {
+            $cond: [
+              { $in: ["$status", ["approved", "completed", "verified"]] },
+              "$amount",
+              0,
+            ],
+          },
+        },
+        totalPending: {
+          $sum: {
+            $cond: [
+              { $in: ["$status", ["pending", "submitted"]] },
+              "$amount",
+              0,
+            ],
+          },
+        },
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  return {
+    byStatus: summary,
+    overall: total[0] || { totalPaid: 0, totalPending: 0, count: 0 },
+  };
+};
+
+// Get payment statistics for a date range
+paymentHistorySchema.statics.getPaymentStats = async function (
+  startDate,
+  endDate,
+  filters = {}
+) {
+  const matchQuery = {
+    isDeleted: false,
+    paymentDate: {
+      $gte: new Date(startDate),
+      $lte: new Date(endDate),
+    },
+    ...filters,
+  };
+
+  return await this.aggregate([
+    { $match: matchQuery },
+    {
+      $group: {
+        _id: {
+          status: "$status",
+          method: "$paymentMethod",
+          type: "$transactionType",
+        },
+        count: { $sum: 1 },
+        totalAmount: { $sum: "$amount" },
+        avgAmount: { $avg: "$amount" },
+      },
+    },
+    { $sort: { totalAmount: -1 } },
+  ]);
+};
+
+// ============================================
+// PRE-SAVE MIDDLEWARE
+// ============================================
+paymentHistorySchema.pre("save", function (next) {
+  // Calculate remaining amount if partial payment
+  if (this.totalAmount && this.paidAmount) {
+    this.remainingAmount = this.totalAmount - this.paidAmount;
+
+    // Update status based on payment completion
+    if (this.remainingAmount <= 0) {
+      this.status = "completed";
+    } else if (this.paidAmount > 0 && this.paidAmount < this.totalAmount) {
+      this.status = "partially_paid";
+    }
+  }
+
+  // Ensure at least one status history entry exists
+  if (this.isNew && this.statusHistory.length === 0) {
+    this.statusHistory.push({
+      status: this.status,
+      changedAt: new Date(),
+      reason: "Initial payment record created",
+    });
+  }
+
+  next();
+});
+
+// ============================================
+// EXPORT MODEL
+// ============================================
 const PaymentHistory = mongoose.model("PaymentHistory", paymentHistorySchema);
+
 
 // ============================================
 // PAYMENT REMINDER SCHEMA
