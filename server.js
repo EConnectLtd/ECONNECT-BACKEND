@@ -1796,8 +1796,6 @@ const paymentHistorySchema = new mongoose.Schema(
       type: String,
       required: false,
       trim: true,
-      index: true, // ✅ ADDED: Index for duplicate checking
-      sparse: true, // ✅ ADDED: Sparse index (only indexes non-null values)
       description: "Payment reference number from payment provider",
     },
 
@@ -2073,8 +2071,8 @@ paymentHistorySchema.index({ transactionType: 1, status: 1 }); // Transaction fi
 paymentHistorySchema.index({ isDeleted: 1, createdAt: -1 }); // Soft delete queries
 paymentHistorySchema.index({ invoiceId: 1 }); // ✅ SINGLE index on invoiceId
 
-// ✅ NEW: Additional useful indexes
-paymentHistorySchema.index({ paymentReference: 1 }, { sparse: true }); // Duplicate checking (already defined in field, this is explicit)
+// ✅ Index for payment reference (with sparse option for null values)
+paymentHistorySchema.index({ paymentReference: 1 }, { sparse: true });
 paymentHistorySchema.index({ reconciled: 1, reconciledAt: -1 }); // Reconciliation queries
 paymentHistorySchema.index({
   userId: 1,
