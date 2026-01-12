@@ -505,20 +505,7 @@ const userSchema = new mongoose.Schema({
   // ============================================
   // ✅ FIXED: Payment fields
   // ============================================
-  payment_method: {
-    type: String,
-    enum: [
-      "crdb_bank", // ✅ Bank transfer via CRDB
-      "vodacom_lipa", // ✅ Vodacom M-Pesa Lipa
-      "azampay", // ✅ ADDED: AzamPay
-      "tigopesa", // ✅ ADDED: TigoPesa
-      "halopesa", // ✅ ADDED: HaloPesa
-      "cash", // ✅ ADDED: Cash payment
-      "other", // ✅ ADDED: Other methods
-      "", // ✅ ADDED: Empty string for optional field
-    ],
-  },
-  payment_reference: String,
+
   payment_date: Date, // ✅ ADDED: Field to store payment date
 
   // ✅ REMOVED: payment_status field
@@ -539,17 +526,8 @@ const userSchema = new mongoose.Schema({
 // ============================================
 // ✅ ADDED: Pre-save middleware to sync registration type fields
 // ============================================
-userSchema.pre("save", function () {
+userSchema.pre("save", async function () {
   try {
-    // ✅ SAFETY CHECK: Ensure next is a function
-    if (typeof next !== "function") {
-      console.error("❌ PRE-SAVE ERROR: next is not a function", {
-        operation: this.isNew ? "create" : "update",
-        username: this.username,
-      });
-      return; // Exit gracefully
-    }
-
     // Sync registrationType with registration_type for consistency
     if (this.registration_type && !this.registrationType) {
       this.registrationType = this.registration_type;
@@ -557,13 +535,12 @@ userSchema.pre("save", function () {
       this.registration_type = this.registrationType;
     }
 
-    // ✅ Handle legacy "normal" value migration to "ctm-club"
+    // Handle legacy "normal" value migration to "ctm-club"
     if (this.registration_type === "normal") {
       this.registration_type = "ctm-club";
       this.registrationType = "ctm-club";
     }
-
-    next();
+    // ✅ No need for next() - async functions handle flow automatically
   } catch (error) {
     console.error("❌ CRITICAL: userSchema pre-save error:", {
       error: error.message,
@@ -571,10 +548,7 @@ userSchema.pre("save", function () {
       userId: this._id,
       username: this.username,
     });
-
-    if (typeof next === "function") {
-      next(error);
-    }
+    throw error; // ✅ Re-throw to Mongoose
   }
 });
 
@@ -912,18 +886,12 @@ const bookPurchaseSchema = new mongoose.Schema({
     index: true,
   },
   amount: { type: Number, required: true },
-  paymentMethod: {
-    type: String,
-    enum: ["azampay", "mobile_money", "card", "cash", "bank_transfer"],
-    required: false,
-  },
   paymentStatus: {
     type: String,
     enum: ["pending", "completed", "failed", "refunded", "cancelled"],
     default: "pending",
   },
   transactionId: String,
-  azampayReference: String,
   downloadCount: { type: Number, default: 0 },
   lastDownloadDate: Date,
   purchasedAt: { type: Date, default: Date.now },
@@ -1024,8 +992,6 @@ const eventRegistrationSchema = new mongoose.Schema({
     enum: ["pending", "paid", "refunded", "waived"],
     default: "pending",
   },
-  paymentMethod: String,
-  transactionId: String,
   teamMembers: [
     {
       name: String,
@@ -1154,18 +1120,6 @@ const transactionSchema = new mongoose.Schema({
   },
   amount: { type: Number, required: true, min: 0 },
   currency: { type: String, default: "TZS" },
-  paymentMethod: {
-    type: String,
-    enum: [
-      "azampay",
-      "mobile_money",
-      "card",
-      "bank_transfer",
-      "cash",
-      "wallet",
-    ],
-    required: false,
-  },
   paymentProvider: String,
   status: {
     type: String,
@@ -1686,7 +1640,6 @@ const invoiceSchema = new mongoose.Schema(
       fileSize: Number, // File size in bytes
       mimeType: String, // File MIME type
       uploadedAt: Date, // When student uploaded
-      transactionReference: String, // M-PESA or bank reference
       notes: String, // Optional student notes
       status: {
         type: String,
@@ -1766,37 +1719,6 @@ const paymentHistorySchema = new mongoose.Schema(
       default: "TZS",
       enum: ["TZS", "USD", "EUR"],
       description: "Currency code",
-    },
-
-    // ============================================
-    // PAYMENT METHOD & REFERENCE
-    // ============================================
-    paymentMethod: {
-      type: String,
-      enum: [
-        "crdb_bank",
-        "vodacom_lipa",
-        "azampay",
-        "tigopesa",
-        "halopesa",
-        "airtel_money",
-        "mpesa",
-        "cash",
-        "bank_transfer",
-        "cheque",
-        "other",
-        "not_specified", // ✅ For cases where method is not yet specified
-      ],
-      required: false,
-      default: "not_specified", // ✅ ADDED: Default value
-      description: "Payment method used",
-    },
-
-    paymentReference: {
-      type: String,
-      required: false,
-      trim: true,
-      description: "Payment reference number from payment provider",
     },
 
     // ============================================
@@ -2072,8 +1994,6 @@ paymentHistorySchema.index({ isDeleted: 1, createdAt: -1 }); // Soft delete quer
 // ✅ ONLY index on invoiceId (no duplicate in field definition)
 paymentHistorySchema.index({ invoiceId: 1 }, { sparse: true });
 
-// ✅ Index for payment reference (with sparse option for null values)
-paymentHistorySchema.index({ paymentReference: 1 }, { sparse: true });
 paymentHistorySchema.index({ reconciled: 1, reconciledAt: -1 }); // Reconciliation queries
 paymentHistorySchema.index({
   userId: 1,
@@ -2303,18 +2223,6 @@ paymentHistorySchema.statics.getOverduePayments = async function () {
     .sort({ nextPaymentDate: 1 });
 };
 
-// ✅ NEW: Check for duplicate payment reference
-paymentHistorySchema.statics.checkDuplicateReference = async function (
-  paymentReference
-) {
-  if (!paymentReference) return null;
-
-  return await this.findOne({
-    paymentReference: paymentReference,
-    isDeleted: false,
-  });
-};
-
 // ============================================
 // PRE-SAVE MIDDLEWARE
 // ============================================
@@ -2343,24 +2251,6 @@ paymentHistorySchema.pre("save", function () {
   // ✅ NEW: Validate payment amount doesn't exceed total
   if (this.totalAmount && this.amount > this.totalAmount) {
     return next(new Error("Payment amount cannot exceed total amount"));
-  }
-});
-
-// ✅ NEW: Pre-save validation for payment reference
-paymentHistorySchema.pre("save", async function () {
-  // Check for duplicate payment reference (only if it's being set)
-  if (this.isModified("paymentReference") && this.paymentReference) {
-    const duplicate = await this.constructor.findOne({
-      paymentReference: this.paymentReference,
-      _id: { $ne: this._id }, // Exclude current document
-      isDeleted: false,
-    });
-
-    if (duplicate) {
-      return next(
-        new Error(`Payment reference ${this.paymentReference} already exists`)
-      );
-    }
   }
 });
 
@@ -3528,16 +3418,6 @@ app.post(
         userData.registration_fee_paid = student.registration_fee_paid || 0;
         userData.institutionType = student.institution_type;
 
-        // ✅ Save payment information
-        if (payment && payment.method && payment.reference) {
-          userData.payment_method = payment.method;
-          userData.payment_reference = payment.reference;
-          userData.payment_status = "pending";
-          console.log(
-            `💳 Payment info saved: ${payment.method} - ${payment.reference}`
-          );
-        }
-
         // Guardian information
         if (student.guardian) {
           userData.guardianName = student.guardian.name;
@@ -3962,8 +3842,6 @@ app.post(
             transactionType: "registration_fee",
             amount: finalAmount,
             currency: "TZS",
-            paymentMethod: payment?.method || null,
-            paymentReference: payment?.reference || null,
             status: payment && payment.reference ? "submitted" : "pending",
             submittedAt: payment && payment.reference ? new Date() : null,
             statusHistory: [
@@ -4057,15 +3935,7 @@ app.patch(
         });
       }
 
-      if (!student.payment_reference) {
-        return res.status(400).json({
-          success: false,
-          error: "No payment information submitted for this student",
-        });
-      }
-
       if (action === "approve") {
-        student.payment_status = "verified";
         student.payment_verified_by = adminId;
         student.payment_verified_at = new Date();
         student.isActive = true;
@@ -4431,7 +4301,6 @@ app.get(
       const query = {
         role: "student",
         payment_status: "pending",
-        payment_reference: { $exists: true, $ne: "" },
       };
 
       // Filter by school for headmasters
@@ -12375,7 +12244,6 @@ app.post(
         transactionType,
         amount,
         currency: "TZS",
-        paymentMethod: "cash",
         status: "completed",
         referenceId: generateReferenceId("TXN"),
         description,
@@ -18169,9 +18037,14 @@ app.delete(
 app.post(
   "/api/superadmin/users/bulk-approve",
   authenticateToken,
-  authorizeRoles("super_admin", "national_official", "headmaster"), [
-    body('userIds').isArray({ min: 1, max: 50 }).withMessage('userIds must be an array of 1-50 items'),
-    body('userIds.*').isMongoId().withMessage('Each userId must be a valid MongoDB ObjectId'),
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  [
+    body("userIds")
+      .isArray({ min: 1, max: 50 })
+      .withMessage("userIds must be an array of 1-50 items"),
+    body("userIds.*")
+      .isMongoId()
+      .withMessage("Each userId must be a valid MongoDB ObjectId"),
   ],
   handleValidationErrors,
   async (req, res) => {
@@ -18263,12 +18136,6 @@ app.post(
 
           // ✅ REMOVED: user.payment_status = "verified" (field doesn't exist in User schema)
           // Payment status is tracked in PaymentHistory model only
-
-          // Update payment verification fields if payment exists
-          if (user.payment_reference) {
-            user.payment_verified_by = req.user.id;
-            user.payment_verified_at = new Date();
-          }
 
           user.updatedAt = new Date();
           await user.save();
@@ -23614,12 +23481,6 @@ app.post(
       // ✅ REMOVED: user.payment_status = "verified" (field doesn't exist in User schema)
       // Payment status is now tracked exclusively in PaymentHistory model
 
-      // Update payment verification fields if payment reference exists
-      if (user.payment_reference) {
-        user.payment_verified_by = req.user.id;
-        user.payment_verified_at = new Date();
-      }
-
       user.updatedAt = new Date();
 
       await user.save();
@@ -24071,7 +23932,7 @@ app.post(
 
       console.log(`💳 Payment record request for user: ${userId}`);
 
-      // ✅ UPDATED: Only userId and amount are required (payment_method and payment_reference are optional)
+      // ✅ UPDATED: Only userId and amount are required
       if (!userId || !amount) {
         return res.status(400).json({
           success: false,
@@ -24111,15 +23972,8 @@ app.post(
 
       console.log(`💰 Recording payment for ${userName}: TZS ${amount}`);
 
-      // ✅ UPDATED: Only update fields if they are provided
-      if (payment_reference) {
-        user.payment_reference = payment_reference;
-      }
-      if (payment_method) {
-        user.payment_method = payment_method;
-      }
-      // ✅ REMOVED: Do not set payment_status on User model (causes validation error)
-      // The payment_status is tracked in PaymentHistory instead
+      // ✅ CLEANED: Removed user.payment_method and user.payment_reference
+      // Payment details are now tracked exclusively in PaymentHistory model
       user.payment_date = payment_date ? new Date(payment_date) : new Date();
       user.updatedAt = new Date();
 
@@ -24135,7 +23989,7 @@ app.post(
         // Update existing invoice
         invoice.amount = amount;
         if (payment_method) {
-          invoice.paymentMethod = payment_method;
+          invoice.paymentMethod = payment_method; // ✅ KEPT - Invoice has this field
         }
         invoice.status = "verification";
         invoice.paymentProof = {
@@ -24172,7 +24026,7 @@ app.post(
               total: amount,
             },
           ],
-          paymentMethod: payment_method || "Pending",
+          paymentMethod: payment_method || "Pending", // ✅ KEPT - Invoice has this field
           paymentProof: {
             reference: payment_reference || "Pending",
             method: payment_method || "Pending",
@@ -24191,16 +24045,15 @@ app.post(
         schoolId: user.schoolId,
         transactionType: "registration_fee",
         amount: amount,
-        paymentMethod: payment_method || "not_specified",
-        paymentReference: payment_reference || `AUTO-${Date.now()}`,
+        paymentMethod: payment_method || "not_specified", // ✅ KEPT - PaymentHistory has this field
+        paymentReference: payment_reference || `AUTO-${Date.now()}`, // ✅ KEPT - PaymentHistory has this field
         paymentDate: payment_date ? new Date(payment_date) : new Date(),
-        status: "pending", // ✅ FIXED: Changed from "submitted" to "pending"
+        status: "pending",
         invoiceId: invoice._id,
         notes: notes || "",
-        // ✅ FIXED: Removed recordedBy field (doesn't exist in PaymentHistory schema)
         statusHistory: [
           {
-            status: "pending", // ✅ FIXED: Changed from "submitted" to "pending"
+            status: "pending",
             changedBy: req.user.id,
             changedAt: new Date(),
             reason: "Payment information recorded by admin",
@@ -24254,7 +24107,7 @@ app.post(
             method: payment_method || "not specified",
             reference: payment_reference || "Not provided",
             date: user.payment_date,
-            status: paymentHistory.status, // ✅ FIXED (variable name was wrong)
+            status: paymentHistory.status,
           },
           invoice: {
             id: invoice._id,
@@ -24464,10 +24317,8 @@ app.post(
           // UPDATE USER PAYMENT INFORMATION
           // ========================================
 
-          user.payment_reference = payment.payment_reference;
-          user.payment_method = payment.payment_method;
-          // ✅ REMOVED: Do not set payment_status on User model (causes validation error)
-          // The payment_status is tracked in PaymentHistory instead
+          // ✅ CLEANED: Removed user.payment_method and user.payment_reference
+          // Payment details are now tracked exclusively in PaymentHistory model
           user.payment_date = payment.payment_date
             ? new Date(payment.payment_date)
             : new Date();
@@ -24475,7 +24326,7 @@ app.post(
 
           await user.save();
 
-          console.log(`✅ [${recordNumber}] Updated user payment fields`);
+          console.log(`✅ [${recordNumber}] Updated user payment date`);
 
           // ========================================
           // CREATE OR UPDATE INVOICE
@@ -25839,7 +25690,6 @@ if (process.env.NODE_ENV === "production") {
 } else {
   console.log("ℹ️  Cron jobs disabled (not in production environment)");
 }
-
 
 // Start server
 server.listen(PORT, () => {
