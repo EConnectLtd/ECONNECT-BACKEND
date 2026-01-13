@@ -3705,22 +3705,27 @@ app.post(
       }
 
       // ============================================================================
-      // ✅ SAVE STUDENT TALENTS TO StudentTalent COLLECTION
+      // ✅ SAVE TALENTS TO StudentTalent COLLECTION (OPTIONAL FOR ALL ROLES)
       // ============================================================================
 
+      // ✅ CHANGED: Now supports students, entrepreneurs, and non-students
+      // ✅ Talents are completely optional - only save if provided
+      const talentsArray = student?.talents || entrepreneur?.talents || [];
+
       if (
-        role === "student" &&
-        student?.talents &&
-        Array.isArray(student.talents)
+        (role === "student" ||
+          role === "entrepreneur" ||
+          role === "nonstudent") &&
+        talentsArray.length > 0
       ) {
         console.log(
-          `🎯 Processing ${student.talents.length} talents for student ${user._id}`
+          `🎯 Processing ${talentsArray.length} talents for ${role} ${user._id}`
         );
 
         try {
           let savedTalentsCount = 0;
 
-          for (const talentName of student.talents) {
+          for (const talentName of talentsArray) {
             // Skip empty talent names
             if (!talentName || talentName.trim() === "") {
               continue;
@@ -3752,7 +3757,7 @@ app.post(
                 });
                 savedTalentsCount++;
                 console.log(
-                  `✅ Created StudentTalent: ${talentName} for student ${user._id}`
+                  `✅ Created StudentTalent: ${talentName} for ${role} ${user._id}`
                 );
               } else {
                 console.log(`⚠️ StudentTalent already exists: ${talentName}`);
@@ -3763,12 +3768,16 @@ app.post(
           }
 
           console.log(
-            `✅ Successfully saved ${savedTalentsCount}/${student.talents.length} talents for student ${user._id}`
+            `✅ Successfully saved ${savedTalentsCount}/${talentsArray.length} talents for ${role} ${user._id}`
           );
         } catch (talentError) {
-          console.error("❌ Error saving student talents:", talentError);
+          console.error(`❌ Error saving ${role} talents:`, talentError);
           // Don't fail registration if talents fail - just log it
         }
+      } else {
+        console.log(
+          `ℹ️ No talents provided for ${role} ${user._id} - skipping (talents are optional)`
+        );
       }
 
       // ============================================================================
