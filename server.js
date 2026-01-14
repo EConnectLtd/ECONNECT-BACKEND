@@ -3493,7 +3493,9 @@ app.post(
         userData.businessWebsite = entrepreneur.business_website;
         userData.businessCategories = entrepreneur.business_categories || [];
 
-        // ✅ ALSO store in biz object for consistency with seeded data
+        // ✅ ADD THIS LINE:
+        userData.registration_type = entrepreneur.registration_type || "silver"; // Default to silver
+
         userData.biz = {
           business_name:
             entrepreneur.business_name || entrepreneur.company_name,
@@ -3878,6 +3880,104 @@ app.post(
               Date.now() + 30 * 24 * 60 * 60 * 1000
             );
             await user.save();
+          }
+        }
+      }
+
+      // ============================================================================
+      // ✅ AUTO-GENERATE INVOICE FOR ENTREPRENEURS
+      // ============================================================================
+
+      if (role === "entrepreneur" && entrepreneur?.registration_type) {
+        const entrepreneurFees = {
+          silver: 49000, // Silver Package (one-time)
+          gold: 120000, // Gold Package (one-time)
+          platinum: 55000, // Platinum Package (monthly)
+        };
+
+        const amount = entrepreneurFees[entrepreneur.registration_type];
+
+        if (amount) {
+          const invoiceNumber = `INV-${Date.now()}-${Math.random()
+            .toString(36)
+            .substring(2, 9)
+            .toUpperCase()}`;
+
+          const getEntrepreneurPackageName = (type) => {
+            const names = {
+              silver: "EConnect Entrepreneur - Silver Package",
+              gold: "EConnect Entrepreneur - Gold Package",
+              platinum: "EConnect Entrepreneur - Platinum Package (Monthly)",
+            };
+            return names[type] || type.toUpperCase();
+          };
+
+          const invoice = await Invoice.create({
+            student_id: user._id, // Using student_id for all user types (schema constraint)
+            invoiceNumber,
+            type: "registration",
+            description: getEntrepreneurPackageName(
+              entrepreneur.registration_type
+            ),
+            amount: amount,
+            currency: "TZS",
+            status: payment && payment.reference ? "verification" : "pending",
+            dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+            academicYear: new Date().getFullYear().toString(),
+            ...(payment &&
+              payment.reference && {
+                paymentProof: {
+                  reference: payment.reference,
+                  method: payment.method || "other",
+                  status: "pending",
+                  uploadedAt: new Date(),
+                },
+              }),
+          });
+
+          console.log(
+            `💰 Entrepreneur invoice created: ${invoiceNumber} for ${amount} TZS`
+          );
+
+          // Create payment history entry
+          await PaymentHistory.create({
+            userId: user._id,
+            invoiceId: invoice._id,
+            transactionType: "registration_fee",
+            amount: amount,
+            currency: "TZS",
+            status: payment && payment.reference ? "pending" : "pending",
+            paymentDate: payment && payment.reference ? new Date() : null,
+            paymentMethod: payment?.method || null,
+            paymentReference: payment?.reference || null,
+            statusHistory: [
+              {
+                status: "pending",
+                changedAt: new Date(),
+                reason: "Entrepreneur registration - awaiting payment",
+              },
+            ],
+            metadata: {
+              registrationType: entrepreneur.registration_type,
+              packageName: getEntrepreneurPackageName(
+                entrepreneur.registration_type
+              ),
+              ipAddress: req.ip || req.connection?.remoteAddress,
+              userAgent: req.get("user-agent"),
+            },
+          });
+
+          console.log(
+            `📊 Payment history entry created for entrepreneur ${user._id}`
+          );
+
+          // Set next billing date for Platinum (monthly subscription)
+          if (entrepreneur.registration_type === "platinum") {
+            user.next_billing_date = new Date(
+              Date.now() + 30 * 24 * 60 * 60 * 1000
+            );
+            await user.save();
+            console.log(`📅 Next billing date set for Platinum subscription`);
           }
         }
       }
@@ -4447,7 +4547,7 @@ async function sendPaymentReminder(userId, invoiceId, reminderType) {
           userId: userId,
           phone: student.phoneNumber,
           message: smsMessage,
-          type: "payment_confirmation",
+          type: "payment_reminder",
           status: "sent",
           messageId: smsResult.messageId,
           reference: `reminder_${reminderType}_${invoiceId}`,
@@ -4457,7 +4557,7 @@ async function sendPaymentReminder(userId, invoiceId, reminderType) {
           userId: userId,
           phone: student.phoneNumber,
           message: smsMessage,
-          type: "payment_confirmation",
+          type: "payment_reminder",
           status: "failed",
           errorMessage: smsResult.error,
           reference: `reminder_${reminderType}_${invoiceId}`,
@@ -18478,7 +18578,7 @@ app.post(
                 userId: user._id,
                 phone: user.phoneNumber,
                 message: smsMessage,
-                type: "payment_confirmation",
+                type: "payment_reminder",
                 status: "sent",
                 messageId: smsResult.messageId,
                 reference: `bulk_payment_reminder_${user._id}`,
@@ -18492,7 +18592,7 @@ app.post(
                 userId: user._id,
                 phone: user.phoneNumber,
                 message: smsMessage,
-                type: "payment_confirmation",
+                type: "payment_reminder",
                 status: "failed",
                 errorMessage: smsResult.error,
                 reference: `bulk_payment_reminder_${user._id}`,
@@ -23831,7 +23931,7 @@ app.post(
           userId: user._id,
           phone: user.phoneNumber,
           message: smsMessage,
-          type: "payment_confirmation",
+          type: "payment_reminder",
           status: "sent",
           messageId: smsResult.messageId,
           reference: `payment_reminder_${user._id}`,
@@ -23843,7 +23943,7 @@ app.post(
           userId: user._id,
           phone: user.phoneNumber,
           message: smsMessage,
-          type: "payment_confirmation",
+          type: "payment_reminder",
           status: "failed",
           errorMessage: smsResult.error,
           reference: `payment_reminder_${user._id}`,
@@ -24391,7 +24491,7 @@ app.post(
             invoice = await Invoice.create({
               student_id: payment.userId,
               schoolId: user.schoolId,
-              invoice_number: invoiceNumber,
+              invoiceNumber: invoiceNumber,
               amount: payment.amount,
               dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
               status: "verification",
