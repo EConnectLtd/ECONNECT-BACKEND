@@ -23923,25 +23923,57 @@ app.post(
 // RECORD PAYMENT ENDPOINT (for PaymentModal)
 // ============================================
 
-// POST /api/superadmin/payment/record - Record payment information for a user
+// POST Record Payment (SuperAdmin)
+app.post(
+  "/api/superadmin/payment/record",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { userId, amount, currency, transactionType, method, reference, notes } = req.body;
+
+      console.log(`💳 Payment record request for user: ${userId}`);
+
+      // ... validation code ...
+
+      const user = await User.findById(userId);
+      
+      // ❌ CURRENT CODE (BROKEN):
+      const invoice = await Invoice.create({
+        student_id: userId,
+        amount: parseFloat(amount),
+        currency: currency || "TZS",
+        status: "paid",
+        paidDate: new Date(),
+        // ❌ MISSING: invoiceNumber, description, type
+      });
+```
+
+### Replace with this FIXED code:
+
+```javascript
+// POST Record Payment (SuperAdmin)
 app.post(
   "/api/superadmin/payment/record",
   authenticateToken,
   authorizeRoles("super_admin", "national_official", "headmaster"),
+  [
+    body("userId").isMongoId().withMessage("Valid user ID is required"),
+    body("amount").isNumeric().withMessage("Valid amount is required"),
+    body("currency").optional().isString(),
+    body("transactionType").optional().isString(),
+    body("method").optional().isString(),
+    body("reference").optional().isString(),
+    body("notes").optional().isString(),
+  ],
+  handleValidationErrors,
   async (req, res) => {
     try {
-      const {
-        userId,
-        amount,
-        payment_method,
-        payment_reference,
-        notes,
-        payment_date,
-      } = req.body;
+      const { userId, amount, currency, transactionType, method, reference, notes } = req.body;
 
       console.log(`💳 Payment record request for user: ${userId}`);
 
-      // ✅ UPDATED: Only userId and amount are required
+      // Validate required fields
       if (!userId || !amount) {
         return res.status(400).json({
           success: false,
@@ -23949,17 +23981,8 @@ app.post(
         });
       }
 
-      // Validate amount
-      if (amount <= 0) {
-        return res.status(400).json({
-          success: false,
-          error: "Payment amount must be greater than zero",
-        });
-      }
-
-      // Find the user
+      // Find user
       const user = await User.findById(userId);
-
       if (!user) {
         return res.status(404).json({
           success: false,
@@ -23967,166 +23990,143 @@ app.post(
         });
       }
 
-      // Validate user role (only students/entrepreneurs need payment)
-      if (!["student", "entrepreneur", "nonstudent"].includes(user.role)) {
-        return res.status(400).json({
-          success: false,
-          error: `Payment recording is not applicable for ${user.role} role`,
-        });
+      const userName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.username;
+      console.log(`💰 Recording payment for ${userName}: ${currency || "TZS"} ${amount}`);
+
+      // ✅ GENERATE INVOICE NUMBER
+      const invoiceNumber = `INV-${Date.now()}-${Math.random()
+        .toString(36)
+        .substring(2, 9)
+        .toUpperCase()}`;
+
+      // ✅ DETERMINE INVOICE TYPE AND DESCRIPTION
+      let invoiceType = transactionType || "other";
+      let description = notes || `Manual payment recorded by ${req.user.username}`;
+
+      // Map transaction types to invoice types
+      const typeMapping = {
+        registration_fee: "ctm_membership",
+        membership_fee: "ctm_membership",
+        ctm_membership: "ctm_membership",
+        certificate_fee: "certificate",
+        event_fee: "event",
+        tuition_fee: "school_fees",
+        exam_fee: "school_fees",
+        school_fees: "school_fees",
+      };
+
+      invoiceType = typeMapping[transactionType] || "other";
+
+      // Better description based on type
+      if (transactionType === "registration_fee" || transactionType === "ctm_membership") {
+        description = user.registration_type 
+          ? `${user.registration_type.toUpperCase()} Registration Payment`
+          : "CTM Club Membership Payment";
+      } else if (transactionType === "certificate_fee") {
+        description = "Certificate Fee Payment";
+      } else if (transactionType === "event_fee") {
+        description = "Event Registration Payment";
+      } else if (notes) {
+        description = notes;
+      } else {
+        description = `Manual payment recorded by ${req.user.username}`;
       }
 
-      const userName =
-        `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
-        user.username;
-
-      console.log(`💰 Recording payment for ${userName}: TZS ${amount}`);
-
-      // ✅ CLEANED: Removed user.payment_method and user.payment_reference
-      // Payment details are now tracked exclusively in PaymentHistory model
-      user.payment_date = payment_date ? new Date(payment_date) : new Date();
-      user.updatedAt = new Date();
-
-      await user.save();
-
-      // Create or update Invoice
-      let invoice = await Invoice.findOne({
+      // ✅ CREATE INVOICE WITH ALL REQUIRED FIELDS
+      const invoice = await Invoice.create({
         student_id: userId,
-        status: { $in: ["pending", "verification"] },
+        invoiceNumber,              // ✅ REQUIRED
+        type: invoiceType,          // ✅ REQUIRED
+        description,                // ✅ REQUIRED
+        amount: parseFloat(amount),
+        currency: currency || "TZS",
+        status: "paid",
+        paidDate: new Date(),
+        dueDate: new Date(), // Already paid, so due date = paid date
+        academicYear: new Date().getFullYear().toString(),
       });
 
-      if (invoice) {
-        // Update existing invoice
-        invoice.amount = amount;
-        if (payment_method) {
-          invoice.paymentMethod = payment_method; // ✅ KEPT - Invoice has this field
-        }
-        invoice.status = "verification";
-        invoice.paymentProof = {
-          reference: payment_reference || "Pending",
-          method: payment_method || "Pending",
-          submittedAt: new Date(),
-          status: "pending",
-          notes: notes || "",
-        };
-        invoice.updatedAt = new Date();
-        await invoice.save();
+      console.log(`✅ Invoice created: ${invoiceNumber} for ${amount} ${currency || "TZS"}`);
 
-        console.log(`📄 Updated existing invoice: ${invoice._id}`);
-      } else {
-        // Create new invoice
-        invoice = await Invoice.create({
-          student_id: userId,
-          schoolId: user.schoolId,
-          invoice_number: `INV-${Date.now()}-${Math.random()
-            .toString(36)
-            .substring(2, 9)
-            .toUpperCase()}`,
-          amount: amount,
-          dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
-          status: "verification",
-          items: [
-            {
-              description:
-                user.role === "student"
-                  ? user.registrationType || "Registration Fee"
-                  : "Entrepreneur Registration",
-              quantity: 1,
-              unitPrice: amount,
-              total: amount,
-            },
-          ],
-          paymentMethod: payment_method || "Pending", // ✅ KEPT - Invoice has this field
-          paymentProof: {
-            reference: payment_reference || "Pending",
-            method: payment_method || "Pending",
-            submittedAt: new Date(),
-            status: "pending",
-            notes: notes || "",
-          },
-        });
-
-        console.log(`📄 Created new invoice: ${invoice._id}`);
-      }
-
-      // Create PaymentHistory entry
+      // ✅ CREATE PAYMENT HISTORY RECORD
       const paymentHistory = await PaymentHistory.create({
-        userId: userId,
-        schoolId: user.schoolId,
-        transactionType: "registration_fee",
-        amount: amount,
-        paymentMethod: payment_method || "not_specified", // ✅ KEPT - PaymentHistory has this field
-        paymentReference: payment_reference || `AUTO-${Date.now()}`, // ✅ KEPT - PaymentHistory has this field
-        paymentDate: payment_date ? new Date(payment_date) : new Date(),
-        status: "pending",
+        userId,
         invoiceId: invoice._id,
-        notes: notes || "",
+        transactionType: transactionType || "registration_fee",
+        amount: parseFloat(amount),
+        currency: currency || "TZS",
+        status: "verified",
+        paymentDate: new Date(),
+        verifiedAt: new Date(),
+        verifiedBy: req.user.id,
+        description,
+        metadata: {
+          recordedBy: req.user.username,
+          recordedByRole: req.user.role,
+          method: method || "manual",
+          reference: reference || invoiceNumber,
+          notes,
+          ipAddress: req.ip || req.connection?.remoteAddress,
+          userAgent: req.get("user-agent"),
+        },
         statusHistory: [
           {
-            status: "pending",
+            status: "verified",
             changedBy: req.user.id,
             changedAt: new Date(),
-            reason: "Payment information recorded by admin",
+            reason: "Manual payment recorded by admin",
+            notes,
           },
         ],
       });
 
-      console.log(`💾 Created payment history: ${paymentHistory._id}`);
+      console.log(`✅ Payment history created: ${paymentHistory._id}`);
 
-      // Create notification for user
+      // ✅ ACTIVATE USER IF NOT ALREADY ACTIVE
+      if (!user.isActive) {
+        user.isActive = true;
+        user.payment_verified_by = req.user.id;
+        user.payment_verified_at = new Date();
+        await user.save();
+        console.log(`✅ User activated: ${userName}`);
+      }
+
+      // ✅ CREATE NOTIFICATION
       await createNotification(
         userId,
-        "Payment Information Recorded",
-        `Your payment of TZS ${amount.toLocaleString()} has been recorded and is pending verification.`,
-        "info",
-        `/invoices`
+        "Payment Recorded",
+        `Your payment of ${currency || "TZS"} ${amount} has been recorded successfully.`,
+        "success"
       );
 
-      // Log activity
+      // ✅ LOG ACTIVITY
       await logActivity(
         req.user.id,
         "PAYMENT_RECORDED",
-        `Recorded payment for ${userName}: TZS ${amount}${
-          payment_method ? ` (${payment_method})` : ""
-        }`,
+        `Manually recorded payment for ${userName}: ${currency || "TZS"} ${amount}`,
         req,
         {
-          userId: user._id,
-          userName: userName,
-          userRole: user.role,
-          amount: amount,
-          payment_method: payment_method || "Not specified",
-          payment_reference: payment_reference || "Not provided",
-          invoiceId: invoice._id,
-          paymentHistoryId: paymentHistory._id,
+          userId,
+          userName,
+          amount: parseFloat(amount),
+          currency: currency || "TZS",
+          invoiceNumber,
+          transactionType,
+          method,
+          reference,
         }
       );
 
-      console.log(`✅ Payment recorded successfully for ${userName}`);
-
       res.status(201).json({
         success: true,
-        message: `Payment information recorded successfully for ${userName}`,
+        message: "Payment recorded successfully",
         data: {
-          userId: user._id,
-          username: user.username,
-          name: userName,
-          role: user.role,
-          payment: {
-            amount: amount,
-            method: payment_method || "not specified",
-            reference: payment_reference || "Not provided",
-            date: user.payment_date,
-            status: paymentHistory.status,
-          },
-          invoice: {
-            id: invoice._id,
-            invoice_number: invoice.invoice_number,
-            amount: invoice.amount,
-            status: invoice.status,
-          },
-          paymentHistory: {
-            id: paymentHistory._id,
-            status: paymentHistory.status,
+          invoice,
+          paymentHistory,
+          user: {
+            id: user._id,
+            name: userName,
+            isActive: user.isActive,
           },
         },
       });
@@ -24136,7 +24136,7 @@ app.post(
         success: false,
         error: "Failed to record payment",
         ...(process.env.NODE_ENV === "development" && {
-          debug: sanitizeError(error),
+          debug: error.message,
         }),
       });
     }
