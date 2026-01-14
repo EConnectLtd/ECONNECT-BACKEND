@@ -16157,6 +16157,152 @@ app.get(
     }
   }
 );
+
+// ============================================
+// GET USERS WITH PAYMENT INFORMATION
+// ============================================
+
+// GET /api/superadmin/users/with-payments - Get all users with their latest payment information
+app.get(
+  "/api/superadmin/users/with-payments",
+  authenticateToken,
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  async (req, res) => {
+    try {
+      const { role, status, page = 1, limit = 1000 } = req.query;
+
+      console.log("📊 Fetching users with payment information...");
+
+      // Build query for users
+      const userQuery = {};
+
+      if (role) {
+        userQuery.role = role;
+      }
+
+      if (status === "inactive") {
+        userQuery.isActive = false;
+      } else if (status === "active") {
+        userQuery.isActive = true;
+      }
+
+      // Fetch users
+      const users = await User.find(userQuery)
+        .populate("schoolId", "name schoolCode logo")
+        .populate("regionId", "name code")
+        .populate("districtId", "name code")
+        .populate("wardId", "name code")
+        .select("-password")
+        .sort({ createdAt: -1 })
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .lean(); // Use lean() for better performance
+
+      if (users.length === 0) {
+        return res.json({
+          success: true,
+          data: [],
+          meta: {
+            total: 0,
+            page: parseInt(page),
+            limit: parseInt(limit),
+            pages: 0,
+          },
+        });
+      }
+
+      // Get all user IDs
+      const userIds = users.map((u) => u._id);
+
+      console.log(`📊 Fetching payment info for ${userIds.length} users...`);
+
+      // Fetch latest payment for each user
+      const payments = await PaymentHistory.aggregate([
+        {
+          $match: {
+            userId: { $in: userIds },
+          },
+        },
+        {
+          $sort: { createdAt: -1 },
+        },
+        {
+          $group: {
+            _id: "$userId",
+            latestPayment: { $first: "$$ROOT" },
+          },
+        },
+      ]);
+
+      // Create payment map for quick lookup
+      const paymentMap = {};
+      payments.forEach((p) => {
+        const userId = p._id.toString();
+        const payment = p.latestPayment;
+
+        paymentMap[userId] = {
+          status: payment.status,
+          amount: payment.amount,
+          currency: payment.currency || "TZS",
+          paymentMethod: payment.paymentMethod,
+          paymentReference: payment.paymentReference,
+          paymentDate: payment.paymentDate,
+          transactionType: payment.transactionType,
+          verifiedBy: payment.verifiedBy,
+          verifiedAt: payment.verifiedAt,
+          createdAt: payment.createdAt,
+        };
+      });
+
+      console.log(
+        `✅ Found payment info for ${Object.keys(paymentMap).length} users`
+      );
+
+      // Attach payment info to users
+      const usersWithPayments = users.map((user) => ({
+        ...user,
+        // Attach payment info from PaymentHistory
+        paymentInfo: paymentMap[user._id.toString()] || null,
+
+        // Include region/district/ward names if populated
+        regionName: user.regionId?.name || user.region,
+        districtName: user.districtId?.name || user.district,
+        wardName: user.wardId?.name || user.ward,
+      }));
+
+      // Get total count
+      const total = await User.countDocuments(userQuery);
+
+      console.log(
+        `✅ Returning ${usersWithPayments.length} users with payment data`
+      );
+
+      res.json({
+        success: true,
+        data: usersWithPayments,
+        meta: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit)),
+          withPaymentInfo: Object.keys(paymentMap).length,
+          withoutPaymentInfo:
+            usersWithPayments.length - Object.keys(paymentMap).length,
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error fetching users with payments:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch users with payment information",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  }
+);
+
 // MODERATE User
 app.post(
   "/api/superadmin/users/:userId/moderate",
