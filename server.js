@@ -1746,9 +1746,8 @@ const paymentHistorySchema = new mongoose.Schema(
     // ============================================
     paymentDate: {
       type: Date,
-      default: Date.now,
-      required: true,
-      description: "Date when payment was made",
+      description:
+        "Date when payment was made (optional - set after verification)",
     },
 
     nextPaymentDate: {
@@ -3967,9 +3966,6 @@ app.post(
             amount: amount,
             currency: "TZS",
             status: payment && payment.reference ? "pending" : "pending",
-            paymentDate: payment && payment.reference ? new Date() : null,
-            paymentMethod: payment?.method || null,
-            paymentReference: payment?.reference || null,
             statusHistory: [
               {
                 status: "pending",
@@ -24877,20 +24873,13 @@ app.post(
               );
             }
 
-            // ✅ IMPROVED: Check duplicate from pre-fetched Set (no DB query!)
+            // ✅ Check duplicate payment reference from pre-fetched Set (no DB query!)
             if (existingReferencesSet.has(payment.payment_reference)) {
               warnings.push("Payment reference already exists in system");
             }
 
-            // Check if user already has payment recorded
-            if (
-              user.payment_reference &&
-              user.payment_reference !== payment.payment_reference
-            ) {
-              warnings.push(
-                `User already has payment reference: ${user.payment_reference}`
-              );
-            }
+            // ✅ REMOVED: user.payment_reference check (field doesn't exist on User model)
+            // Payment references are tracked exclusively in PaymentHistory model
           }
         } else if (payment.userId) {
           errors.push("Invalid user ID format");
