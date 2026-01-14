@@ -23927,35 +23927,6 @@ app.post(
 app.post(
   "/api/superadmin/payment/record",
   authenticateToken,
-  authorizeRoles("super_admin"),
-  async (req, res) => {
-    try {
-      const { userId, amount, currency, transactionType, method, reference, notes } = req.body;
-
-      console.log(`💳 Payment record request for user: ${userId}`);
-
-      // ... validation code ...
-
-      const user = await User.findById(userId);
-      
-      // ❌ CURRENT CODE (BROKEN):
-      const invoice = await Invoice.create({
-        student_id: userId,
-        amount: parseFloat(amount),
-        currency: currency || "TZS",
-        status: "paid",
-        paidDate: new Date(),
-        // ❌ MISSING: invoiceNumber, description, type
-      });
-```
-
-### Replace with this FIXED code:
-
-```javascript
-// POST Record Payment (SuperAdmin)
-app.post(
-  "/api/superadmin/payment/record",
-  authenticateToken,
   authorizeRoles("super_admin", "national_official", "headmaster"),
   [
     body("userId").isMongoId().withMessage("Valid user ID is required"),
@@ -23969,7 +23940,15 @@ app.post(
   handleValidationErrors,
   async (req, res) => {
     try {
-      const { userId, amount, currency, transactionType, method, reference, notes } = req.body;
+      const {
+        userId,
+        amount,
+        currency,
+        transactionType,
+        method,
+        reference,
+        notes,
+      } = req.body;
 
       console.log(`💳 Payment record request for user: ${userId}`);
 
@@ -23990,8 +23969,12 @@ app.post(
         });
       }
 
-      const userName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.username;
-      console.log(`💰 Recording payment for ${userName}: ${currency || "TZS"} ${amount}`);
+      const userName =
+        `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
+        user.username;
+      console.log(
+        `💰 Recording payment for ${userName}: ${currency || "TZS"} ${amount}`
+      );
 
       // ✅ GENERATE INVOICE NUMBER
       const invoiceNumber = `INV-${Date.now()}-${Math.random()
@@ -24001,7 +23984,8 @@ app.post(
 
       // ✅ DETERMINE INVOICE TYPE AND DESCRIPTION
       let invoiceType = transactionType || "other";
-      let description = notes || `Manual payment recorded by ${req.user.username}`;
+      let description =
+        notes || `Manual payment recorded by ${req.user.username}`;
 
       // Map transaction types to invoice types
       const typeMapping = {
@@ -24018,8 +24002,11 @@ app.post(
       invoiceType = typeMapping[transactionType] || "other";
 
       // Better description based on type
-      if (transactionType === "registration_fee" || transactionType === "ctm_membership") {
-        description = user.registration_type 
+      if (
+        transactionType === "registration_fee" ||
+        transactionType === "ctm_membership"
+      ) {
+        description = user.registration_type
           ? `${user.registration_type.toUpperCase()} Registration Payment`
           : "CTM Club Membership Payment";
       } else if (transactionType === "certificate_fee") {
@@ -24035,9 +24022,9 @@ app.post(
       // ✅ CREATE INVOICE WITH ALL REQUIRED FIELDS
       const invoice = await Invoice.create({
         student_id: userId,
-        invoiceNumber,              // ✅ REQUIRED
-        type: invoiceType,          // ✅ REQUIRED
-        description,                // ✅ REQUIRED
+        invoiceNumber, // ✅ REQUIRED
+        type: invoiceType, // ✅ REQUIRED
+        description, // ✅ REQUIRED
         amount: parseFloat(amount),
         currency: currency || "TZS",
         status: "paid",
@@ -24046,7 +24033,11 @@ app.post(
         academicYear: new Date().getFullYear().toString(),
       });
 
-      console.log(`✅ Invoice created: ${invoiceNumber} for ${amount} ${currency || "TZS"}`);
+      console.log(
+        `✅ Invoice created: ${invoiceNumber} for ${amount} ${
+          currency || "TZS"
+        }`
+      );
 
       // ✅ CREATE PAYMENT HISTORY RECORD
       const paymentHistory = await PaymentHistory.create({
@@ -24095,7 +24086,9 @@ app.post(
       await createNotification(
         userId,
         "Payment Recorded",
-        `Your payment of ${currency || "TZS"} ${amount} has been recorded successfully.`,
+        `Your payment of ${
+          currency || "TZS"
+        } ${amount} has been recorded successfully.`,
         "success"
       );
 
@@ -24103,7 +24096,9 @@ app.post(
       await logActivity(
         req.user.id,
         "PAYMENT_RECORDED",
-        `Manually recorded payment for ${userName}: ${currency || "TZS"} ${amount}`,
+        `Manually recorded payment for ${userName}: ${
+          currency || "TZS"
+        } ${amount}`,
         req,
         {
           userId,
