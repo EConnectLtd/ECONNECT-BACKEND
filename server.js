@@ -1589,7 +1589,8 @@ const AssignmentSubmission = mongoose.model(
 
 const invoiceSchema = new mongoose.Schema(
   {
-    student_id: {
+    // ✅ FIXED: Changed from student_id to user_id (more generic)
+    user_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
@@ -1599,9 +1600,18 @@ const invoiceSchema = new mongoose.Schema(
       required: true,
       unique: true,
     },
+    // ✅ FIXED: Added 'registration' and 'monthly_fee' to type enum
     type: {
       type: String,
-      enum: ["ctm_membership", "certificate", "school_fees", "event", "other"],
+      enum: [
+        "ctm_membership", // CTM Club annual fees
+        "certificate", // CTM Certificates
+        "school_fees", // School fees
+        "event", // Event fees
+        "registration", // ✅ ADDED: Registration fees (fixes entrepreneur registration error)
+        "monthly_fee", // ✅ ADDED: Monthly subscription fees
+        "other", // Other charges
+      ],
       required: true,
     },
     description: {
@@ -1612,14 +1622,24 @@ const invoiceSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    // ✅ FIXED: Changed from 'Tsh' to 'TZS' (proper ISO format)
     currency: {
       type: String,
-      default: "Tsh",
+      default: "TZS",
     },
+    // ✅ FIXED: Added 'unpaid' and 'partially_paid' to status enum
     status: {
       type: String,
-      enum: ["paid", "pending", "overdue", "cancelled", "verification"],
-      default: "pending",
+      enum: [
+        "paid", // Fully paid
+        "unpaid", // Not paid yet
+        "pending", // Awaiting payment
+        "partially_paid", // Partially paid
+        "overdue", // Past due date
+        "cancelled", // Cancelled invoice
+        "verification", // Payment under verification
+      ],
+      default: "unpaid", // ✅ CHANGED: Default to 'unpaid' instead of 'pending'
     },
     dueDate: {
       type: Date,
@@ -1632,15 +1652,15 @@ const invoiceSchema = new mongoose.Schema(
       type: String,
     },
 
-    // PAYMENT PROOF FIELDS - ADD THIS
+    // Payment proof fields
     paymentProof: {
-      fileName: String, // Stored filename
-      originalName: String, // Original uploaded filename
-      filePath: String, // Full path to file
-      fileSize: Number, // File size in bytes
-      mimeType: String, // File MIME type
-      uploadedAt: Date, // When student uploaded
-      notes: String, // Optional student notes
+      fileName: String,
+      originalName: String,
+      filePath: String,
+      fileSize: Number,
+      mimeType: String,
+      uploadedAt: Date,
+      notes: String,
       status: {
         type: String,
         enum: ["pending", "verified", "rejected"],
@@ -3823,7 +3843,7 @@ app.post(
           };
 
           const invoice = await Invoice.create({
-            student_id: user._id,
+            user_id: user._id,
             invoiceNumber,
             type: "ctm_membership",
             description: getPackageName(student.registration_type),
@@ -3913,7 +3933,7 @@ app.post(
           };
 
           const invoice = await Invoice.create({
-            student_id: user._id, // Using student_id for all user types (schema constraint)
+            user_id: user._id,
             invoiceNumber,
             type: "registration",
             description: getEntrepreneurPackageName(
@@ -4053,7 +4073,7 @@ app.patch(
 
         // Update invoice
         const invoice = await Invoice.findOneAndUpdate(
-          { student_id: studentId, status: "verification" },
+          { user_id: studentId, status: "verification" },
           {
             status: "paid",
             paidDate: new Date(),
@@ -4126,7 +4146,7 @@ app.patch(
 
         // Update invoice
         const invoice = await Invoice.findOneAndUpdate(
-          { student_id: studentId, status: "verification" },
+          { user_id: studentId, status: "verification" },
           {
             status: "pending",
             "paymentProof.status": "rejected",
@@ -8000,7 +8020,7 @@ app.post(
       // Find invoice and verify ownership
       const invoice = await Invoice.findOne({
         _id: invoiceId,
-        student_id: userId,
+        user_id: userId,
       });
 
       if (!invoice) {
@@ -8125,10 +8145,9 @@ app.patch(
 
       // Find invoice
       const invoice = await Invoice.findById(invoiceId).populate(
-        "student_id",
+        "user_id",
         "firstName lastName email"
       );
-
       if (!invoice) {
         return res.status(404).json({
           success: false,
@@ -8171,7 +8190,7 @@ app.patch(
 
         // Notify student
         await createNotification(
-          invoice.student_id._id,
+          invoice.user_id._id,
           "Payment Verified",
           `Your payment for invoice ${invoice.invoiceNumber} has been verified`,
           "success"
@@ -8217,7 +8236,7 @@ app.patch(
 
         // Notify student
         await createNotification(
-          invoice.student_id._id,
+          invoice.user_id._id,
           "Payment Rejected",
           `Your payment proof for invoice ${invoice.invoiceNumber} was rejected: ${rejectionReason}`,
           "warning"
@@ -8260,7 +8279,7 @@ app.get(
         status: "verification",
         "paymentProof.status": "pending",
       })
-        .populate("student_id", "firstName lastName email username")
+        .populate("user_id", "firstName lastName email username")
         .sort({ "paymentProof.uploadedAt": -1 })
         .skip(skip)
         .limit(limit);
@@ -8357,9 +8376,8 @@ app.get(
       // Find invoice and verify ownership
       const invoice = await Invoice.findOne({
         _id: invoiceId,
-        student_id: userId,
-      }).populate("student_id", "first_name last_name email");
-
+        user_id: userId,
+      }).populate("user_id", "firstName lastName email");
       if (!invoice) {
         return res.status(404).json({
           success: false,
@@ -8388,8 +8406,8 @@ app.get(
             createdAt: invoice.createdAt,
           },
           student: {
-            name: `${invoice.student_id.first_name} ${invoice.student_id.last_name}`,
-            email: invoice.student_id.email,
+            name: `${invoice.user_id.firstName} ${invoice.user_id.lastName}`,
+            email: invoice.user_id.email,
           },
           company: {
             name: "E Connect Limited",
@@ -8427,7 +8445,7 @@ app.get(
       const userId = req.user.id;
       const { status, page = 1, limit = 20 } = req.query;
 
-      const query = { student_id: userId };
+      const query = { user_id: userId };
       if (status) {
         query.status = status;
       }
@@ -18041,7 +18059,7 @@ app.delete(
         EventRegistration.deleteMany({ userId }),
 
         // Delete invoices
-        Invoice.deleteMany({ student_id: userId }),
+        Invoice.deleteMany({ user_id: userId }),
 
         // Delete payment history
         PaymentHistory.deleteMany({ userId }),
@@ -18319,7 +18337,7 @@ app.post(
             try {
               await Invoice.updateMany(
                 {
-                  student_id: user._id,
+                  user_id: user._id,
                   status: { $in: ["pending", "verification"] },
                 },
                 {
@@ -18514,7 +18532,7 @@ app.post(
 
           // Find pending invoices
           const pendingInvoices = await Invoice.find({
-            student_id: userId,
+            user_id: user._id,
             status: { $in: ["pending", "verification"] },
           }).sort({ dueDate: 1 });
 
@@ -19104,7 +19122,7 @@ app.post(
             EventRegistration.deleteMany({ userId }),
 
             // Invoices
-            Invoice.deleteMany({ student_id: userId }),
+            Invoice.deleteMany({ user_id: userId }),
 
             // Payment history
             PaymentHistory.deleteMany({ userId }),
@@ -23650,7 +23668,7 @@ app.post(
       ) {
         const invoiceUpdate = await Invoice.updateMany(
           {
-            student_id: user._id,
+            user_id: user._id,
             status: { $in: ["pending", "verification"] },
           },
           {
@@ -23884,7 +23902,7 @@ app.post(
 
       // Find pending invoices
       const pendingInvoices = await Invoice.find({
-        student_id: userId,
+        user_id: user._id,
         status: { $in: ["pending", "verification"] },
       }).sort({ dueDate: 1 });
 
@@ -24121,7 +24139,7 @@ app.post(
 
       // ✅ CREATE INVOICE WITH ALL REQUIRED FIELDS
       const invoice = await Invoice.create({
-        student_id: userId,
+        user_id: userId,
         invoiceNumber, // ✅ REQUIRED
         type: invoiceType, // ✅ REQUIRED
         description, // ✅ REQUIRED
@@ -24437,7 +24455,7 @@ app.post(
           // ========================================
 
           let invoice = await Invoice.findOne({
-            student_id: payment.userId,
+            user_id: payment.userId,
             status: { $in: ["pending", "verification"] },
           });
 
@@ -24489,7 +24507,7 @@ app.post(
             };
 
             invoice = await Invoice.create({
-              student_id: payment.userId,
+              user_id: payment.userId,
               schoolId: user.schoolId,
               invoiceNumber: invoiceNumber,
               amount: payment.amount,
