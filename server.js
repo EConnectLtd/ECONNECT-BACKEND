@@ -4930,54 +4930,359 @@ app.get(
   }
 );
 
-// Login
+// ========================================
+// ✅ ENHANCED LOGIN ENDPOINT - ROLE-SPECIFIC ERROR MESSAGES
+// Supports: Students (Secondary/University), Entrepreneurs, Teachers, Staff, Headmasters
+// ========================================
+
+// Login - Enhanced with detailed, role-specific error messages
 app.post(
   "/api/auth/login",
   publicRateLimiter,
   [
-    body("username").trim().notEmpty().withMessage("Username is required"),
+    // Accept phone, email, or username
+    body("username").optional().trim(),
+    body("email").optional().trim().isEmail(),
+    body("phone").optional().trim(),
     body("password").notEmpty().withMessage("Password is required"),
   ],
   handleValidationErrors,
   async (req, res) => {
     try {
-      const { username, password } = req.body;
+      const { username, email, phone, password } = req.body;
 
-      if (!username || !password) {
+      // Flexible login identifier
+      const identifier = username || email || phone;
+
+      if (!identifier || !password) {
         return res.status(400).json({
           success: false,
-          error: "Username and password are required",
+          error: "Login credentials are required",
         });
       }
 
+      // Find user by phone, email, or username
       const user = await User.findOne({
-        $or: [{ username }, { email: username }],
-      }).populate("schoolId regionId districtId");
+        $or: [
+          { username: identifier },
+          { email: identifier },
+          { phoneNumber: identifier },
+        ],
+      }).populate("schoolId regionId districtId wardId");
 
-      if (!user || !(await comparePassword(password, user.password))) {
+      // Check if user exists
+      if (!user) {
         return res.status(401).json({
           success: false,
-          error: "Invalid credentials",
+          error:
+            "Account not found. Please check your credentials or register.",
         });
       }
 
+      // Check password
+      if (!(await comparePassword(password, user.password))) {
+        return res.status(401).json({
+          success: false,
+          error: "Incorrect password. Please try again.",
+        });
+      }
+
+      // ========================================
+      // CHECK IF ACCOUNT IS ACTIVE
+      // ========================================
       if (!user.isActive) {
+        // Get user-friendly role name
+        const roleName =
+          {
+            student:
+              user.institutionType === "university"
+                ? "University Student"
+                : "Secondary Student",
+            teacher: "Teacher",
+            entrepreneur: "Entrepreneur",
+            headmaster: "Headmaster",
+            staff: "Staff Member",
+            superadmin: "Administrator",
+          }[user.role] || "User";
+
+        // ========================================
+        // 1. CHECK FOR PARTIAL PAYMENT SUSPENSION
+        // ========================================
+        const paymentHistory = await PaymentHistory.find({
+          user: user._id,
+          status: { $in: ["completed", "paid"] },
+        });
+
+        const totalPaid = paymentHistory.reduce(
+          (sum, payment) => sum + (payment.amount || 0),
+          0
+        );
+
+        // Calculate required amount based on role and registration type
+        let requiredAmount = 0;
+        let packageName = "";
+
+        if (user.role === "student") {
+          const regType = user.registrationType || "normal";
+          const institutionType =
+            user.schoolId?.ownershipType ||
+            user.schoolId?.institutionType ||
+            user.institutionType ||
+            "government";
+
+          const isUniversity =
+            user.institutionType === "university" ||
+            user.schoolId?.institutionType === "university";
+
+          // University students use different pricing
+          if (isUniversity) {
+            switch (regType.toLowerCase()) {
+              case "ctm-club":
+              case "normal":
+                requiredAmount = 15000;
+                packageName = "Normal Package";
+                break;
+              case "silver":
+                requiredAmount = 20000;
+                packageName = "Silver Package";
+                break;
+              case "gold":
+                requiredAmount = 40000;
+                packageName = "Gold Package";
+                break;
+              case "platinum":
+                requiredAmount = 80000;
+                packageName = "Platinum Package";
+                break;
+              default:
+                requiredAmount = 15000;
+                packageName = "Normal Package";
+            }
+          } else {
+            // Secondary students
+            switch (regType.toLowerCase()) {
+              case "ctm-club":
+              case "normal":
+                requiredAmount = institutionType === "private" ? 15000 : 8000;
+                packageName = "Normal Package";
+                break;
+              case "silver":
+                requiredAmount = 20000;
+                packageName = "Silver Package";
+                break;
+              case "gold":
+                requiredAmount = 40000;
+                packageName = "Gold Package";
+                break;
+              case "platinum":
+                requiredAmount = 80000;
+                packageName = "Platinum Package";
+                break;
+              default:
+                requiredAmount = institutionType === "private" ? 15000 : 8000;
+                packageName = "Normal Package";
+            }
+          }
+        } else if (user.role === "entrepreneur") {
+          const regType = user.registrationType || "silver";
+
+          switch (regType.toLowerCase()) {
+            case "silver":
+              requiredAmount = 49000;
+              packageName = "Silver Package";
+              break;
+            case "gold":
+              requiredAmount = 120000;
+              packageName = "Gold Package";
+              break;
+            case "platinum":
+              requiredAmount = 550000;
+              packageName = "Platinum Package";
+              break;
+            default:
+              requiredAmount = 49000;
+              packageName = "Silver Package";
+          }
+        } else if (user.role === "teacher") {
+          // Teachers typically don't pay, but if they do:
+          requiredAmount = 0; // Free for teachers
+        }
+
+        // Check if this is a partial payment suspension
+        if (requiredAmount > 0 && totalPaid > 0 && totalPaid < requiredAmount) {
+          const remainingBalance = requiredAmount - totalPaid;
+
+          // Role-specific messages
+          let contactInfo = "";
+          let actionSteps = "";
+
+          if (user.role === "student") {
+            const isUniversity = user.institutionType === "university";
+            contactInfo = isUniversity
+              ? "your university administrator"
+              : "your school headmaster or administrator";
+            actionSteps = `1. Complete your payment of TZS ${remainingBalance.toLocaleString()}\n2. Contact ${contactInfo} to record the payment\n3. Your account will be activated once payment is verified`;
+          } else if (user.role === "entrepreneur") {
+            contactInfo = "ECONNECT support";
+            actionSteps = `1. Complete your ${packageName} payment of TZS ${remainingBalance.toLocaleString()}\n2. Contact ${contactInfo} at support@econnect.co.tz\n3. Upload payment proof via your dashboard\n4. Your account will be activated within 24 hours of verification`;
+          }
+
+          return res.status(403).json({
+            success: false,
+            error: `Account suspended due to incomplete payment`,
+            errorType: "PARTIAL_PAYMENT_SUSPENSION",
+            details: {
+              reason: "partial_payment",
+              userRole: user.role,
+              roleName,
+              institutionType: user.institutionType,
+              totalPaid,
+              requiredAmount,
+              remainingBalance,
+              packageName,
+              contactInfo,
+              message: `Your ${roleName.toLowerCase()} account (${packageName}) is approved but suspended until full payment is received.\n\nPayment Status:\n• Paid: TZS ${totalPaid.toLocaleString()}\n• Required: TZS ${requiredAmount.toLocaleString()}\n• Balance: TZS ${remainingBalance.toLocaleString()}\n\nNext Steps:\n${actionSteps}`,
+            },
+          });
+        }
+
+        // ========================================
+        // 2. CHECK FOR PENDING APPROVAL
+        // ========================================
+        if (!user.approvedBy && !user.approvedAt) {
+          // Role-specific approval messages
+          let approvalMessage = "";
+          let approver = "";
+          let timeline = "24-48 hours";
+
+          if (user.role === "student") {
+            const isUniversity = user.institutionType === "university";
+            approver = isUniversity
+              ? "university administrator"
+              : "school headmaster";
+            approvalMessage = `Your ${roleName.toLowerCase()} registration is under review by your ${approver}.`;
+          } else if (user.role === "entrepreneur") {
+            approver = "ECONNECT administrator";
+            timeline = "48-72 hours";
+            approvalMessage = `Your entrepreneur account is being reviewed by the ${approver}.`;
+          } else if (user.role === "teacher") {
+            approver = "school headmaster";
+            approvalMessage = `Your teacher account is pending approval from your ${approver}.`;
+          } else {
+            approver = "administrator";
+            approvalMessage = `Your ${roleName.toLowerCase()} account is pending approval.`;
+          }
+
+          return res.status(403).json({
+            success: false,
+            error: `Account pending ${approver} approval`,
+            errorType: "PENDING_APPROVAL",
+            details: {
+              reason: "awaiting_approval",
+              userRole: user.role,
+              roleName,
+              institutionType: user.institutionType,
+              approver,
+              timeline,
+              message: `${approvalMessage}\n\nWhat happens next:\n✅ ${approver} will review your information\n✅ You'll be notified once approved (usually within ${timeline})\n✅ Login credentials confirmation will be sent via SMS\n\nPlease wait for approval notification.`,
+            },
+          });
+        }
+
+        // ========================================
+        // 3. GENERIC SUSPENSION (was approved but later deactivated)
+        // ========================================
+        if (user.approvedBy) {
+          // Role-specific suspension messages
+          let suspensionMessage = "";
+          let contactPerson = "";
+
+          if (user.role === "student") {
+            const isUniversity = user.institutionType === "university";
+            contactPerson = isUniversity
+              ? "university administrator"
+              : "school headmaster";
+            suspensionMessage = `Your ${roleName.toLowerCase()} account has been temporarily suspended.`;
+          } else if (user.role === "entrepreneur") {
+            contactPerson = "ECONNECT support team";
+            suspensionMessage = `Your entrepreneur account has been temporarily suspended.`;
+          } else if (user.role === "teacher") {
+            contactPerson = "school headmaster";
+            suspensionMessage = `Your teacher account has been temporarily suspended.`;
+          } else {
+            contactPerson = "administrator";
+            suspensionMessage = `Your account has been temporarily suspended.`;
+          }
+
+          return res.status(403).json({
+            success: false,
+            error: "Account suspended. Please contact administrator",
+            errorType: "ACCOUNT_SUSPENDED",
+            details: {
+              reason: "generic_suspension",
+              userRole: user.role,
+              roleName,
+              institutionType: user.institutionType,
+              contactPerson,
+              message: `${suspensionMessage}\n\nThis may be due to:\n• Pending verification\n• Policy violation\n• Administrative review\n• End of school year/semester\n\nPlease contact your ${contactPerson} for details.\n\nECONNECT Support: support@econnect.co.tz`,
+            },
+          });
+        }
+
+        // ========================================
+        // 4. NEVER APPROVED (deactivated during registration)
+        // ========================================
+        let notApprovedMessage = "";
+        let whoApproves = "";
+
+        if (user.role === "student") {
+          const isUniversity = user.institutionType === "university";
+          whoApproves = isUniversity
+            ? "university administrator"
+            : "school headmaster";
+          notApprovedMessage = `Your ${roleName.toLowerCase()} account needs approval from your ${whoApproves} before you can login.`;
+        } else if (user.role === "entrepreneur") {
+          whoApproves = "ECONNECT administrator";
+          notApprovedMessage = `Your entrepreneur account needs approval from the ${whoApproves}.`;
+        } else if (user.role === "teacher") {
+          whoApproves = "school headmaster";
+          notApprovedMessage = `Your teacher account needs approval from your ${whoApproves}.`;
+        } else {
+          whoApproves = "administrator";
+          notApprovedMessage = `Your account needs administrator approval.`;
+        }
+
         return res.status(403).json({
           success: false,
-          error: "Account is deactivated. Please contact support.",
+          error: `Account not approved. Please contact ${whoApproves}`,
+          errorType: "NOT_APPROVED",
+          details: {
+            reason: "not_approved",
+            userRole: user.role,
+            roleName,
+            institutionType: user.institutionType,
+            whoApproves,
+            message: `${notApprovedMessage}\n\nPlease wait for approval notification via SMS or contact your ${whoApproves}.`,
+          },
         });
       }
 
+      // ========================================
+      // SUCCESS: Account is active
+      // ========================================
       user.lastLogin = new Date();
       await user.save();
 
+      // Generate JWT token
       const token = generateToken(user);
 
-      await logActivity(user._id, "USER_LOGIN", "User logged in", req);
+      // Log successful login
+      await logActivity(user._id, "USER_LOGIN", `${user.role} logged in`, req);
 
+      // Return success response with enhanced user data
       res.json({
         success: true,
-        message: "Login successful",
+        message: `Welcome back, ${user.firstName}!`,
         data: {
           user: {
             id: user._id,
@@ -4990,10 +5295,15 @@ app.post(
             schoolId: user.schoolId,
             regionId: user.regionId,
             districtId: user.districtId,
+            wardId: user.wardId,
             profileImage: user.profileImage,
             isPhoneVerified: user.isPhoneVerified,
             isEmailVerified: user.isEmailVerified,
             lastLogin: user.lastLogin,
+            registrationType: user.registrationType,
+            institutionType: user.institutionType,
+            approvedBy: user.approvedBy,
+            approvedAt: user.approvedAt,
           },
           token,
         },
@@ -5002,7 +5312,7 @@ app.post(
       console.error("❌ Login error:", error);
       res.status(500).json({
         success: false,
-        error: "Login failed",
+        error: "Login failed. Please try again.",
         ...(process.env.NODE_ENV === "development" && {
           debug: sanitizeError(error),
         }),
