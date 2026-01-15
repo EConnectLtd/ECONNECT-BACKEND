@@ -16369,17 +16369,24 @@ app.get(
       );
 
       // Attach payment info to users
-      const usersWithPayments = users.map((user) => ({
-        ...user,
-        // Attach payment info from PaymentHistory
-        paymentInfo: paymentMap[user._id.toString()] || null,
+      const usersWithPayments = users.map((user) => {
+        const paymentData = paymentMap[user._id.toString()];
 
-        // Include region/district/ward names if populated
-        regionName: user.regionId?.name || user.region,
-        districtName: user.districtId?.name || user.district,
-        wardName: user.wardId?.name || user.ward,
-      }));
+        return {
+          ...user,
 
+          // ✅ FIXED: Flatten registration_fee_paid to top level for PaymentModal
+          registration_fee_paid: paymentData?.registration_fee_paid || 0,
+
+          // Attach payment info from PaymentHistory
+          paymentInfo: paymentData || null,
+
+          // Include region/district/ward names if populated
+          regionName: user.regionId?.name || user.region,
+          districtName: user.districtId?.name || user.district,
+          wardName: user.wardId?.name || user.ward,
+        };
+      });
       // Get total count
       const total = await User.countDocuments(userQuery);
 
