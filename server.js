@@ -3226,9 +3226,48 @@ const isValidObjectId = (id) => {
   return mongoose.Types.ObjectId.isValid(id);
 };
 
+async function calculateRegistrationFeePaid(userId) {
+  const payments = await PaymentHistory.find({
+    userId: userId,
+    status: "verified",
+  });
+
+  return payments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
+}
+
 // ============================================
-// AUTHENTICATION ENDPOINTS
+// 🆕 CALCULATE REGISTRATION FEE PAID
 // ============================================
+/**
+ * Calculate total registration fee paid from verified PaymentHistory records
+ * @param {ObjectId} userId - User ID to calculate payments for
+ * @returns {Promise<number>} Total amount paid from verified payments
+ */
+async function calculateRegistrationFeePaid(userId) {
+  try {
+    const payments = await PaymentHistory.find({
+      userId: userId,
+      status: "verified", // ✅ Only count verified payments
+      transactionType: "registration_fee", // ✅ Only count registration fees
+    });
+
+    const total = payments.reduce((sum, payment) => {
+      return sum + (payment.amount || 0);
+    }, 0);
+
+    console.log(
+      `💰 User ${userId}: Calculated registration_fee_paid = ${total} (from ${payments.length} verified payments)`
+    );
+
+    return total;
+  } catch (error) {
+    console.error(
+      `❌ Error calculating registration_fee_paid for user ${userId}:`,
+      error
+    );
+    return 0; // Return 0 on error to avoid breaking the response
+  }
+}
 
 // ============================================================================
 // ✅ UPDATED REGISTRATION ENDPOINT WITH NEW SMS SERVICE
@@ -16079,12 +16118,35 @@ app.get(
 
       const total = await User.countDocuments(query);
 
-      // ✅ Manually remove password field
       const sanitizedUsers = users.map(({ password, ...user }) => user);
+
+      // ============================================
+      // 🆕 CALCULATE registration_fee_paid FOR ALL USERS
+      // ============================================
+      console.log(
+        `💰 Calculating registration_fee_paid for ${sanitizedUsers.length} users...`
+      );
+
+      const enrichedUsers = await Promise.all(
+        sanitizedUsers.map(async (user) => {
+          const registration_fee_paid = await calculateRegistrationFeePaid(
+            user._id
+          );
+
+          return {
+            ...user,
+            registration_fee_paid, // ✅ Add calculated field to user object
+          };
+        })
+      );
+
+      console.log(
+        `✅ Enriched ${enrichedUsers.length} users with payment data`
+      );
 
       // ✅ FETCH TALENTS FOR STUDENTS
       if (role === "student") {
-        const userIds = sanitizedUsers.map((u) => u._id);
+        const userIds = enrichedUsers.map((u) => u._id);
 
         const studentTalents = await StudentTalent.find({
           studentId: { $in: userIds },
@@ -16100,7 +16162,7 @@ app.get(
           talentMap[studentId].push(st.talentId);
         });
 
-        sanitizedUsers.forEach((user) => {
+        enrichedUsers.forEach((user) => {
           user.talents = talentMap[user._id.toString()] || [];
         });
       }
@@ -16122,13 +16184,11 @@ app.get(
         });
       }
 
-      console.log(
-        `✅ Fetched ${sanitizedUsers.length} users (total: ${total})`
-      );
+      console.log(`✅ Fetched ${enrichedUsers.length} users (total: ${total})`);
 
       // ✅ LOG CLASSLEVEL VERIFICATION FOR STUDENTS
-      if (role === "student" && sanitizedUsers.length > 0) {
-        const sample = sanitizedUsers[0];
+      if (role === "student" && enrichedUsers.length > 0) {
+        const sample = enrichedUsers[0];
         console.log("🔍 ClassLevel Check:", {
           classLevel: sample.classLevel,
           gradeLevel: sample.gradeLevel,
@@ -16139,7 +16199,7 @@ app.get(
 
       res.json({
         success: true,
-        data: sanitizedUsers,
+        data: enrichedUsers,
         meta: {
           total,
           page: parseInt(page),
@@ -16216,27 +16276,53 @@ app.get(
 
       console.log(`📊 Fetching payment info for ${userIds.length} users...`);
 
-      // Fetch latest payment for each user
-      const payments = await PaymentHistory.aggregate([
-        {
-          $match: {
-            userId: { $in: userIds },
+      // ============================================
+      // 🆕 FETCH LATEST PAYMENT + TOTAL PAID FOR EACH USER
+      // ============================================
+      const [latestPayments, totalPaidByUser] = await Promise.all([
+        // Latest payment
+        PaymentHistory.aggregate([
+          {
+            $match: {
+              userId: { $in: userIds },
+            },
           },
-        },
-        {
-          $sort: { createdAt: -1 },
-        },
-        {
-          $group: {
-            _id: "$userId",
-            latestPayment: { $first: "$$ROOT" },
+          {
+            $sort: { createdAt: -1 },
           },
-        },
-      ]);
+          {
+            $group: {
+              _id: "$userId",
+              latestPayment: { $first: "$$ROOT" },
+            },
+          },
+        ]),
 
-      // Create payment map for quick lookup
+        // Total paid (verified registration fees)
+        PaymentHistory.aggregate([
+          {
+            $match: {
+              userId: { $in: userIds },
+              status: "verified",
+              transactionType: "registration_fee",
+            },
+          },
+          {
+            $group: {
+              _id: "$userId",
+              totalPaid: { $sum: "$amount" },
+              paymentCount: { $sum: 1 },
+            },
+          },
+        ]),
+      ]);
+      // ============================================
+      // 🆕 CREATE PAYMENT MAP WITH TOTAL PAID
+      // ============================================
       const paymentMap = {};
-      payments.forEach((p) => {
+
+      // Add latest payment info
+      latestPayments.forEach((p) => {
         const userId = p._id.toString();
         const payment = p.latestPayment;
 
@@ -16251,11 +16337,35 @@ app.get(
           verifiedBy: payment.verifiedBy,
           verifiedAt: payment.verifiedAt,
           createdAt: payment.createdAt,
+          // ✅ Initialize with 0, will be updated below
+          registration_fee_paid: 0,
+          paymentCount: 0,
         };
+      });
+
+      // ✅ Add total paid calculations
+      totalPaidByUser.forEach((p) => {
+        const userId = p._id.toString();
+        if (paymentMap[userId]) {
+          paymentMap[userId].registration_fee_paid = p.totalPaid;
+          paymentMap[userId].paymentCount = p.paymentCount;
+        } else {
+          // User has payments but no latest payment entry (edge case)
+          paymentMap[userId] = {
+            status: "unknown",
+            amount: 0,
+            currency: "TZS",
+            registration_fee_paid: p.totalPaid,
+            paymentCount: p.paymentCount,
+          };
+        }
       });
 
       console.log(
         `✅ Found payment info for ${Object.keys(paymentMap).length} users`
+      );
+      console.log(
+        `💰 Calculated registration_fee_paid for ${totalPaidByUser.length} users`
       );
 
       // Attach payment info to users
@@ -16811,7 +16921,18 @@ app.get(
         .sort({ createdAt: -1 })
         .limit(100);
 
-      res.json({ success: true, data: pendingStudents });
+      // ✅ Enrich with registration_fee_paid
+      const enrichedStudents = await Promise.all(
+        pendingStudents.map(async (student) => {
+          const studentObj = student.toObject();
+          studentObj.registration_fee_paid = await calculateRegistrationFeePaid(
+            student._id
+          );
+          return studentObj;
+        })
+      );
+
+      res.json({ success: true, data: enrichedStudents });
     } catch (error) {
       console.error("❌ Error fetching pending students:", error);
       res
@@ -17843,11 +17964,23 @@ app.get(
         .populate("regionId", "name code")
         .populate("districtId", "name code");
 
+      // ✅ ADD THIS: Enrich with registration_fee_paid
+      const enrichedUsers = await Promise.all(
+        users.map(async (user) => {
+          const userObj = user.toObject();
+          userObj.registration_fee_paid = await calculateRegistrationFeePaid(
+            user._id
+          );
+          delete userObj.password; // Ensure password is removed
+          return userObj;
+        })
+      );
+
       const total = await User.countDocuments(query);
 
       res.json({
         success: true,
-        data: users,
+        data: enrichedUsers,
         meta: {
           total,
           page: parseInt(page),
@@ -18403,9 +18536,6 @@ app.post(
           user.isActive = true;
           user.password = hashedPassword;
 
-          // ✅ REMOVED: user.payment_status = "verified" (field doesn't exist in User schema)
-          // Payment status is tracked in PaymentHistory model only
-
           user.updatedAt = new Date();
           await user.save();
 
@@ -18517,6 +18647,11 @@ app.post(
             console.error(`⚠️ Payment history update error:`, paymentError);
           }
 
+          // ✅ PART 2: Calculate total paid from PaymentHistory
+          const registration_fee_paid = await calculateRegistrationFeePaid(
+            user._id
+          );
+
           // Add to success results
           results.success.push({
             userId: user._id.toString(),
@@ -18527,10 +18662,14 @@ app.post(
             email: user.email,
             smsSent: smsResult.success,
             smsError: smsResult.success ? null : smsResult.error,
+            registration_fee_paid, // ✅ PART 2: Total amount paid
           });
           results.stats.approved++;
 
           console.log(`✅ Successfully approved ${userName}`);
+          console.log(
+            `✅ Successfully approved ${userName} (Paid: TZS ${registration_fee_paid})`
+          );
         } catch (userError) {
           console.error(`❌ Error processing user ${userId}:`, userError);
           results.failed.push({
@@ -20322,6 +20461,21 @@ app.get(
         )
         .populate("reviewedBy", "firstName lastName");
 
+      // ✅ ENRICH WITH PAYMENT DATA
+      const enrichedRequests = await Promise.all(
+        requests.map(async (request) => {
+          const requestObj = request.toObject();
+
+          if (requestObj.studentId) {
+            // Calculate registration fee paid for this student
+            requestObj.studentId.registration_fee_paid =
+              await calculateRegistrationFeePaid(requestObj.studentId._id);
+          }
+
+          return requestObj;
+        })
+      );
+
       const total = await ClassLevelRequest.countDocuments(query);
 
       // Get counts by status
@@ -20344,7 +20498,7 @@ app.get(
 
       res.json({
         success: true,
-        data: requests,
+        data: enrichedRequests, // ✅ Use enriched data instead of requests
         meta: {
           total,
           page: parseInt(page),
@@ -23866,6 +24020,11 @@ app.post(
         userId: user._id,
       }).sort({ createdAt: -1 });
 
+      // ✅ CALCULATE TOTAL PAID FROM PAYMENTHISTORY
+      const registration_fee_paid = await calculateRegistrationFeePaid(
+        user._id
+      );
+
       res.json({
         success: true,
         message: `${
@@ -23880,9 +24039,10 @@ app.post(
           email: user.email,
           smsSent: smsResult.success,
           isActive: user.isActive,
-          payment_status: paymentHistoryRecord?.status || "not_recorded", // ✅ Get from PaymentHistory
+          payment_status: paymentHistoryRecord?.status || "not_recorded",
           payment_verified_at: user.payment_verified_at,
           payment_verified_by: user.payment_verified_by,
+          registration_fee_paid, // ✅ NEW: Total amount paid
         },
       });
     } catch (error) {
