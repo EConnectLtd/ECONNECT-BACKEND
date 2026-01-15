@@ -18666,7 +18666,6 @@ app.post(
           });
           results.stats.approved++;
 
-          console.log(`✅ Successfully approved ${userName}`);
           console.log(
             `✅ Successfully approved ${userName} (Paid: TZS ${registration_fee_paid})`
           );
