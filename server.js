@@ -5182,6 +5182,9 @@ app.post(
               userRole: user.role,
               roleName,
               institutionType: user.institutionType,
+              registrationType: user.registrationType, // ✅ ADD: Package information
+              packageName, // ✅ ADD: Calculated package name
+              requiredAmount, // ✅ ADD: Expected payment amount
               approver,
               timeline,
               message: `${approvalMessage}\n\nWhat happens next:\n✅ ${approver} will review your information\n✅ You'll be notified once approved (usually within ${timeline})\n✅ Login credentials confirmation will be sent via SMS\n\nPlease wait for approval notification.`,
