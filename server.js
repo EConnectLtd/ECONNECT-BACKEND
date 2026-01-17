@@ -399,7 +399,7 @@ const userSchema = new mongoose.Schema({
   regionName: { type: String, trim: true },
   districtName: { type: String, trim: true },
   wardName: { type: String, trim: true },
-  isActive: { type: Boolean, default: true },
+  isActive: { type: Boolean, default: false },
   isEmailVerified: { type: Boolean, default: false },
   isPhoneVerified: { type: Boolean, default: false },
   profileImage: String,
