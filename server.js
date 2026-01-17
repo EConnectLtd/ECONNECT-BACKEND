@@ -3227,36 +3227,26 @@ const isValidObjectId = (id) => {
 };
 
 async function calculateRegistrationFeePaid(userId) {
-  const payments = await PaymentHistory.find({
-    userId: userId,
-    status: "verified",
-  });
-
-  return payments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
-}
-
-// ============================================
-// 🆕 CALCULATE REGISTRATION FEE PAID
-// ============================================
-/**
- * Calculate total registration fee paid from verified PaymentHistory records
- * @param {ObjectId} userId - User ID to calculate payments for
- * @returns {Promise<number>} Total amount paid from verified payments
- */
-async function calculateRegistrationFeePaid(userId) {
   try {
-    const payments = await PaymentHistory.find({
-      userId: userId,
-      status: "verified", // ✅ Only count verified payments
-      transactionType: "registration_fee", // ✅ Only count registration fees
-    });
+    const result = await PaymentHistory.aggregate([
+      {
+        $match: {
+          userId: new mongoose.Types.ObjectId(userId),
+          status: { $in: ["verified", "partial"] }, // ✅ FIXED: Include BOTH statuses
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" },
+        },
+      },
+    ]);
 
-    const total = payments.reduce((sum, payment) => {
-      return sum + (payment.amount || 0);
-    }, 0);
+    const total = result[0]?.total || 0;
 
     console.log(
-      `💰 User ${userId}: Calculated registration_fee_paid = ${total} (from ${payments.length} verified payments)`
+      `💰 User ${userId}: Calculated registration_fee_paid = ${total} (from verified + partial payments)`
     );
 
     return total;
@@ -24209,16 +24199,31 @@ app.post(
         });
       }
 
-      // ✅ Admin can approve users regardless of payment status
-      // Payment verification is optional and tracked separately in PaymentHistory
+      // ✅ FIXED: Conditional activation based on role
+      const rolesRequiringPayment = ["student", "entrepreneur", "nonstudent"];
+      const requiresPayment = rolesRequiringPayment.includes(user.role);
 
-      // Generate new password
+      // Generate new password for all approved users
       const newPassword = generateRandomPassword();
       const hashedPassword = await hashPassword(newPassword);
 
-      // Activate user and update verification fields
-      user.isActive = true;
+      // Update password
       user.password = hashedPassword;
+
+      // ✅ CRITICAL: Only activate users who DON'T require payment
+      if (!requiresPayment) {
+        user.isActive = true;
+        user.payment_verified_by = req.user.id;
+        user.payment_verified_at = new Date();
+        console.log(
+          `✅ User activated (no payment required): ${user.username}`
+        );
+      } else {
+        user.isActive = false; // Keep suspended until payment
+        console.log(
+          `⚠️ User approved but suspended (requires payment): ${user.username}`
+        );
+      }
 
       // ✅ REMOVED: user.payment_status = "verified" (field doesn't exist in User schema)
       // Payment status is now tracked exclusively in PaymentHistory model
@@ -24266,14 +24271,22 @@ app.post(
           reference: `approval_${user._id}`,
         });
       }
-
-      // Create in-app notification
-      await createNotification(
-        user._id,
-        "Account Approved! 🎉",
-        `Your ${user.role} account has been approved! Check your SMS at ${user.phoneNumber} for your login password.`,
-        "success"
-      );
+      // ✅ FIXED: Different notifications for payment vs non-payment users
+      if (requiresPayment) {
+        await createNotification(
+          user._id,
+          "Account Approved - Payment Required 💳",
+          `Your ${user.role} account has been approved! Your password has been sent to ${user.phoneNumber}. Please complete your payment to activate your account.`,
+          "warning"
+        );
+      } else {
+        await createNotification(
+          user._id,
+          "Account Approved & Activated! 🎉",
+          `Your ${user.role} account has been approved and activated! Check your SMS at ${user.phoneNumber} for your login password.`,
+          "success"
+        );
+      }
 
       // Update invoice status if exists
       if (
@@ -24346,9 +24359,15 @@ app.post(
 
       res.json({
         success: true,
-        message: `${
-          user.role.charAt(0).toUpperCase() + user.role.slice(1)
-        } approved successfully. Password sent via SMS to ${user.phoneNumber}.`,
+        message: requiresPayment
+          ? `${
+              user.role.charAt(0).toUpperCase() + user.role.slice(1)
+            } approved. Password sent to ${
+              user.phoneNumber
+            }. User will be activated after payment verification.`
+          : `${
+              user.role.charAt(0).toUpperCase() + user.role.slice(1)
+            } approved and activated. Password sent to ${user.phoneNumber}.`,
         data: {
           userId: user._id,
           username: user.username,
@@ -24659,10 +24678,10 @@ app.post(
 );
 
 // ============================================
-// RECORD PAYMENT ENDPOINT (for PaymentModal)
+// FIXED: RECORD PAYMENT ENDPOINT with Partial Payment Support
 // ============================================
 
-// POST Record Payment (SuperAdmin)
+// POST Record Payment (SuperAdmin) - CORRECTED VERSION
 app.post(
   "/api/superadmin/payment/record",
   authenticateToken,
@@ -24670,6 +24689,7 @@ app.post(
   [
     body("userId").isMongoId().withMessage("Valid user ID is required"),
     body("amount").isNumeric().withMessage("Valid amount is required"),
+    body("totalRequired").optional().isNumeric(), // ✅ NEW: Total amount required
     body("currency").optional().isString(),
     body("transactionType").optional().isString(),
     body("method").optional().isString(),
@@ -24682,6 +24702,7 @@ app.post(
       const {
         userId,
         amount,
+        totalRequired, // ✅ NEW: Accept totalRequired from PaymentModal
         currency,
         transactionType,
         method,
@@ -24690,6 +24711,11 @@ app.post(
       } = req.body;
 
       console.log(`💳 Payment record request for user: ${userId}`);
+      console.log(
+        `💰 Amount: ${amount}, Total Required: ${
+          totalRequired || "Not specified"
+        }`
+      );
 
       // Validate required fields
       if (!userId || !amount) {
@@ -24711,9 +24737,46 @@ app.post(
       const userName =
         `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
         user.username;
-      console.log(
-        `💰 Recording payment for ${userName}: ${currency || "TZS"} ${amount}`
-      );
+
+      // ✅ DETERMINE TOTAL REQUIRED AMOUNT
+      let actualTotalRequired = totalRequired;
+
+      // If totalRequired not provided, calculate based on registration type
+      if (!actualTotalRequired) {
+        const registrationFees = {
+          normal: 15000,
+          premier: 70000,
+          silver: 49000,
+          diamond: 55000,
+        };
+
+        actualTotalRequired = registrationFees[user.registration_type] || 15000;
+        console.log(
+          `📊 Calculated totalRequired from registration_type: ${actualTotalRequired}`
+        );
+      }
+
+      // ✅ CALCULATE TOTAL ALREADY PAID
+      const totalPaid = await calculateRegistrationFeePaid(userId);
+      console.log(`💵 Total already paid: ${totalPaid}`);
+
+      // ✅ CALCULATE NEW TOTAL AFTER THIS PAYMENT
+      const newTotal = totalPaid + parseFloat(amount);
+      console.log(`💵 New total after payment: ${newTotal}`);
+
+      // ✅ DETERMINE PAYMENT STATUS
+      let paymentStatus;
+      let shouldActivateUser;
+
+      if (newTotal >= actualTotalRequired) {
+        paymentStatus = "verified"; // Full payment complete
+        shouldActivateUser = true;
+        console.log(`✅ FULL PAYMENT - User will be activated`);
+      } else {
+        paymentStatus = "partial"; // Partial payment
+        shouldActivateUser = false;
+        console.log(`⚠️ PARTIAL PAYMENT - User will remain suspended`);
+      }
 
       // ✅ GENERATE INVOICE NUMBER
       const invoiceNumber = `INV-${Date.now()}-${Math.random()
@@ -24726,7 +24789,6 @@ app.post(
       let description =
         notes || `Manual payment recorded by ${req.user.username}`;
 
-      // Map transaction types to invoice types
       const typeMapping = {
         registration_fee: "ctm_membership",
         membership_fee: "ctm_membership",
@@ -24740,55 +24802,54 @@ app.post(
 
       invoiceType = typeMapping[transactionType] || "other";
 
-      // Better description based on type
       if (
         transactionType === "registration_fee" ||
         transactionType === "ctm_membership"
       ) {
         description = user.registration_type
-          ? `${user.registration_type.toUpperCase()} Registration Payment`
-          : "CTM Club Membership Payment";
+          ? `${user.registration_type.toUpperCase()} Registration Payment${
+              paymentStatus === "partial" ? " (Partial)" : ""
+            }`
+          : `CTM Club Membership Payment${
+              paymentStatus === "partial" ? " (Partial)" : ""
+            }`;
       } else if (transactionType === "certificate_fee") {
         description = "Certificate Fee Payment";
       } else if (transactionType === "event_fee") {
         description = "Event Registration Payment";
       } else if (notes) {
         description = notes;
-      } else {
-        description = `Manual payment recorded by ${req.user.username}`;
       }
 
-      // ✅ CREATE INVOICE WITH ALL REQUIRED FIELDS
+      // ✅ CREATE INVOICE
       const invoice = await Invoice.create({
         user_id: userId,
-        invoiceNumber, // ✅ REQUIRED
-        type: invoiceType, // ✅ REQUIRED
-        description, // ✅ REQUIRED
+        invoiceNumber,
+        type: invoiceType,
+        description,
         amount: parseFloat(amount),
         currency: currency || "TZS",
-        status: "paid",
-        paidDate: new Date(),
-        dueDate: new Date(), // Already paid, so due date = paid date
+        status: paymentStatus === "verified" ? "paid" : "partial", // ✅ NEW: partial status for invoices too
+        paidDate: paymentStatus === "verified" ? new Date() : null,
+        dueDate: new Date(),
         academicYear: new Date().getFullYear().toString(),
       });
 
       console.log(
-        `✅ Invoice created: ${invoiceNumber} for ${amount} ${
-          currency || "TZS"
-        }`
+        `✅ Invoice created: ${invoiceNumber} - Status: ${invoice.status}`
       );
 
-      // ✅ CREATE PAYMENT HISTORY RECORD
+      // ✅ CREATE PAYMENT HISTORY RECORD WITH CORRECT STATUS
       const paymentHistory = await PaymentHistory.create({
         userId,
         invoiceId: invoice._id,
         transactionType: transactionType || "registration_fee",
         amount: parseFloat(amount),
         currency: currency || "TZS",
-        status: "verified",
+        status: paymentStatus, // ✅ FIXED: Uses "partial" or "verified" based on amount
         paymentDate: new Date(),
-        verifiedAt: new Date(),
-        verifiedBy: req.user.id,
+        verifiedAt: paymentStatus === "verified" ? new Date() : null, // ✅ Only set if verified
+        verifiedBy: paymentStatus === "verified" ? req.user.id : null, // ✅ Only set if verified
         description,
         metadata: {
           recordedBy: req.user.username,
@@ -24796,48 +24857,81 @@ app.post(
           method: method || "manual",
           reference: reference || invoiceNumber,
           notes,
+          totalRequired: actualTotalRequired,
+          totalPaidBefore: totalPaid,
+          totalPaidAfter: newTotal,
+          remainingBalance: Math.max(0, actualTotalRequired - newTotal),
+          isPartialPayment: paymentStatus === "partial",
           ipAddress: req.ip || req.connection?.remoteAddress,
           userAgent: req.get("user-agent"),
         },
         statusHistory: [
           {
-            status: "verified",
+            status: paymentStatus,
             changedBy: req.user.id,
             changedAt: new Date(),
-            reason: "Manual payment recorded by admin",
+            reason:
+              paymentStatus === "partial"
+                ? `Partial payment recorded (${amount}/${actualTotalRequired} TZS)`
+                : "Full payment recorded by admin",
             notes,
           },
         ],
       });
 
-      console.log(`✅ Payment history created: ${paymentHistory._id}`);
+      console.log(
+        `✅ Payment history created: ${paymentHistory._id} - Status: ${paymentStatus}`
+      );
 
-      // ✅ ACTIVATE USER IF NOT ALREADY ACTIVE
-      if (!user.isActive) {
+      // ✅ CONDITIONALLY ACTIVATE USER (only for full payments)
+      if (shouldActivateUser && !user.isActive) {
         user.isActive = true;
         user.payment_verified_by = req.user.id;
         user.payment_verified_at = new Date();
         await user.save();
-        console.log(`✅ User activated: ${userName}`);
+        console.log(`✅ User ACTIVATED: ${userName}`);
+      } else if (!shouldActivateUser) {
+        // Ensure user remains suspended for partial payments
+        user.isActive = false;
+        await user.save();
+        console.log(`⚠️ User remains SUSPENDED (partial payment): ${userName}`);
       }
 
-      // ✅ CREATE NOTIFICATION
-      await createNotification(
-        userId,
-        "Payment Recorded",
-        `Your payment of ${
-          currency || "TZS"
-        } ${amount} has been recorded successfully.`,
-        "success"
-      );
+      // ✅ CREATE APPROPRIATE NOTIFICATION
+      if (paymentStatus === "verified") {
+        await createNotification(
+          userId,
+          "Payment Verified - Account Activated! ✅",
+          `Your full payment of ${
+            currency || "TZS"
+          } ${amount} has been recorded. Your account is now active!`,
+          "success"
+        );
+      } else {
+        const remaining = actualTotalRequired - newTotal;
+        await createNotification(
+          userId,
+          "Partial Payment Recorded 💳",
+          `Your payment of ${
+            currency || "TZS"
+          } ${amount} has been recorded. Remaining balance: ${
+            currency || "TZS"
+          } ${remaining.toLocaleString()}. Your account will be activated after full payment.`,
+          "warning"
+        );
+      }
 
       // ✅ LOG ACTIVITY
       await logActivity(
         req.user.id,
         "PAYMENT_RECORDED",
-        `Manually recorded payment for ${userName}: ${
+        `Recorded ${paymentStatus} payment for ${userName}: ${
           currency || "TZS"
-        } ${amount}`,
+        } ${amount}${
+          paymentStatus === "partial"
+            ? ` (${newTotal}/${actualTotalRequired})`
+            : ""
+        }`,
         req,
         {
           userId,
@@ -24848,12 +24942,22 @@ app.post(
           transactionType,
           method,
           reference,
+          paymentStatus,
+          totalRequired: actualTotalRequired,
+          totalPaid: newTotal,
+          remainingBalance: Math.max(0, actualTotalRequired - newTotal),
+          userActivated: shouldActivateUser,
         }
       );
 
       res.status(201).json({
         success: true,
-        message: "Payment recorded successfully",
+        message:
+          paymentStatus === "verified"
+            ? "Full payment recorded successfully - User activated"
+            : `Partial payment recorded - ${currency || "TZS"} ${(
+                actualTotalRequired - newTotal
+              ).toLocaleString()} remaining`,
         data: {
           invoice,
           paymentHistory,
@@ -24861,6 +24965,15 @@ app.post(
             id: user._id,
             name: userName,
             isActive: user.isActive,
+          },
+          paymentSummary: {
+            amountPaid: parseFloat(amount),
+            totalPaidBefore: totalPaid,
+            totalPaidAfter: newTotal,
+            totalRequired: actualTotalRequired,
+            remainingBalance: Math.max(0, actualTotalRequired - newTotal),
+            status: paymentStatus,
+            isFullyPaid: paymentStatus === "verified",
           },
         },
       });
