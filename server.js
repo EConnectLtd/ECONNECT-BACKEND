@@ -24773,7 +24773,7 @@ app.post(
         shouldActivateUser = true;
         console.log(`✅ FULL PAYMENT - User will be activated`);
       } else {
-        paymentStatus = "partial"; // Partial payment
+        paymentStatus = "partially_paid"; // ✅ FIXED - Now matches schema!
         shouldActivateUser = false;
         console.log(`⚠️ PARTIAL PAYMENT - User will remain suspended`);
       }
@@ -24829,7 +24829,7 @@ app.post(
         description,
         amount: parseFloat(amount),
         currency: currency || "TZS",
-        status: paymentStatus === "verified" ? "paid" : "partial", // ✅ NEW: partial status for invoices too
+        status: paymentStatus === "verified" ? "paid" : "partially_paid", // ✅ NEW: partial status for invoices too
         paidDate: paymentStatus === "verified" ? new Date() : null,
         dueDate: new Date(),
         academicYear: new Date().getFullYear().toString(),
