@@ -1,9 +1,3 @@
-// ============================================
-// ECONNECT MULTI-SCHOOL & TALENT MANAGEMENT SYSTEM
-// Complete Backend Server - ALL FEATURES
-// Version: 2.0.0
-// ============================================
-
 const dotenv = require("dotenv");
 // Load environment variables
 dotenv.config();
@@ -25,6 +19,14 @@ const { applyErrorHandlers } = require("./middleware/errorHandler");
 const { applySanitization } = require("./utils/sanitizer");
 const { validateObjectId } = require("./middleware/validation");
 const { accessLogger } = require("./utils/logger");
+const {
+  formatStatusCounts,
+  isValidAccountStatus,
+  isValidPaymentStatus,
+  getStatusLabel,
+  shouldAutoActivate,
+  calculatePaymentStatus,
+} = require("./utils/statusHelpers");
 
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -75,7 +77,7 @@ app.use(
         throw new Error("Request entity too large");
       }
     },
-  })
+  }),
 );
 
 // ============================================
@@ -148,7 +150,7 @@ const storage = multer.diskStorage({
 const fileFilter = (req, file, cb) => {
   const allowedTypes = /jpeg|jpg|png|gif|pdf|doc|docx/;
   const extname = allowedTypes.test(
-    path.extname(file.originalname).toLowerCase()
+    path.extname(file.originalname).toLowerCase(),
   );
   const mimetype = allowedTypes.test(file.mimetype);
 
@@ -157,8 +159,8 @@ const fileFilter = (req, file, cb) => {
   } else {
     cb(
       new Error(
-        "Invalid file type. Only JPEG, PNG, GIF, PDF, DOC, DOCX are allowed."
-      )
+        "Invalid file type. Only JPEG, PNG, GIF, PDF, DOC, DOCX are allowed.",
+      ),
     );
   }
 };
@@ -227,7 +229,7 @@ app.use(
       }
       return compression.filter(req, res);
     },
-  })
+  }),
 );
 console.log("✅ Compression middleware enabled");
 
@@ -244,7 +246,7 @@ app.use(
           "https://www.econnect.co.tz",
         ],
     credentials: true,
-  })
+  }),
 );
 console.log("✅ CORS configured");
 
@@ -322,14 +324,17 @@ mongoose.connection.on("disconnected", () => {
 });
 
 // Log pool stats every 5 minutes
-setInterval(() => {
-  const pool = mongoose.connection.db?.serverConfig?.s?.pool;
-  if (pool) {
-    console.log(
-      `📊 DB Pool Stats: Available: ${pool.availableConnections}, In Use: ${pool.inUseConnections}`
-    );
-  }
-}, 5 * 60 * 1000);
+setInterval(
+  () => {
+    const pool = mongoose.connection.db?.serverConfig?.s?.pool;
+    if (pool) {
+      console.log(
+        `📊 DB Pool Stats: Available: ${pool.availableConnections}, In Use: ${pool.inUseConnections}`,
+      );
+    }
+  },
+  5 * 60 * 1000,
+);
 
 const publicRateLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 minute
@@ -361,7 +366,9 @@ function generateRandomPassword() {
 // MONGODB SCHEMAS
 // ============================================
 
-// User Schema (Enhanced with all roles) - ✅ FIXED TO MATCH FRONTEND
+// ============================================
+// 🆕 PHASE 2: USER SCHEMA WITH NEW STATUS SYSTEM
+// ============================================
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true, trim: true },
   email: {
@@ -385,7 +392,7 @@ const userSchema = new mongoose.Schema({
       "national_official",
       "tamisemi",
       "super_admin",
-      "nonstudent", // ✅ ADDED: Missing role from NonStudentRegistrationForm
+      "nonstudent",
     ],
     required: true,
   },
@@ -399,9 +406,33 @@ const userSchema = new mongoose.Schema({
   regionName: { type: String, trim: true },
   districtName: { type: String, trim: true },
   wardName: { type: String, trim: true },
-  isActive: { type: Boolean, default: false },
+
+  // ============================================
+  // 🆕 NEW STATUS SYSTEM (PHASE 2)
+  // ============================================
+  accountStatus: {
+    type: String,
+    enum: ["active", "inactive", "suspended"],
+    default: "inactive",
+    required: true,
+    index: true,
+  },
+
+  paymentStatus: {
+    type: String,
+    enum: ["paid", "partial_paid", "no_payment", "overdue"],
+    default: "no_payment",
+    required: true,
+    index: true,
+  },
+
+  // ============================================
+  // OLD FIELDS (KEPT FOR BACKWARD COMPATIBILITY)
+  // ============================================
+  isActive: { type: Boolean, default: false }, // Synced with accountStatus
   isEmailVerified: { type: Boolean, default: false },
   isPhoneVerified: { type: Boolean, default: false },
+
   profileImage: String,
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
@@ -477,21 +508,12 @@ const userSchema = new mongoose.Schema({
   institutionType: { type: String, enum: ["government", "private"] },
   classLevel: String,
 
-  // ============================================
-  // ✅ FIXED: Registration Type (CRITICAL FIX)
-  // ============================================
   registration_type: {
     type: String,
-    enum: [
-      "ctm-club", // ✅ CHANGED FROM "normal" - CTM Club at School/University
-      "silver", // EConnect Talent Hub - Silver Package
-      "gold", // EConnect Talent Hub - Gold Package
-      "platinum", // EConnect Talent Hub - Platinum Package
-    ],
-    default: "ctm-club", // ✅ ADDED: Default value changed from "normal"
+    enum: ["ctm-club", "silver", "gold", "platinum"],
+    default: "ctm-club",
   },
 
-  // ✅ ADDED: Alias field for frontend compatibility (camelCase version)
   registrationType: {
     type: String,
     enum: ["ctm-club", "silver", "gold", "platinum"],
@@ -502,17 +524,7 @@ const userSchema = new mongoose.Schema({
   next_billing_date: Date,
   is_ctm_student: { type: Boolean, default: true },
 
-  // ============================================
-  // ✅ FIXED: Payment fields
-  // ============================================
-
-  payment_date: Date, // ✅ ADDED: Field to store payment date
-
-  // ✅ REMOVED: payment_status field
-  // This field caused ValidationError when trying to set 'submitted' status
-  // Payment status is now tracked exclusively in PaymentHistory model
-  // where it has proper enum: ['pending', 'verified', 'rejected', 'submitted']
-
+  payment_date: Date,
   payment_verified_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   payment_verified_at: Date,
 
@@ -524,11 +536,11 @@ const userSchema = new mongoose.Schema({
 });
 
 // ============================================
-// ✅ ADDED: Pre-save middleware to sync registration type fields
+// 🆕 PHASE 2: PRE-SAVE MIDDLEWARE FOR STATUS SYNC
 // ============================================
 userSchema.pre("save", async function () {
   try {
-    // Sync registrationType with registration_type for consistency
+    // 1. Sync registrationType with registration_type
     if (this.registration_type && !this.registrationType) {
       this.registrationType = this.registration_type;
     } else if (this.registrationType && !this.registration_type) {
@@ -540,7 +552,32 @@ userSchema.pre("save", async function () {
       this.registration_type = "ctm-club";
       this.registrationType = "ctm-club";
     }
-    // ✅ No need for next() - async functions handle flow automatically
+
+    // ============================================
+    // 🆕 2. SYNC isActive WITH accountStatus
+    // ============================================
+    // If accountStatus changes, update isActive
+    if (this.isModified("accountStatus")) {
+      this.isActive = this.accountStatus === "active";
+      console.log(
+        `🔄 Synced isActive: ${this.isActive} from accountStatus: ${this.accountStatus}`,
+      );
+    }
+
+    // If isActive changes manually (backward compatibility), update accountStatus
+    if (this.isModified("isActive") && !this.isModified("accountStatus")) {
+      if (this.isActive) {
+        this.accountStatus = "active";
+      } else {
+        // Keep existing accountStatus if it's suspended, otherwise set to inactive
+        if (this.accountStatus !== "suspended") {
+          this.accountStatus = "inactive";
+        }
+      }
+      console.log(
+        `🔄 Synced accountStatus: ${this.accountStatus} from isActive: ${this.isActive}`,
+      );
+    }
   } catch (error) {
     console.error("❌ CRITICAL: userSchema pre-save error:", {
       error: error.message,
@@ -548,7 +585,7 @@ userSchema.pre("save", async function () {
       userId: this._id,
       username: this.username,
     });
-    throw error; // ✅ Re-throw to Mongoose
+    throw error;
   }
 });
 
@@ -557,6 +594,7 @@ userSchema.index({ schoolId: 1, role: 1 });
 userSchema.index({ regionId: 1, role: 1 });
 userSchema.index({ districtId: 1, role: 1 });
 userSchema.index({ isActive: 1, role: 1 });
+userSchema.index({ accountStatus: 1, paymentStatus: 1, role: 1 }); // 🆕 NEW INDEX
 userSchema.index({ registration_type: 1, next_billing_date: 1 });
 userSchema.index({ createdAt: -1 });
 userSchema.index({ lastLogin: -1 });
@@ -588,7 +626,7 @@ const classLevelRequestSchema = new mongoose.Schema({
 
 const ClassLevelRequest = mongoose.model(
   "ClassLevelRequest",
-  classLevelRequestSchema
+  classLevelRequestSchema,
 );
 
 const schoolSchema = new mongoose.Schema({
@@ -605,13 +643,12 @@ const schoolSchema = new mongoose.Schema({
     enum: [
       "primary",
       "secondary",
-      "vocational training center", // ✅ NEW
-      "technical college", // ✅ NEW
-      "general college", // ✅ NEW
+      "vocational training center",
+      "technical college",
+      "general college",
       "university",
-      "university college", // ✅ NEW
-      "non-university high learning institutions", // ✅ NEW
-      // Backward compatibility
+      "university college",
+      "non-university high learning institutions",
       "vocational",
       "special",
       "technical",
@@ -620,7 +657,6 @@ const schoolSchema = new mongoose.Schema({
     ],
     required: true,
   },
-  // ✅ ADD THIS FIELD
   ownership: {
     type: String,
     required: true,
@@ -640,17 +676,16 @@ const schoolSchema = new mongoose.Schema({
     index: true,
   },
   wardId: {
-    // ✅ UPDATED
     type: mongoose.Schema.Types.ObjectId,
     ref: "Ward",
-    required: true, // ✅ NOW REQUIRED
-    index: true, // ✅ INDEXED FOR PERFORMANCE
+    required: true,
+    index: true,
   },
-  address: String, // Optional
-  phoneNumber: String, // Optional
-  email: { type: String, lowercase: true }, // Optional
-  principalName: String, // ✅ Optional (removed from form but kept in schema)
-  establishedYear: Number, // ✅ Optional (removed from form but kept in schema)
+  address: String,
+  phoneNumber: String,
+  email: { type: String, lowercase: true },
+  principalName: String,
+  establishedYear: Number,
   totalStudents: { type: Number, default: 0 },
   totalTeachers: { type: Number, default: 0 },
   isActive: { type: Boolean, default: true, index: true },
@@ -681,7 +716,7 @@ const regionSchema = new mongoose.Schema({
     trim: true,
   },
   population: Number,
-  area: Number, // in square kilometers
+  area: Number,
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now },
 });
@@ -745,8 +780,8 @@ const subjectSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   code: { type: String, trim: true, uppercase: true },
   description: String,
-  category: String, // e.g., "Science", "Arts", "Mathematics"
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School" }, // Optional: school-specific subjects
+  category: String,
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School" },
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
@@ -820,9 +855,9 @@ const studentTalentSchema = new mongoose.Schema({
 });
 
 studentTalentSchema.index({ studentId: 1, talentId: 1 }, { unique: true });
-studentTalentSchema.index({ schoolId: 1, status: 1 }); // For school-based queries
-studentTalentSchema.index({ teacherId: 1 }); // For teacher queries
-studentTalentSchema.index({ registeredAt: -1 }); // For sorting by registration date
+studentTalentSchema.index({ schoolId: 1, status: 1 });
+studentTalentSchema.index({ teacherId: 1 });
+studentTalentSchema.index({ registeredAt: -1 });
 
 // Book Schema (Books Store)
 const bookSchema = new mongoose.Schema({
@@ -1509,7 +1544,7 @@ attendanceRecordSchema.index({ studentId: 1, date: 1 });
 
 const AttendanceRecord = mongoose.model(
   "AttendanceRecord",
-  attendanceRecordSchema
+  attendanceRecordSchema,
 );
 
 // ============================================
@@ -1579,12 +1614,12 @@ const assignmentSubmissionSchema = new mongoose.Schema({
 
 assignmentSubmissionSchema.index(
   { assignmentId: 1, studentId: 1 },
-  { unique: true }
+  { unique: true },
 );
 
 const AssignmentSubmission = mongoose.model(
   "AssignmentSubmission",
-  assignmentSubmissionSchema
+  assignmentSubmissionSchema,
 );
 
 const invoiceSchema = new mongoose.Schema(
@@ -1676,7 +1711,7 @@ const invoiceSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
 
 const Invoice = mongoose.model("Invoice", invoiceSchema);
@@ -1996,7 +2031,7 @@ const paymentHistorySchema = new mongoose.Schema(
   {
     timestamps: true, // Adds createdAt and updatedAt automatically
     collection: "paymenthistories",
-  }
+  },
 );
 
 // ============================================
@@ -2063,7 +2098,7 @@ paymentHistorySchema.methods.changeStatus = function (
   newStatus,
   changedBy,
   reason = "",
-  notes = ""
+  notes = "",
 ) {
   this.status = newStatus;
 
@@ -2179,7 +2214,7 @@ paymentHistorySchema.statics.getUserPaymentSummary = async function (userId) {
 paymentHistorySchema.statics.getPaymentStats = async function (
   startDate,
   endDate,
-  filters = {}
+  filters = {},
 ) {
   const matchQuery = {
     isDeleted: false,
@@ -2212,7 +2247,7 @@ paymentHistorySchema.statics.getPaymentStats = async function (
 
 // ✅ NEW: Get unreconciled payments
 paymentHistorySchema.statics.getUnreconciledPayments = async function (
-  schoolId = null
+  schoolId = null,
 ) {
   const query = {
     reconciled: false,
@@ -2339,7 +2374,7 @@ const paymentReminderSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
 
 paymentReminderSchema.index({ userId: 1, sentAt: -1 });
@@ -2347,7 +2382,7 @@ paymentReminderSchema.index({ invoiceId: 1 });
 
 const PaymentReminder = mongoose.model(
   "PaymentReminder",
-  paymentReminderSchema
+  paymentReminderSchema,
 );
 
 const smsLogSchema = new mongoose.Schema({
@@ -2387,7 +2422,7 @@ const BookPurchase = mongoose.model("BookPurchase", bookPurchaseSchema);
 const Event = mongoose.model("Event", eventSchema);
 const EventRegistration = mongoose.model(
   "EventRegistration",
-  eventRegistrationSchema
+  eventRegistrationSchema,
 );
 const Business = mongoose.model("Business", businessSchema);
 const Product = mongoose.model("Product", productSchema);
@@ -2395,7 +2430,7 @@ const Transaction = mongoose.model("Transaction", transactionSchema);
 const Revenue = mongoose.model("Revenue", revenueSchema);
 const PerformanceRecord = mongoose.model(
   "PerformanceRecord",
-  performanceRecordSchema
+  performanceRecordSchema,
 );
 const Notification = mongoose.model("Notification", notificationSchema);
 const ActivityLog = mongoose.model("ActivityLog", activityLogSchema);
@@ -2830,14 +2865,14 @@ const Award = mongoose.model("Award", awardSchema);
 const Ranking = mongoose.model("Ranking", rankingSchema);
 const TermsAcceptance = mongoose.model(
   "TermsAcceptance",
-  termsAcceptanceSchema
+  termsAcceptanceSchema,
 );
 const Class = mongoose.model("Class", classSchema);
 const Exam = mongoose.model("Exam", examSchema);
 const WorkReport = mongoose.model("WorkReport", workReportSchema);
 const PermissionRequest = mongoose.model(
   "PermissionRequest",
-  permissionRequestSchema
+  permissionRequestSchema,
 );
 const Todo = mongoose.model("Todo", todoSchema);
 
@@ -2868,7 +2903,7 @@ function generateToken(user) {
       districtId: user.districtId,
     },
     JWT_SECRET,
-    { expiresIn: "7d" }
+    { expiresIn: "7d" },
   );
 }
 
@@ -2904,7 +2939,7 @@ async function createNotification(
   message,
   type = "info",
   actionUrl = null,
-  metadata = {}
+  metadata = {},
 ) {
   try {
     const notification = await Notification.create({
@@ -3069,7 +3104,7 @@ io.on("connection", (socket) => {
         "New Message",
         `You have a new message from ${data.senderName || "someone"}`,
         "message",
-        `/messages/${senderId}`
+        `/messages/${senderId}`,
       );
     } catch (error) {
       console.error("❌ Message error:", error);
@@ -3091,7 +3126,7 @@ io.on("connection", (socket) => {
       });
 
       const populatedMessage = await GroupMessage.findById(
-        message._id
+        message._id,
       ).populate("senderId", "firstName lastName profileImage");
 
       // Emit to all group members
@@ -3111,7 +3146,7 @@ io.on("connection", (socket) => {
           isRead: true,
           readAt: new Date(),
         },
-        { new: true }
+        { new: true },
       );
 
       if (message) {
@@ -3246,14 +3281,14 @@ async function calculateRegistrationFeePaid(userId) {
     const total = result[0]?.total || 0;
 
     console.log(
-      `💰 User ${userId}: Calculated registration_fee_paid = ${total} (from verified + partial payments)`
+      `💰 User ${userId}: Calculated registration_fee_paid = ${total} (from verified + partial payments)`,
     );
 
     return total;
   } catch (error) {
     console.error(
       `❌ Error calculating registration_fee_paid for user ${userId}:`,
-      error
+      error,
     );
     return 0; // Return 0 on error to avoid breaking the response
   }
@@ -3450,7 +3485,7 @@ app.post(
         } catch (err) {
           console.warn(
             "⚠️ Location ObjectId lookup failed (non-critical):",
-            err.message
+            err.message,
           );
         }
       }
@@ -3515,7 +3550,7 @@ app.post(
             }
           } catch (err) {
             console.warn(
-              "⚠️ Parent location ObjectId lookup failed (non-critical)"
+              "⚠️ Parent location ObjectId lookup failed (non-critical)",
             );
           }
         }
@@ -3528,7 +3563,7 @@ app.post(
         userData.classLevel = teacher.teaching_level;
 
         console.log(
-          `✅ Teacher subjects saved: ${userData.subjects.join(", ")}`
+          `✅ Teacher subjects saved: ${userData.subjects.join(", ")}`,
         );
         if (userData.otherSubjects) {
           console.log(`✅ Other subjects: ${userData.otherSubjects}`);
@@ -3576,7 +3611,7 @@ app.post(
         if (role === "entrepreneur") {
           const smsResult = await smsService.sendEntrepreneurRegistrationSMS(
             phone,
-            userName
+            userName,
           );
 
           if (smsResult.success) {
@@ -3593,7 +3628,7 @@ app.post(
           } else {
             console.warn(
               `⚠️ Failed to send entrepreneur SMS to ${phone}:`,
-              smsResult.error
+              smsResult.error,
             );
             await SMSLog.create({
               userId: user._id,
@@ -3627,7 +3662,7 @@ app.post(
 
             // Only Silver, Gold, Platinum require payment
             requiresPayment = ["silver", "gold", "platinum"].includes(
-              student.registration_type
+              student.registration_type,
             );
           }
 
@@ -3635,12 +3670,12 @@ app.post(
             phone,
             userName,
             requiresPayment,
-            packageType
+            packageType,
           );
 
           if (smsResult.success) {
             console.log(
-              `📱 Student registration SMS sent to ${phone} (${packageType})`
+              `📱 Student registration SMS sent to ${phone} (${packageType})`,
             );
             await SMSLog.create({
               userId: user._id,
@@ -3654,7 +3689,7 @@ app.post(
           } else {
             console.warn(
               `⚠️ Failed to send student SMS to ${phone}:`,
-              smsResult.error
+              smsResult.error,
             );
             await SMSLog.create({
               userId: user._id,
@@ -3674,7 +3709,7 @@ app.post(
         if (role === "teacher") {
           const smsResult = await smsService.sendTeacherRegistrationSMS(
             phone,
-            userName
+            userName,
           );
 
           if (smsResult.success) {
@@ -3691,7 +3726,7 @@ app.post(
           } else {
             console.warn(
               `⚠️ Failed to send teacher SMS to ${phone}:`,
-              smsResult.error
+              smsResult.error,
             );
             await SMSLog.create({
               userId: user._id,
@@ -3723,7 +3758,7 @@ app.post(
           const smsResult = await smsService.sendSMS(
             phone,
             smsMessage,
-            `${role}_registration`
+            `${role}_registration`,
           );
 
           if (smsResult.success) {
@@ -3769,7 +3804,7 @@ app.post(
         talentsArray.length > 0
       ) {
         console.log(
-          `🎯 Processing ${talentsArray.length} talents for ${role} ${user._id}`
+          `🎯 Processing ${talentsArray.length} talents for ${role} ${user._id}`,
         );
 
         try {
@@ -3807,7 +3842,7 @@ app.post(
                 });
                 savedTalentsCount++;
                 console.log(
-                  `✅ Created StudentTalent: ${talentName} for ${role} ${user._id}`
+                  `✅ Created StudentTalent: ${talentName} for ${role} ${user._id}`,
                 );
               } else {
                 console.log(`⚠️ StudentTalent already exists: ${talentName}`);
@@ -3818,7 +3853,7 @@ app.post(
           }
 
           console.log(
-            `✅ Successfully saved ${savedTalentsCount}/${talentsArray.length} talents for ${role} ${user._id}`
+            `✅ Successfully saved ${savedTalentsCount}/${talentsArray.length} talents for ${role} ${user._id}`,
           );
         } catch (talentError) {
           console.error(`❌ Error saving ${role} talents:`, talentError);
@@ -3826,7 +3861,7 @@ app.post(
         }
       } else {
         console.log(
-          `ℹ️ No talents provided for ${role} ${user._id} - skipping (talents are optional)`
+          `ℹ️ No talents provided for ${role} ${user._id} - skipping (talents are optional)`,
         );
       }
 
@@ -3891,7 +3926,7 @@ app.post(
           });
 
           console.log(
-            `💰 Invoice created: ${invoiceNumber} for ${finalAmount} TZS`
+            `💰 Invoice created: ${invoiceNumber} for ${finalAmount} TZS`,
           );
 
           // ✅ Create payment history entry
@@ -3925,7 +3960,7 @@ app.post(
             ["silver", "gold", "platinum"].includes(student.registration_type)
           ) {
             user.next_billing_date = new Date(
-              Date.now() + 30 * 24 * 60 * 60 * 1000
+              Date.now() + 30 * 24 * 60 * 60 * 1000,
             );
             await user.save();
           }
@@ -3965,7 +4000,7 @@ app.post(
             invoiceNumber,
             type: "registration",
             description: getEntrepreneurPackageName(
-              entrepreneur.registration_type
+              entrepreneur.registration_type,
             ),
             amount: amount,
             currency: "TZS",
@@ -3984,7 +4019,7 @@ app.post(
           });
 
           console.log(
-            `💰 Entrepreneur invoice created: ${invoiceNumber} for ${amount} TZS`
+            `💰 Entrepreneur invoice created: ${invoiceNumber} for ${amount} TZS`,
           );
 
           // Create payment history entry
@@ -4005,7 +4040,7 @@ app.post(
             metadata: {
               registrationType: entrepreneur.registration_type,
               packageName: getEntrepreneurPackageName(
-                entrepreneur.registration_type
+                entrepreneur.registration_type,
               ),
               ipAddress: req.ip || req.connection?.remoteAddress,
               userAgent: req.get("user-agent"),
@@ -4013,13 +4048,13 @@ app.post(
           });
 
           console.log(
-            `📊 Payment history entry created for entrepreneur ${user._id}`
+            `📊 Payment history entry created for entrepreneur ${user._id}`,
           );
 
           // Set next billing date for Platinum (monthly subscription)
           if (entrepreneur.registration_type === "platinum") {
             user.next_billing_date = new Date(
-              Date.now() + 30 * 24 * 60 * 60 * 1000
+              Date.now() + 30 * 24 * 60 * 60 * 1000,
             );
             await user.save();
             console.log(`📅 Next billing date set for Platinum subscription`);
@@ -4056,7 +4091,7 @@ app.post(
         ...(process.env.NODE_ENV === "development" && { debug: error.message }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -4106,7 +4141,7 @@ app.patch(
             "paymentProof.verifiedBy": adminId,
             "paymentProof.verifiedAt": new Date(),
           },
-          { new: true }
+          { new: true },
         );
 
         // ✅ NEW: Update payment history
@@ -4125,7 +4160,7 @@ app.patch(
                   reason: "Payment verified by admin",
                 },
               },
-            }
+            },
           );
         }
 
@@ -4133,7 +4168,7 @@ app.patch(
           studentId,
           "Payment Verified",
           "Your payment has been verified. Your account is now active!",
-          "success"
+          "success",
         );
 
         await logActivity(
@@ -4145,7 +4180,7 @@ app.patch(
             student_id: studentId,
             payment_reference: student.payment_reference,
             payment_method: student.payment_method,
-          }
+          },
         );
 
         console.log(`✅ Payment verified for student: ${student.username}`);
@@ -4179,7 +4214,7 @@ app.patch(
             "paymentProof.verifiedAt": new Date(),
             "paymentProof.rejectionReason": rejectionReason.trim(),
           },
-          { new: true }
+          { new: true },
         );
 
         // ✅ NEW: Update payment history
@@ -4199,7 +4234,7 @@ app.patch(
                   reason: rejectionReason.trim(),
                 },
               },
-            }
+            },
           );
         }
 
@@ -4207,7 +4242,7 @@ app.patch(
           studentId,
           "Payment Rejected",
           `Your payment was rejected: ${rejectionReason}. Please resubmit with correct information.`,
-          "warning"
+          "warning",
         );
 
         await logActivity(
@@ -4218,7 +4253,7 @@ app.patch(
           {
             student_id: studentId,
             rejection_reason: rejectionReason.trim(),
-          }
+          },
         );
 
         console.log(`❌ Payment rejected for student: ${student.username}`);
@@ -4236,7 +4271,7 @@ app.patch(
         error: "Failed to verify payment",
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -4309,7 +4344,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // GET Admin Payment History (All Students)
@@ -4392,7 +4427,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // GET Payment History Details (Single Transaction)
@@ -4467,14 +4502,14 @@ app.get(
         .limit(parseInt(limit))
         .skip((parseInt(page) - 1) * parseInt(limit))
         .select(
-          "firstName lastName email username phoneNumber payment_method payment_reference registration_type createdAt schoolId"
+          "firstName lastName email username phoneNumber payment_method payment_reference registration_type createdAt schoolId",
         )
         .populate("schoolId", "name schoolCode");
 
       const total = await User.countDocuments(query);
 
       console.log(
-        `✅ Admin fetched ${students.length} pending payments (total: ${total})`
+        `✅ Admin fetched ${students.length} pending payments (total: ${total})`,
       );
 
       res.json({
@@ -4497,7 +4532,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -4509,7 +4544,7 @@ async function sendPaymentReminder(userId, invoiceId, reminderType) {
   try {
     const invoice = await Invoice.findById(invoiceId).populate(
       "student_id",
-      "firstName lastName email phoneNumber"
+      "firstName lastName email phoneNumber",
     );
 
     if (!invoice) {
@@ -4519,7 +4554,7 @@ async function sendPaymentReminder(userId, invoiceId, reminderType) {
 
     const student = invoice.student_id;
     const daysUntilDue = Math.ceil(
-      (new Date(invoice.dueDate) - new Date()) / (1000 * 60 * 60 * 24)
+      (new Date(invoice.dueDate) - new Date()) / (1000 * 60 * 60 * 24),
     );
 
     let message = "";
@@ -4531,7 +4566,7 @@ async function sendPaymentReminder(userId, invoiceId, reminderType) {
         message = `Your payment of ${invoice.amount.toLocaleString()} ${
           invoice.currency
         } for ${invoice.description} is due in ${daysUntilDue} days (${new Date(
-          invoice.dueDate
+          invoice.dueDate,
         ).toLocaleDateString()}). Please make payment to avoid service interruption.`;
         break;
 
@@ -4558,7 +4593,7 @@ async function sendPaymentReminder(userId, invoiceId, reminderType) {
         message = `Your payment of ${invoice.amount.toLocaleString()} ${
           invoice.currency
         } is now OVERDUE by ${Math.abs(
-          daysUntilDue
+          daysUntilDue,
         )} days. Please pay immediately to avoid account suspension.`;
         break;
 
@@ -4572,19 +4607,19 @@ async function sendPaymentReminder(userId, invoiceId, reminderType) {
       title,
       message,
       "warning",
-      `/invoices/${invoiceId}`
+      `/invoices/${invoiceId}`,
     );
 
     // Send SMS if available
     if (student.phoneNumber) {
       const smsMessage = `${title}: ${message.substring(
         0,
-        150
+        150,
       )}... Reference: ${invoice.invoiceNumber}`;
       const smsResult = await smsService.sendSMS(
         student.phoneNumber,
         smsMessage,
-        "payment_reminder"
+        "payment_reminder",
       );
 
       if (smsResult.success) {
@@ -4679,7 +4714,7 @@ async function sendBulkPaymentReminders() {
         await sendPaymentReminder(
           invoice.student_id,
           invoice._id,
-          reminderType
+          reminderType,
         );
         sentCount++;
       }
@@ -4721,7 +4756,7 @@ app.post(
         "PAYMENT_REMINDER_SENT",
         `Sent ${reminderType} reminder to user ${userId}`,
         req,
-        { userId, invoiceId, reminderType }
+        { userId, invoiceId, reminderType },
       );
 
       if (result.success) {
@@ -4742,7 +4777,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // POST Send Bulk Payment Reminders (Manual Trigger)
@@ -4758,7 +4793,7 @@ app.post(
         req.user.id,
         "BULK_REMINDERS_SENT",
         `Sent ${result.sentCount || 0} bulk payment reminders`,
-        req
+        req,
       );
 
       res.json({
@@ -4776,7 +4811,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // GET Student Payment Reminders
@@ -4817,7 +4852,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // PATCH Mark Reminder as Opened
@@ -4829,7 +4864,7 @@ app.patch(
       const reminder = await PaymentReminder.findOneAndUpdate(
         { _id: req.params.id, userId: req.user.id },
         { opened: true, openedAt: new Date() },
-        { new: true }
+        { new: true },
       );
 
       if (!reminder) {
@@ -4854,7 +4889,7 @@ app.patch(
         }),
       });
     }
-  }
+  },
 );
 
 // GET Payment Reminder Statistics (Admin)
@@ -4917,7 +4952,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ========================================
@@ -5005,7 +5040,7 @@ app.post(
 
         const totalPaid = paymentHistory.reduce(
           (sum, payment) => sum + (payment.amount || 0),
-          0
+          0,
         );
 
         // Calculate required amount based on role and registration type
@@ -5311,7 +5346,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // Get current user profile
@@ -5376,7 +5411,7 @@ app.put("/api/auth/profile", authenticateToken, async (req, res) => {
       req.user.id,
       "PROFILE_UPDATED",
       "User updated their profile",
-      req
+      req,
     );
 
     res.json({
@@ -5418,7 +5453,7 @@ app.post("/api/auth/change-password", authenticateToken, async (req, res) => {
     const user = await User.findById(req.user.id);
     const isPasswordValid = await comparePassword(
       currentPassword,
-      user.password
+      user.password,
     );
 
     if (!isPasswordValid) {
@@ -5435,14 +5470,14 @@ app.post("/api/auth/change-password", authenticateToken, async (req, res) => {
       req.user.id,
       "PASSWORD_CHANGED",
       "User changed their password",
-      req
+      req,
     );
 
     await createNotification(
       req.user.id,
       "Password Changed",
       "Your password has been changed successfully",
-      "success"
+      "success",
     );
 
     res.json({
@@ -5509,7 +5544,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // Reset password with OTP
@@ -5531,7 +5566,7 @@ app.post(
       .withMessage("Password must be at least 8 characters")
       .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
       .withMessage(
-        "Password must contain at least one uppercase letter, one lowercase letter, and one number"
+        "Password must contain at least one uppercase letter, one lowercase letter, and one number",
       ),
   ],
   handleValidationErrors,
@@ -5550,7 +5585,7 @@ app.post(
       const verification = await verifyOTP(
         user.phoneNumber,
         otp,
-        "password_reset"
+        "password_reset",
       );
 
       if (!verification.success) {
@@ -5564,14 +5599,14 @@ app.post(
         user._id,
         "PASSWORD_RESET",
         "Password reset via OTP",
-        req
+        req,
       );
 
       await createNotification(
         user._id,
         "Password Reset",
         "Your password has been reset successfully",
-        "success"
+        "success",
       );
 
       res.json({
@@ -5588,7 +5623,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // Logout
@@ -5622,7 +5657,7 @@ app.get(
   async (req, res) => {
     try {
       const student = await User.findById(req.user.id).select(
-        "registration_type is_ctm_student registration_date next_billing_date registration_fee_paid"
+        "registration_type is_ctm_student registration_date next_billing_date registration_fee_paid",
       );
 
       if (!student) {
@@ -5658,7 +5693,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch registration type" });
     }
-  }
+  },
 );
 
 // ============================================
@@ -5689,7 +5724,7 @@ app.post(
         req.user.id,
         "AVATAR_UPLOADED",
         "User uploaded profile image",
-        req
+        req,
       );
 
       res.json({
@@ -5707,7 +5742,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // Upload book files (cover + PDF)
@@ -5743,7 +5778,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // Upload certificate
@@ -5776,7 +5811,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // Upload business logo
@@ -5809,7 +5844,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // Upload event image
@@ -5842,7 +5877,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -5857,7 +5892,7 @@ app.use("/api/locations/:type", (req, res, next) => {
   res.on("finish", () => {
     const duration = Date.now() - start;
     console.log(
-      `📊 Location API Usage: ${req.method} ${req.path} - ${duration}ms`
+      `📊 Location API Usage: ${req.method} ${req.path} - ${duration}ms`,
     );
 
     // Optional: Track in database or analytics service
@@ -5899,7 +5934,7 @@ app.get("/api/locations/regions", async (req, res) => {
   try {
     // ✅ Log deprecated usage (optional monitoring)
     console.warn(
-      "⚠️  DEPRECATED ENDPOINT CALLED: /api/locations/regions - Consider using frontend utility"
+      "⚠️  DEPRECATED ENDPOINT CALLED: /api/locations/regions - Consider using frontend utility",
     );
 
     // ✅ Set aggressive cache headers (24 hours)
@@ -5944,7 +5979,7 @@ app.get("/api/locations/districts", async (req, res) => {
 
     // ✅ Log deprecated usage
     console.warn(
-      "⚠️  DEPRECATED ENDPOINT CALLED: /api/locations/districts - Consider using frontend utility"
+      "⚠️  DEPRECATED ENDPOINT CALLED: /api/locations/districts - Consider using frontend utility",
     );
 
     // ✅ Set aggressive cache headers
@@ -5968,7 +6003,7 @@ app.get("/api/locations/districts", async (req, res) => {
     console.log(
       `✅ Fetched ${districts.length} districts${
         region_id ? ` for region ${region_id}` : ""
-      } (cached response)`
+      } (cached response)`,
     );
 
     res.json({
@@ -5999,7 +6034,7 @@ app.get("/api/locations/wards", async (req, res) => {
 
     // ✅ Log deprecated usage
     console.warn(
-      "⚠️  DEPRECATED ENDPOINT CALLED: /api/locations/wards - Consider using frontend utility"
+      "⚠️  DEPRECATED ENDPOINT CALLED: /api/locations/wards - Consider using frontend utility",
     );
 
     // ✅ Set aggressive cache headers
@@ -6023,7 +6058,7 @@ app.get("/api/locations/wards", async (req, res) => {
     console.log(
       `✅ Fetched ${wards.length} wards${
         district_id ? ` for district ${district_id}` : ""
-      } (cached response)`
+      } (cached response)`,
     );
 
     res.json({
@@ -6099,7 +6134,7 @@ app.get("/api/locations/all", async (req, res) => {
     });
 
     console.log(
-      `✅ Returned ALL locations: ${regions.length} regions, ${districts.length} districts, ${wards.length} wards`
+      `✅ Returned ALL locations: ${regions.length} regions, ${districts.length} districts, ${wards.length} wards`,
     );
   } catch (error) {
     console.error("❌ Error fetching all locations:", error);
@@ -6126,7 +6161,7 @@ app.post(
         req.user.id,
         "REGION_CREATED",
         `Created region: ${region.name}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -6144,7 +6179,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // CREATE district (admin only)
@@ -6160,7 +6195,7 @@ app.post(
         req.user.id,
         "DISTRICT_CREATED",
         `Created district: ${district.name}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -6178,7 +6213,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // CREATE ward (admin only)
@@ -6194,7 +6229,7 @@ app.post(
         req.user.id,
         "WARD_CREATED",
         `Created ward: ${ward.name}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -6212,7 +6247,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -6273,7 +6308,7 @@ app.get("/api/schools", async (req, res) => {
       .limit(parseInt(limit))
       .skip((parseInt(page) - 1) * parseInt(limit))
       .select(
-        "_id name schoolCode type ownership regionId districtId wardId address phoneNumber email principalName totalStudents totalTeachers logo isActive establishedYear"
+        "_id name schoolCode type ownership regionId districtId wardId address phoneNumber email principalName totalStudents totalTeachers logo isActive establishedYear",
       )
       .populate("regionId", "name code")
       .populate("districtId", "name code")
@@ -6435,7 +6470,7 @@ app.post(
         req.user.id,
         "SCHOOL_CREATED",
         `Created school: ${school.name}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -6453,7 +6488,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 // UPDATE school
 app.put(
@@ -6465,7 +6500,7 @@ app.put(
     "national_official",
     "regional_official",
     "tamisemi",
-    "headmaster"
+    "headmaster",
   ),
   async (req, res) => {
     try {
@@ -6483,7 +6518,7 @@ app.put(
       const school = await School.findByIdAndUpdate(
         req.params.id,
         { ...req.body, updatedAt: new Date() },
-        { new: true, runValidators: true }
+        { new: true, runValidators: true },
       );
 
       if (!school) {
@@ -6497,7 +6532,7 @@ app.put(
         req.user.id,
         "SCHOOL_UPDATED",
         `Updated school: ${school.name}`,
-        req
+        req,
       );
 
       res.json({
@@ -6515,7 +6550,7 @@ app.put(
         }),
       });
     }
-  }
+  },
 );
 
 // DELETE school (soft delete)
@@ -6529,7 +6564,7 @@ app.delete(
       const school = await School.findByIdAndUpdate(
         req.params.id,
         { isActive: false, updatedAt: new Date() },
-        { new: true }
+        { new: true },
       );
 
       if (!school) {
@@ -6543,7 +6578,7 @@ app.delete(
         req.user.id,
         "SCHOOL_DELETED",
         `Deleted school: ${school.name}`,
-        req
+        req,
       );
 
       res.json({
@@ -6560,7 +6595,7 @@ app.delete(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -6585,7 +6620,7 @@ app.get("/api/talents", async (req, res) => {
     const talents = await Talent.find(query)
       .sort({ category: 1, name: 1 })
       .select(
-        "_id name category description icon requirements isActive createdAt"
+        "_id name category description icon requirements isActive createdAt",
       );
 
     console.log(`✅ Fetched ${talents.length} talents`);
@@ -6679,7 +6714,7 @@ app.post(
         req.user.id,
         "TALENT_CREATED",
         `Created talent: ${name}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -6697,7 +6732,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // UPDATE talent
@@ -6723,7 +6758,7 @@ app.put(
         req.user.id,
         "TALENT_UPDATED",
         `Updated talent: ${talent.name}`,
-        req
+        req,
       );
 
       res.json({
@@ -6741,7 +6776,7 @@ app.put(
         }),
       });
     }
-  }
+  },
 );
 
 // DELETE talent (soft delete)
@@ -6754,7 +6789,7 @@ app.delete(
       const talent = await Talent.findByIdAndUpdate(
         req.params.id,
         { isActive: false },
-        { new: true }
+        { new: true },
       );
 
       if (!talent) {
@@ -6768,7 +6803,7 @@ app.delete(
         req.user.id,
         "TALENT_DELETED",
         `Deleted talent: ${talent.name}`,
-        req
+        req,
       );
 
       res.json({
@@ -6785,7 +6820,7 @@ app.delete(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -6820,7 +6855,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // REGISTER student talent
@@ -6873,14 +6908,14 @@ app.post(
         {
           studentId: req.params.studentId,
           talentId,
-        }
+        },
       );
 
       await createNotification(
         req.params.studentId,
         "Talent Registered",
         `You have been registered for ${studentTalent.talentId.name}`,
-        "success"
+        "success",
       );
 
       res.status(201).json({
@@ -6898,7 +6933,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // UPDATE student talent
@@ -6912,7 +6947,7 @@ app.put(
       const studentTalent = await StudentTalent.findOneAndUpdate(
         { studentId: req.params.studentId, talentId: req.params.talentId },
         { ...req.body, updatedAt: new Date() },
-        { new: true, runValidators: true }
+        { new: true, runValidators: true },
       )
         .populate("talentId", "name category")
         .populate("teacherId", "firstName lastName");
@@ -6928,7 +6963,7 @@ app.put(
         req.user.id,
         "TALENT_UPDATED",
         `Updated student talent`,
-        req
+        req,
       );
 
       res.json({
@@ -6946,7 +6981,7 @@ app.put(
         }),
       });
     }
-  }
+  },
 );
 
 // DELETE student talent registration
@@ -6973,7 +7008,7 @@ app.delete(
         req.user.id,
         "TALENT_UNREGISTERED",
         `Student unregistered from talent`,
-        req
+        req,
       );
 
       res.json({
@@ -6990,7 +7025,7 @@ app.delete(
         }),
       });
     }
-  }
+  },
 );
 
 // Add certification to student talent
@@ -7038,7 +7073,7 @@ app.post(
         req.user.id,
         "CERTIFICATION_ADDED",
         `Added certification to student talent`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -7056,7 +7091,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -7164,7 +7199,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // CREATE book
@@ -7183,7 +7218,7 @@ app.post(
         req.user.id,
         "BOOK_CREATED",
         `Created book: ${book.title}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -7201,7 +7236,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // UPDATE book
@@ -7238,7 +7273,7 @@ app.put(
         req.user.id,
         "BOOK_UPDATED",
         `Updated book: ${book.title}`,
-        req
+        req,
       );
 
       res.json({
@@ -7256,7 +7291,7 @@ app.put(
         }),
       });
     }
-  }
+  },
 );
 
 // DELETE book
@@ -7294,7 +7329,7 @@ app.delete(
         req.user.id,
         "BOOK_DELETED",
         `Deleted book: ${book.title}`,
-        req
+        req,
       );
 
       res.json({
@@ -7311,7 +7346,7 @@ app.delete(
         }),
       });
     }
-  }
+  },
 );
 
 // Purchase book
@@ -7361,7 +7396,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // Add book review
@@ -7389,7 +7424,7 @@ app.post(
 
       // Check if user already reviewed
       const existingReview = book.reviews.find(
-        (r) => r.userId.toString() === req.user.id
+        (r) => r.userId.toString() === req.user.id,
       );
       if (existingReview) {
         return res.status(409).json({
@@ -7416,7 +7451,7 @@ app.post(
         req.user.id,
         "BOOK_REVIEWED",
         `Reviewed book: ${book.title}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -7434,7 +7469,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // Get user's purchased books
@@ -7575,7 +7610,7 @@ app.post(
     "regional_official",
     "district_official",
     "headmaster",
-    "teacher"
+    "teacher",
   ),
   async (req, res) => {
     try {
@@ -7591,7 +7626,7 @@ app.post(
         req.user.id,
         "EVENT_CREATED",
         `Created event: ${event.title}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -7609,7 +7644,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // UPDATE event
@@ -7646,7 +7681,7 @@ app.put(
         req.user.id,
         "EVENT_UPDATED",
         `Updated event: ${event.title}`,
-        req
+        req,
       );
 
       res.json({
@@ -7664,7 +7699,7 @@ app.put(
         }),
       });
     }
-  }
+  },
 );
 
 // DELETE event
@@ -7701,7 +7736,7 @@ app.delete(
         req.user.id,
         "EVENT_DELETED",
         `Cancelled event: ${event.title}`,
-        req
+        req,
       );
 
       res.json({
@@ -7718,7 +7753,7 @@ app.delete(
         }),
       });
     }
-  }
+  },
 );
 
 // Register for event
@@ -7796,14 +7831,14 @@ app.post(
         "Event Registration",
         `You have registered for ${event.title}`,
         "success",
-        `/events/${event._id}`
+        `/events/${event._id}`,
       );
 
       await logActivity(
         req.user.id,
         "EVENT_REGISTERED",
         `Registered for event: ${event.title}`,
-        req
+        req,
       );
 
       // Event registration without payment gateway
@@ -7828,7 +7863,7 @@ app.post(
         ...(process.env.NODE_ENV === "development" && { debug: error.message }),
       });
     }
-  }
+  },
 );
 
 app.delete(
@@ -7862,7 +7897,7 @@ app.delete(
         {
           registrationStatus: "cancelled",
         },
-        { new: true }
+        { new: true },
       ).populate("eventId", "title");
 
       if (!registration) {
@@ -7877,7 +7912,7 @@ app.delete(
         event.currentParticipants -= 1;
         await event.save();
         console.log(
-          `📊 Updated participant count: ${event.currentParticipants}`
+          `📊 Updated participant count: ${event.currentParticipants}`,
         );
       }
 
@@ -7887,7 +7922,7 @@ app.delete(
         "Event Unregistered",
         `You have unregistered from "${event.title}"`,
         "info",
-        `/events/${event._id}`
+        `/events/${event._id}`,
       ).catch((err) => console.error("❌ Notification error:", err));
 
       // Log activity (async, don't block response)
@@ -7900,7 +7935,7 @@ app.delete(
           eventId: event._id,
           eventTitle: event.title,
           registrationId: registration._id,
-        }
+        },
       ).catch((err) => console.error("❌ Activity log error:", err));
 
       console.log(`✅ Successfully unregistered from event: ${event.title}`);
@@ -7925,7 +7960,7 @@ app.delete(
         }),
       });
     }
-  }
+  },
 );
 
 // Get event registrations
@@ -7981,7 +8016,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -8093,7 +8128,7 @@ app.post(
         req.user.id,
         "BUSINESS_CREATED",
         `Created business: ${business.name}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -8111,7 +8146,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // UPDATE business
@@ -8143,7 +8178,7 @@ app.put("/api/businesses/:id", authenticateToken, async (req, res) => {
       req.user.id,
       "BUSINESS_UPDATED",
       `Updated business: ${business.name}`,
-      req
+      req,
     );
 
     res.json({
@@ -8177,7 +8212,7 @@ app.patch(
           status: "active",
           updatedAt: new Date(),
         },
-        { new: true }
+        { new: true },
       );
 
       if (!business) {
@@ -8190,14 +8225,14 @@ app.patch(
         business.ownerId,
         "Business Verified",
         `Your business ${business.name} has been verified`,
-        "success"
+        "success",
       );
 
       await logActivity(
         req.user.id,
         "BUSINESS_VERIFIED",
         `Verified business: ${business.name}`,
-        req
+        req,
       );
 
       res.json({
@@ -8215,7 +8250,7 @@ app.patch(
         }),
       });
     }
-  }
+  },
 );
 
 // GET business products
@@ -8291,7 +8326,7 @@ app.post(
         req.user.id,
         "PRODUCT_CREATED",
         `Created product: ${product.name}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -8309,7 +8344,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -8411,7 +8446,7 @@ app.post(
           file_size: file.size,
           amount: invoice.amount,
           currency: invoice.currency,
-        }
+        },
       );
 
       // Create notification for student
@@ -8419,7 +8454,7 @@ app.post(
         userId,
         "Payment Proof Submitted",
         `Your payment proof for invoice ${invoice.invoiceNumber} is being verified`,
-        "info"
+        "info",
       );
 
       console.log("Payment proof submitted successfully:", {
@@ -8456,7 +8491,7 @@ app.post(
         error: "Failed to submit payment proof. Please try again.", // ✅ GOOD - Generic message
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -8484,7 +8519,7 @@ app.patch(
       // Find invoice
       const invoice = await Invoice.findById(invoiceId).populate(
         "user_id",
-        "firstName lastName email"
+        "firstName lastName email",
       );
       if (!invoice) {
         return res.status(404).json({
@@ -8523,7 +8558,7 @@ app.patch(
             student_id: invoice.student_id._id,
             amount: invoice.amount,
             transaction_reference: invoice.paymentProof.transactionReference,
-          }
+          },
         );
 
         // Notify student
@@ -8531,7 +8566,7 @@ app.patch(
           invoice.user_id._id,
           "Payment Verified",
           `Your payment for invoice ${invoice.invoiceNumber} has been verified`,
-          "success"
+          "success",
         );
 
         console.log("Payment verified for invoice:", invoice.invoiceNumber);
@@ -8569,7 +8604,7 @@ app.patch(
             invoice_number: invoice.invoiceNumber,
             student_id: invoice.student_id._id,
             rejection_reason: rejectionReason.trim(),
-          }
+          },
         );
 
         // Notify student
@@ -8577,7 +8612,7 @@ app.patch(
           invoice.user_id._id,
           "Payment Rejected",
           `Your payment proof for invoice ${invoice.invoiceNumber} was rejected: ${rejectionReason}`,
-          "warning"
+          "warning",
         );
 
         console.log("Payment rejected for invoice:", invoice.invoiceNumber);
@@ -8595,7 +8630,7 @@ app.patch(
         error: "Failed to verify payment",
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -8644,7 +8679,7 @@ app.get(
         error: "Failed to fetch pending payment proofs",
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -8694,7 +8729,7 @@ app.get(
         error: "Failed to download payment proof",
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -8767,7 +8802,7 @@ app.get(
         error: "Failed to download invoice. Please try again.",
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -8815,7 +8850,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -8949,7 +8984,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // System analytics
@@ -9015,7 +9050,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // Messaging endpoints
@@ -9191,7 +9226,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // GET list of teachers (for messaging)
@@ -9246,7 +9281,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // GET messages with a specific teacher
@@ -9288,7 +9323,7 @@ app.get(
         {
           isRead: true,
           readAt: new Date(),
-        }
+        },
       ).catch((err) => console.error("Error marking messages as read:", err));
 
       // Format response
@@ -9320,7 +9355,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // SEND message to teacher
@@ -9342,7 +9377,7 @@ app.post(
 
       // Verify receiver exists
       const receiver = await User.findById(receiverId).select(
-        "firstName lastName role"
+        "firstName lastName role",
       );
       if (!receiver) {
         return res.status(404).json({
@@ -9377,7 +9412,7 @@ app.post(
         "New Message",
         `${req.user.firstName || "A student"} sent you a message`,
         "message",
-        `/messages/${senderId}`
+        `/messages/${senderId}`,
       ).catch((err) => console.error("Error creating notification:", err));
 
       // Log activity (async, don't wait)
@@ -9385,7 +9420,7 @@ app.post(
         req.user.id,
         "MESSAGE_SENT",
         `Sent message to ${receiver.firstName || "user"}`,
-        req
+        req,
       ).catch((err) => console.error("Error logging activity:", err));
 
       res.status(201).json({
@@ -9410,7 +9445,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 // Notifications
 app.get("/api/notifications", authenticateToken, async (req, res) => {
@@ -9463,7 +9498,7 @@ app.patch(
       const notification = await Notification.findOneAndUpdate(
         { _id: req.params.id, userId: req.user.id },
         { isRead: true, readAt: new Date() },
-        { new: true }
+        { new: true },
       );
 
       if (!notification) {
@@ -9483,7 +9518,7 @@ app.patch(
         }),
       });
     }
-  }
+  },
 );
 
 app.patch(
@@ -9493,7 +9528,7 @@ app.patch(
     try {
       await Notification.updateMany(
         { userId: req.user.id, isRead: false },
-        { isRead: true, readAt: new Date() }
+        { isRead: true, readAt: new Date() },
       );
 
       res.json({ success: true, message: "All notifications marked as read" });
@@ -9507,7 +9542,7 @@ app.patch(
         }),
       });
     }
-  }
+  },
 );
 
 // User management
@@ -9520,7 +9555,7 @@ app.get(
     "regional_official",
     "district_official",
     "headmaster",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -9585,7 +9620,7 @@ app.get(
         ...(process.env.NODE_ENV === "development" && { debug: error.message }),
       });
     }
-  }
+  },
 );
 
 app.get(
@@ -9617,7 +9652,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 app.put(
@@ -9629,7 +9664,7 @@ app.put(
     "national_official",
     "regional_official",
     "district_official",
-    "headmaster"
+    "headmaster",
   ),
   async (req, res) => {
     try {
@@ -9638,7 +9673,7 @@ app.put(
       const user = await User.findByIdAndUpdate(
         req.params.id,
         { ...updateData, updatedAt: new Date() },
-        { new: true, runValidators: true }
+        { new: true, runValidators: true },
       ).select("-password");
 
       if (!user) {
@@ -9651,7 +9686,7 @@ app.put(
         req.user.id,
         "USER_UPDATED",
         `Updated user: ${user.username}`,
-        req
+        req,
       );
 
       res.json({
@@ -9669,7 +9704,7 @@ app.put(
         }),
       });
     }
-  }
+  },
 );
 
 app.patch(
@@ -9682,7 +9717,7 @@ app.patch(
       const user = await User.findByIdAndUpdate(
         req.params.id,
         { isActive: false, updatedAt: new Date() },
-        { new: true }
+        { new: true },
       ).select("-password");
 
       if (!user) {
@@ -9695,7 +9730,7 @@ app.patch(
         req.user.id,
         "USER_DEACTIVATED",
         `Deactivated user: ${user.username}`,
-        req
+        req,
       );
 
       res.json({
@@ -9713,7 +9748,7 @@ app.patch(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================================================
@@ -9789,7 +9824,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // GET student attendance
@@ -9855,7 +9890,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // GET all assignments (for student)
@@ -10022,7 +10057,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // CREATE assignment (teacher only)
@@ -10042,7 +10077,7 @@ app.post(
         req.user.id,
         "ASSIGNMENT_CREATED",
         `Created assignment: ${assignment.title}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -10060,7 +10095,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 ); // ✅ FIXED: Added closing }); for app.post()
 
 // SUBMIT assignment (student only)
@@ -10111,14 +10146,14 @@ app.post(
         "New Assignment Submission",
         `${req.user.firstName || "A student"} submitted "${assignment.title}"`,
         "info",
-        `/assignments/${assignmentId}/submissions`
+        `/assignments/${assignmentId}/submissions`,
       );
 
       await logActivity(
         req.user.id,
         "ASSIGNMENT_SUBMITTED",
         `Submitted assignment: ${assignment.title}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -10136,7 +10171,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // CREATE grade (teacher/headmaster)
@@ -10160,14 +10195,14 @@ app.post(
         "New Grade Posted",
         `Your grade for ${grade.subject} has been posted: ${grade.score}%`,
         "info",
-        "/grades"
+        "/grades",
       );
 
       await logActivity(
         req.user.id,
         "GRADE_CREATED",
         `Posted grade for ${grade.studentId.firstName}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -10185,7 +10220,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // RECORD attendance (teacher/headmaster)
@@ -10220,7 +10255,7 @@ app.post(
         req.user.id,
         "ATTENDANCE_RECORDED",
         `Recorded attendance for ${records.length} students`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -10238,7 +10273,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // Global search
@@ -10360,7 +10395,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch dashboard" });
     }
-  }
+  },
 );
 
 // ============================================================================
@@ -10445,7 +10480,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // GET Student Timetable
@@ -10494,7 +10529,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // GET Student CTM Membership
@@ -10544,7 +10579,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // GET Student CTM Activities
@@ -10576,7 +10611,7 @@ app.get(
       const activitiesWithStatus = activities.map((activity) => ({
         ...activity.toObject(),
         isParticipant: activity.participants.some(
-          (p) => p.toString() === studentId
+          (p) => p.toString() === studentId,
         ),
         isFull:
           activity.maxParticipants &&
@@ -10603,7 +10638,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // GET Student Awards
@@ -10647,7 +10682,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // GET Student Rankings
@@ -10694,7 +10729,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // PATCH Update Student Talents
@@ -10739,7 +10774,7 @@ app.patch(
         studentId,
         "TALENTS_UPDATED",
         "Updated talent selections",
-        req
+        req,
       );
 
       res.json({
@@ -10757,7 +10792,7 @@ app.patch(
         }),
       });
     }
-  }
+  },
 );
 
 // GET /api/student/class-level-requests - View My Requests
@@ -10782,7 +10817,7 @@ app.get(
         error: "Failed to fetch requests",
       });
     }
-  }
+  },
 );
 
 // PATCH /api/admin/class-level-requests/:requestId/approve - Approve Request
@@ -10823,14 +10858,14 @@ app.patch(
         request.studentId,
         "Class Level Request Approved",
         `Your request to change to ${request.requestedClassLevel} has been approved`,
-        "success"
+        "success",
       );
 
       await logActivity(
         req.user.id,
         "CLASS_LEVEL_REQUEST_APPROVED",
         "Approved class level request",
-        req
+        req,
       );
 
       res.json({
@@ -10845,7 +10880,7 @@ app.patch(
         error: "Failed to approve request",
       });
     }
-  }
+  },
 );
 
 // PATCH /api/admin/class-level-requests/:requestId/reject - Reject Request
@@ -10883,14 +10918,14 @@ app.patch(
         request.studentId,
         "Class Level Request Rejected",
         `Your request was rejected: ${comments}`,
-        "warning"
+        "warning",
       );
 
       await logActivity(
         req.user.id,
         "CLASS_LEVEL_REQUEST_REJECTED",
         "Rejected class level request",
-        req
+        req,
       );
 
       res.json({
@@ -10905,7 +10940,7 @@ app.patch(
         error: "Failed to reject request",
       });
     }
-  }
+  },
 );
 
 // POST /api/student/class-level-request - Request Class Update (With Approval)
@@ -10951,7 +10986,7 @@ app.post(
             "Class Level Request",
             `${student.firstName} ${student.lastName} requested class level change`,
             "info",
-            `/admin/class-requests/${request._id}`
+            `/admin/class-requests/${request._id}`,
           );
         }
       }
@@ -10960,7 +10995,7 @@ app.post(
         req.user.id,
         "CLASS_LEVEL_REQUEST_SUBMITTED",
         `Requested class level change to ${classLevel}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -10979,7 +11014,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // PUT Update Student Profile
@@ -11038,7 +11073,7 @@ app.put(
         req.user.id,
         "PROFILE_UPDATED",
         "Updated personal information",
-        req
+        req,
       );
 
       res.json({
@@ -11056,7 +11091,7 @@ app.put(
         }),
       });
     }
-  }
+  },
 );
 
 // PATCH Update Student Class Information
@@ -11083,14 +11118,14 @@ app.patch(
           course: course || "",
           updatedAt: new Date(),
         },
-        { new: true, runValidators: true }
+        { new: true, runValidators: true },
       ).select("-password");
 
       await logActivity(
         req.user.id,
         "CLASS_INFO_UPDATED",
         `Updated class to ${classLevel} for ${academicYear}`,
-        req
+        req,
       );
 
       res.json({
@@ -11108,7 +11143,7 @@ app.patch(
         }),
       });
     }
-  }
+  },
 );
 
 // PATCH Update Student Class Level
@@ -11135,7 +11170,7 @@ app.patch(
           gradeLevel: classLevel, // Keep for backward compatibility
           updatedAt: new Date(),
         },
-        { new: true }
+        { new: true },
       ).select("-password");
 
       await logActivity(
@@ -11143,7 +11178,7 @@ app.patch(
         "CLASS_LEVEL_UPDATED",
         `Updated class level to ${classLevel} for ${academicYear}. Reason: ${reason}`,
         req,
-        { classLevel, academicYear, course, reason }
+        { classLevel, academicYear, course, reason },
       );
 
       res.json({
@@ -11161,7 +11196,7 @@ app.patch(
         }),
       });
     }
-  }
+  },
 );
 
 // GET Student Terms Acceptance
@@ -11191,7 +11226,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // POST Re-accept Terms
@@ -11224,7 +11259,7 @@ app.post(
         userId,
         "TERMS_ACCEPTED",
         `Accepted terms version ${termsVersion}`,
-        req
+        req,
       );
 
       res.json({
@@ -11242,7 +11277,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // POST Submit Assignment (Student-specific endpoint)
@@ -11300,14 +11335,14 @@ app.post(
         "New Assignment Submission",
         `${req.user.firstName || "A student"} submitted "${assignment.title}"`,
         "info",
-        `/assignments/${assignmentId}/submissions`
+        `/assignments/${assignmentId}/submissions`,
       );
 
       await logActivity(
         req.user.id,
         "ASSIGNMENT_SUBMITTED",
         `Submitted assignment: ${assignment.title}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -11325,7 +11360,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // STUDENT DASHBOARD
@@ -11369,7 +11404,7 @@ app.get(
           .sort({ createdAt: -1 })
           .limit(10),
         School.findById(req.user.schoolId).select(
-          "name schoolCode logo address phoneNumber"
+          "name schoolCode logo address phoneNumber",
         ),
         PerformanceRecord.aggregate([
           {
@@ -11395,7 +11430,7 @@ app.get(
         beginner: talents.filter((t) => t.proficiencyLevel === "beginner")
           .length,
         intermediate: talents.filter(
-          (t) => t.proficiencyLevel === "intermediate"
+          (t) => t.proficiencyLevel === "intermediate",
         ).length,
         advanced: talents.filter((t) => t.proficiencyLevel === "advanced")
           .length,
@@ -11432,7 +11467,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // TEACHER DASHBOARD
@@ -11524,7 +11559,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // HEADMASTER DASHBOARD
@@ -11690,7 +11725,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ENTREPRENEUR DASHBOARD
@@ -11717,7 +11752,7 @@ app.get(
             $match: {
               businessId: {
                 $in: await Business.find({ ownerId: entrepreneurId }).distinct(
-                  "_id"
+                  "_id",
                 ),
               },
             },
@@ -11734,7 +11769,7 @@ app.get(
         Transaction.find({
           businessId: {
             $in: await Business.find({ ownerId: entrepreneurId }).distinct(
-              "_id"
+              "_id",
             ),
           },
           status: "completed",
@@ -11747,7 +11782,7 @@ app.get(
             $match: {
               businessId: {
                 $in: await Business.find({ ownerId: entrepreneurId }).distinct(
-                  "_id"
+                  "_id",
                 ),
               },
             },
@@ -11763,7 +11798,7 @@ app.get(
         Product.find({
           businessId: {
             $in: await Business.find({ ownerId: entrepreneurId }).distinct(
-              "_id"
+              "_id",
             ),
           },
           isActive: true,
@@ -11816,7 +11851,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // STAFF/TAMISEMI DASHBOARD (National, Regional, District Officials)
@@ -11828,7 +11863,7 @@ app.get(
     "national_official",
     "regional_official",
     "district_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -12011,7 +12046,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================================================
@@ -12195,14 +12230,14 @@ app.post(
         "New Performance Assessment",
         `You received a new ${assessmentType} assessment for ${record.talentId.name}`,
         "info",
-        `/performance/${record._id}`
+        `/performance/${record._id}`,
       );
 
       await logActivity(
         req.user.id,
         "PERFORMANCE_RECORDED",
         `Assessed ${record.studentId.firstName} in ${record.talentId.name}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -12220,7 +12255,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // UPDATE performance record
@@ -12263,7 +12298,7 @@ app.put(
         req.user.id,
         "PERFORMANCE_UPDATED",
         `Updated performance record`,
-        req
+        req,
       );
 
       res.json({
@@ -12281,7 +12316,7 @@ app.put(
         }),
       });
     }
-  }
+  },
 );
 
 // DELETE performance record
@@ -12304,7 +12339,7 @@ app.delete(
         req.user.id,
         "PERFORMANCE_DELETED",
         `Deleted performance record`,
-        req
+        req,
       );
 
       res.json({
@@ -12321,7 +12356,7 @@ app.delete(
         }),
       });
     }
-  }
+  },
 );
 
 // GET student performance summary
@@ -12412,7 +12447,7 @@ app.get(
             },
             { $sort: { "_id.year": 1, "_id.month": 1 } },
           ]),
-        ]
+        ],
       );
 
       res.json({
@@ -12439,7 +12474,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -12481,7 +12516,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch profile" });
     }
-  }
+  },
 );
 
 // GET Business Metrics
@@ -12547,7 +12582,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch metrics" });
     }
-  }
+  },
 );
 
 // GET Revenue
@@ -12560,7 +12595,7 @@ app.get(
       const { year = new Date().getFullYear(), month } = req.query;
 
       const businesses = await Business.find({ ownerId: req.user.id }).distinct(
-        "_id"
+        "_id",
       );
 
       const query = {
@@ -12621,7 +12656,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch revenue" });
     }
-  }
+  },
 );
 
 // GET Expenses
@@ -12634,7 +12669,7 @@ app.get(
       const { year = new Date().getFullYear(), month } = req.query;
 
       const businesses = await Business.find({ ownerId: req.user.id }).distinct(
-        "_id"
+        "_id",
       );
 
       const query = {
@@ -12673,7 +12708,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch expenses" });
     }
-  }
+  },
 );
 
 // ADD Transaction
@@ -12720,7 +12755,7 @@ app.post(
       if (type === "revenue") {
         const { commission, netAmount } = calculateRevenueSplit(
           amount,
-          "product_sale"
+          "product_sale",
         );
 
         await Revenue.create({
@@ -12735,7 +12770,7 @@ app.post(
           month: new Date(transaction.completedAt).getMonth() + 1,
           year: new Date(transaction.completedAt).getFullYear(),
           quarter: Math.ceil(
-            (new Date(transaction.completedAt).getMonth() + 1) / 3
+            (new Date(transaction.completedAt).getMonth() + 1) / 3,
           ),
           category,
         });
@@ -12745,7 +12780,7 @@ app.post(
         req.user.id,
         "TRANSACTION_ADDED",
         `Added ${type} transaction`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -12759,7 +12794,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to add transaction" });
     }
-  }
+  },
 );
 
 // GET Business Status
@@ -12780,7 +12815,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch business status" });
     }
-  }
+  },
 );
 
 // UPDATE Business Status
@@ -12811,7 +12846,7 @@ app.patch(
           req.user.id,
           "BUSINESS_CREATED",
           `Created business: ${business.name}`,
-          req
+          req,
         );
       } else {
         // Update existing business
@@ -12827,7 +12862,7 @@ app.patch(
           req.user.id,
           "BUSINESS_UPDATED",
           `Updated business: ${business.name}`,
-          req
+          req,
         );
       }
 
@@ -12842,7 +12877,7 @@ app.patch(
         .status(500)
         .json({ success: false, error: "Failed to update business status" });
     }
-  }
+  },
 );
 
 // GET Entrepreneur Talents
@@ -12867,7 +12902,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch talents" });
     }
-  }
+  },
 );
 
 // UPDATE Entrepreneur Talents
@@ -12909,7 +12944,7 @@ app.patch(
         req.user.id,
         "TALENTS_UPDATED",
         "Updated talent selections",
-        req
+        req,
       );
 
       res.json({
@@ -12923,7 +12958,7 @@ app.patch(
         .status(500)
         .json({ success: false, error: "Failed to update talents" });
     }
-  }
+  },
 );
 
 // UPDATE Entrepreneur Profile
@@ -12965,7 +13000,7 @@ app.patch(
         req.user.id,
         "PROFILE_UPDATED",
         "Updated entrepreneur profile",
-        req
+        req,
       );
 
       res.json({
@@ -12979,7 +13014,7 @@ app.patch(
         .status(500)
         .json({ success: false, error: "Failed to update profile" });
     }
-  }
+  },
 );
 
 // ============================================
@@ -13004,7 +13039,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch profile" });
     }
-  }
+  },
 );
 
 // GET School Profile
@@ -13062,7 +13097,7 @@ app.get(
       console.error("❌ Error fetching school:", error);
       res.status(500).json({ success: false, error: "Failed to fetch school" });
     }
-  }
+  },
 );
 
 // UPDATE School Profile
@@ -13075,7 +13110,7 @@ app.patch(
       const school = await School.findByIdAndUpdate(
         req.user.schoolId,
         { ...req.body, updatedAt: new Date() },
-        { new: true, runValidators: true }
+        { new: true, runValidators: true },
       );
 
       if (!school) {
@@ -13088,7 +13123,7 @@ app.patch(
         req.user.id,
         "SCHOOL_UPDATED",
         `Updated school: ${school.name}`,
-        req
+        req,
       );
 
       res.json({
@@ -13102,7 +13137,7 @@ app.patch(
         .status(500)
         .json({ success: false, error: "Failed to update school" });
     }
-  }
+  },
 );
 
 // GET Pending Teachers
@@ -13127,7 +13162,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch pending teachers" });
     }
-  }
+  },
 );
 
 // GET Pending Students
@@ -13152,7 +13187,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch pending students" });
     }
-  }
+  },
 );
 
 // APPROVE Teacher - FIXED VERSION
@@ -13188,7 +13223,7 @@ app.post(
         user.phoneNumber,
         newPassword,
         userName,
-        user._id.toString()
+        user._id.toString(),
       );
 
       if (smsResult.success) {
@@ -13206,7 +13241,7 @@ app.post(
       } else {
         console.error(
           `❌ Failed to send teacher approval SMS:`,
-          smsResult.error
+          smsResult.error,
         );
 
         await SMSLog.create({
@@ -13223,14 +13258,14 @@ app.post(
         user._id,
         "Account Approved",
         "Your teacher account has been approved. Check your SMS for login credentials.",
-        "success"
+        "success",
       );
 
       await logActivity(
         req.user.id,
         "TEACHER_APPROVED",
         `Approved teacher: ${user.firstName} ${user.lastName}`,
-        req
+        req,
       );
 
       res.json({
@@ -13243,7 +13278,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to approve teacher" });
     }
-  }
+  },
 );
 
 // REJECT Teacher
@@ -13271,7 +13306,7 @@ app.post(
         req.user.id,
         "TEACHER_REJECTED",
         `Rejected teacher: ${user.firstName} ${user.lastName}`,
-        req
+        req,
       );
 
       res.json({ success: true, message: "Teacher rejected successfully" });
@@ -13281,7 +13316,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to reject teacher" });
     }
-  }
+  },
 );
 
 // APPROVE Student - FIXED VERSION
@@ -13317,7 +13352,7 @@ app.post(
         user.phoneNumber,
         newPassword,
         userName,
-        user._id.toString()
+        user._id.toString(),
       );
 
       if (smsResult.success) {
@@ -13335,7 +13370,7 @@ app.post(
       } else {
         console.error(
           `❌ Failed to send student approval SMS:`,
-          smsResult.error
+          smsResult.error,
         );
 
         await SMSLog.create({
@@ -13352,14 +13387,14 @@ app.post(
         user._id,
         "Account Approved",
         "Your account has been approved. Check your SMS for login credentials.",
-        "success"
+        "success",
       );
 
       await logActivity(
         req.user.id,
         "STUDENT_APPROVED",
         `Approved student: ${user.firstName} ${user.lastName}`,
-        req
+        req,
       );
 
       res.json({ success: true, message: "Student approved successfully" });
@@ -13369,7 +13404,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to approve student" });
     }
-  }
+  },
 );
 
 // REJECT Student
@@ -13397,7 +13432,7 @@ app.post(
         req.user.id,
         "STUDENT_REJECTED",
         `Rejected student: ${user.firstName} ${user.lastName}`,
-        req
+        req,
       );
 
       res.json({ success: true, message: "Student rejected successfully" });
@@ -13407,7 +13442,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to reject student" });
     }
-  }
+  },
 );
 
 // CREATE Class (Headmaster can also create classes)
@@ -13441,7 +13476,7 @@ app.post(
         req.user.id,
         "CLASS_CREATED",
         `Created class: ${name}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -13453,7 +13488,7 @@ app.post(
       console.error("❌ Error creating class:", error);
       res.status(500).json({ success: false, error: "Failed to create class" });
     }
-  }
+  },
 );
 
 // CREATE Subject
@@ -13483,7 +13518,7 @@ app.post(
         req.user.id,
         "SUBJECT_CREATED",
         `Created subject: ${name}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -13497,7 +13532,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to create subject" });
     }
-  }
+  },
 );
 
 // CREATE Academic Year
@@ -13531,7 +13566,7 @@ app.post(
         req.user.id,
         "ACADEMIC_YEAR_CREATED",
         `Created academic year: ${year}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -13545,7 +13580,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to create academic year" });
     }
-  }
+  },
 );
 
 // GET Announcements
@@ -13568,7 +13603,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch announcements" });
     }
-  }
+  },
 );
 
 // CREATE Announcement
@@ -13608,7 +13643,7 @@ app.post(
         req.user.id,
         "ANNOUNCEMENT_CREATED",
         `Created announcement: ${title}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -13622,7 +13657,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to create announcement" });
     }
-  }
+  },
 );
 
 // CREATE Event
@@ -13656,7 +13691,7 @@ app.post(
         req.user.id,
         "EVENT_CREATED",
         `Created event: ${title}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -13668,7 +13703,7 @@ app.post(
       console.error("❌ Error creating event:", error);
       res.status(500).json({ success: false, error: "Failed to create event" });
     }
-  }
+  },
 );
 
 // GET Analytics
@@ -13733,7 +13768,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch analytics" });
     }
-  }
+  },
 );
 
 // GET Attendance Analytics
@@ -13805,7 +13840,7 @@ app.get(
         error: "Failed to fetch attendance analytics",
       });
     }
-  }
+  },
 );
 
 // GET Academic Analytics
@@ -13891,7 +13926,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch academic analytics" });
     }
-  }
+  },
 );
 
 // GET CTM Members
@@ -13904,7 +13939,7 @@ app.get(
       const members = await CTMMembership.find({ schoolId: req.user.schoolId })
         .populate(
           "studentId",
-          "firstName lastName email profileImage gradeLevel"
+          "firstName lastName email profileImage gradeLevel",
         )
         .populate("talents", "name category")
         .sort({ joinDate: -1 });
@@ -13916,7 +13951,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch CTM members" });
     }
-  }
+  },
 );
 
 // GET CTM Activities
@@ -13938,7 +13973,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch CTM activities" });
     }
-  }
+  },
 );
 
 // GET Talent Categories
@@ -13969,7 +14004,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch talents" });
     }
-  }
+  },
 );
 
 // UPDATE CTM Member Status
@@ -14006,14 +14041,14 @@ app.patch(
         member.studentId,
         "CTM Status Updated",
         `Your CTM membership status has been changed to: ${status}`,
-        "info"
+        "info",
       );
 
       await logActivity(
         req.user.id,
         "CTM_STATUS_UPDATED",
         `Updated CTM member status to ${status}`,
-        req
+        req,
       );
 
       res.json({
@@ -14027,7 +14062,7 @@ app.patch(
         .status(500)
         .json({ success: false, error: "Failed to update member status" });
     }
-  }
+  },
 );
 
 // GET All Students (for transfer/management)
@@ -14051,7 +14086,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch students" });
     }
-  }
+  },
 );
 
 // TRANSFER Student
@@ -14097,7 +14132,7 @@ app.post(
         student._id,
         "School Transfer",
         `You have been transferred to ${targetSchool.name}`,
-        "info"
+        "info",
       );
 
       await logActivity(
@@ -14105,7 +14140,7 @@ app.post(
         "STUDENT_TRANSFERRED",
         `Transferred student to ${targetSchool.name}. Reason: ${reason}`,
         req,
-        { studentId: student._id, targetSchoolId, reason, notes }
+        { studentId: student._id, targetSchoolId, reason, notes },
       );
 
       res.json({
@@ -14119,7 +14154,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to transfer student" });
     }
-  }
+  },
 );
 
 // GET Staff
@@ -14142,7 +14177,7 @@ app.get(
       console.error("❌ Error fetching staff:", error);
       res.status(500).json({ success: false, error: "Failed to fetch staff" });
     }
-  }
+  },
 );
 
 // UPDATE Staff Role
@@ -14182,14 +14217,14 @@ app.patch(
         staff._id,
         "Role Updated",
         `Your role has been updated to: ${role}`,
-        "info"
+        "info",
       );
 
       await logActivity(
         req.user.id,
         "STAFF_ROLE_UPDATED",
         `Updated staff role to ${role}`,
-        req
+        req,
       );
 
       res.json({
@@ -14203,7 +14238,7 @@ app.patch(
         .status(500)
         .json({ success: false, error: "Failed to update staff role" });
     }
-  }
+  },
 );
 
 // GET Teacher Activities
@@ -14235,7 +14270,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch teacher activities" });
     }
-  }
+  },
 );
 
 // GET Teacher Report
@@ -14286,7 +14321,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch teacher report" });
     }
-  }
+  },
 );
 // ============================================
 // STAFF/TAMISEMI ENDPOINTS (25 ENDPOINTS)
@@ -14301,7 +14336,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14352,7 +14387,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch overview" });
     }
-  }
+  },
 );
 
 // GET Staff Profile
@@ -14364,7 +14399,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14380,7 +14415,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch profile" });
     }
-  }
+  },
 );
 
 // GET Assigned Activities
@@ -14392,7 +14427,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14409,7 +14444,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch activities" });
     }
-  }
+  },
 );
 
 // UPDATE Activity Status
@@ -14421,7 +14456,7 @@ app.patch(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14455,7 +14490,7 @@ app.patch(
         req.user.id,
         "ACTIVITY_STATUS_UPDATED",
         `Updated activity status to ${status}`,
-        req
+        req,
       );
 
       res.json({
@@ -14469,7 +14504,7 @@ app.patch(
         .status(500)
         .json({ success: false, error: "Failed to update activity status" });
     }
-  }
+  },
 );
 
 // GET Supervised Users
@@ -14481,7 +14516,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14510,7 +14545,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch supervised users" });
     }
-  }
+  },
 );
 
 // SEND Message
@@ -14522,7 +14557,7 @@ app.post(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14538,14 +14573,14 @@ app.post(
         userId,
         "Message from Official",
         message,
-        "info"
+        "info",
       );
 
       await logActivity(
         req.user.id,
         "MESSAGE_SENT",
         `Sent message to user ${userId}`,
-        req
+        req,
       );
 
       res.json({ success: true, message: "Message sent successfully" });
@@ -14553,7 +14588,7 @@ app.post(
       console.error("❌ Error sending message:", error);
       res.status(500).json({ success: false, error: "Failed to send message" });
     }
-  }
+  },
 );
 
 // GET Work Reports
@@ -14565,7 +14600,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14580,7 +14615,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch work reports" });
     }
-  }
+  },
 );
 
 // SUBMIT Work Report
@@ -14592,7 +14627,7 @@ app.post(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14632,7 +14667,7 @@ app.post(
         req.user.id,
         "WORK_REPORT_SUBMITTED",
         `Submitted ${type} work report`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -14646,7 +14681,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to submit work report" });
     }
-  }
+  },
 );
 
 // GET Permission Requests
@@ -14658,7 +14693,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14673,7 +14708,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch permission requests" });
     }
-  }
+  },
 );
 
 // SUBMIT Permission Request
@@ -14685,7 +14720,7 @@ app.post(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14724,7 +14759,7 @@ app.post(
         req.user.id,
         "PERMISSION_REQUEST_SUBMITTED",
         `Submitted ${type} permission request`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -14738,7 +14773,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to submit permission request" });
     }
-  }
+  },
 );
 
 // GET Pending Approvals (for supervisors)
@@ -14750,7 +14785,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14798,7 +14833,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch pending approvals" });
     }
-  }
+  },
 );
 
 // GET Todos
@@ -14810,7 +14845,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14825,7 +14860,7 @@ app.get(
       console.error("❌ Error fetching todos:", error);
       res.status(500).json({ success: false, error: "Failed to fetch todos" });
     }
-  }
+  },
 );
 
 // CREATE Todo
@@ -14837,7 +14872,7 @@ app.post(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14867,7 +14902,7 @@ app.post(
       console.error("❌ Error creating todo:", error);
       res.status(500).json({ success: false, error: "Failed to create todo" });
     }
-  }
+  },
 );
 
 // TOGGLE Todo Complete
@@ -14879,7 +14914,7 @@ app.patch(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14914,7 +14949,7 @@ app.patch(
       console.error("❌ Error updating todo:", error);
       res.status(500).json({ success: false, error: "Failed to update todo" });
     }
-  }
+  },
 );
 
 // DELETE Todo
@@ -14926,7 +14961,7 @@ app.delete(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14946,7 +14981,7 @@ app.delete(
       console.error("❌ Error deleting todo:", error);
       res.status(500).json({ success: false, error: "Failed to delete todo" });
     }
-  }
+  },
 );
 
 // GET Timetable
@@ -14958,7 +14993,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -14976,7 +15011,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch timetable" });
     }
-  }
+  },
 );
 
 // GET Exam Results (aggregated for their area)
@@ -14988,7 +15023,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -15031,7 +15066,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch exam results" });
     }
-  }
+  },
 );
 
 // GET Grades (aggregated)
@@ -15043,7 +15078,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -15097,7 +15132,7 @@ app.get(
       console.error("❌ Error fetching grades:", error);
       res.status(500).json({ success: false, error: "Failed to fetch grades" });
     }
-  }
+  },
 );
 
 // GET Rankings (aggregated)
@@ -15109,7 +15144,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -15153,7 +15188,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch rankings" });
     }
-  }
+  },
 );
 
 // GET Attendance (aggregated)
@@ -15165,7 +15200,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -15234,7 +15269,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch attendance" });
     }
-  }
+  },
 );
 
 // GET Announcements
@@ -15246,7 +15281,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -15277,7 +15312,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch announcements" });
     }
-  }
+  },
 );
 
 // GET Events
@@ -15289,7 +15324,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -15315,7 +15350,7 @@ app.get(
       console.error("❌ Error fetching events:", error);
       res.status(500).json({ success: false, error: "Failed to fetch events" });
     }
-  }
+  },
 );
 
 // GET CTM Members (aggregated)
@@ -15327,7 +15362,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -15372,7 +15407,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch CTM members" });
     }
-  }
+  },
 );
 
 // GET CTM Activities
@@ -15384,7 +15419,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -15412,7 +15447,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch CTM activities" });
     }
-  }
+  },
 );
 
 // GET Notifications
@@ -15424,7 +15459,7 @@ app.get(
     "district_official",
     "regional_official",
     "national_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -15439,7 +15474,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch notifications" });
     }
-  }
+  },
 );
 // ============================================
 // SUPERADMIN ENDPOINTS (30 ENDPOINTS)
@@ -15465,11 +15500,18 @@ app.get(
       ] = await Promise.all([
         User.countDocuments().catch(() => 0),
         School.countDocuments().catch(() => 0),
-        User.countDocuments({ role: "student" }).catch(() => 0),
-        User.countDocuments({ role: "teacher" }).catch(() => 0),
+        User.countDocuments({ role: "student", accountStatus: "active" }).catch(
+          () => 0,
+        ), // 🆕 PHASE 2
+        User.countDocuments({ role: "teacher", accountStatus: "active" }).catch(
+          () => 0,
+        ), // 🆕 PHASE 2
         Region.countDocuments({ isActive: true }).catch(() => 0),
-        User.countDocuments({ isActive: false }).catch(() => 0),
         User.countDocuments({
+          accountStatus: { $in: ["inactive", "suspended"] },
+        }).catch(() => 0), // 🆕 PHASE 2
+        User.countDocuments({
+          accountStatus: "active", // 🆕 PHASE 2
           lastLogin: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
         }).catch(() => 0),
       ]);
@@ -15540,7 +15582,7 @@ app.get(
         },
       });
     }
-  }
+  },
 );
 
 // GET SuperAdmin Analytics
@@ -15621,7 +15663,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch analytics" });
     }
-  }
+  },
 );
 
 // GET All Schools (SuperAdmin)
@@ -15696,7 +15738,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // CREATE School (SuperAdmin) - UPDATED to handle embedded location data
@@ -15776,7 +15818,7 @@ app.post(
         if (district) {
           schoolData.districtId = district._id;
           console.log(
-            `✅ District resolved: ${district.name} (${district._id})`
+            `✅ District resolved: ${district.name} (${district._id})`,
           );
         }
       } else if (schoolData.districtCode) {
@@ -15872,7 +15914,7 @@ app.post(
         req.user.id,
         "SCHOOL_CREATED",
         `Created school: ${school.name}`,
-        req
+        req,
       );
 
       console.log(`✅ School created successfully: ${school.name}`);
@@ -15892,7 +15934,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // SUSPEND School
@@ -15907,7 +15949,7 @@ app.post(
       const school = await School.findByIdAndUpdate(
         req.params.schoolId,
         { isActive: false, updatedAt: new Date() },
-        { new: true }
+        { new: true },
       );
 
       if (!school) {
@@ -15920,7 +15962,7 @@ app.post(
         req.user.id,
         "SCHOOL_SUSPENDED",
         `Suspended school: ${school.name}. Reason: ${reason}`,
-        req
+        req,
       );
 
       res.json({
@@ -15934,7 +15976,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to suspend school" });
     }
-  }
+  },
 );
 
 // ACTIVATE School
@@ -15947,7 +15989,7 @@ app.post(
       const school = await School.findByIdAndUpdate(
         req.params.schoolId,
         { isActive: true, updatedAt: new Date() },
-        { new: true }
+        { new: true },
       );
 
       if (!school) {
@@ -15960,7 +16002,7 @@ app.post(
         req.user.id,
         "SCHOOL_ACTIVATED",
         `Activated school: ${school.name}`,
-        req
+        req,
       );
 
       res.json({
@@ -15974,7 +16016,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to activate school" });
     }
-  }
+  },
 );
 
 // ============================================
@@ -16029,7 +16071,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -16114,7 +16156,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // DELETE /api/superadmin/schools/:schoolId - Delete School
@@ -16186,7 +16228,7 @@ app.delete(
         error: "Failed to delete school. Please try again.",
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -16244,7 +16286,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // GET All Universities (SuperAdmin)
@@ -16277,7 +16319,7 @@ app.get(
       const total = await School.countDocuments(query);
 
       console.log(
-        `✅ Fetched ${universities.length} universities (total: ${total})`
+        `✅ Fetched ${universities.length} universities (total: ${total})`,
       );
 
       res.json({
@@ -16300,7 +16342,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // REGISTER User (SuperAdmin can register any role)
@@ -16355,7 +16397,7 @@ app.post(
       if (smsQueue) {
         await sendSMS(
           phone,
-          `Welcome to ECONNECT! Your temporary password is: ${tempPassword}. Please change it after first login.`
+          `Welcome to ECONNECT! Your temporary password is: ${tempPassword}. Please change it after first login.`,
         );
       }
 
@@ -16363,7 +16405,7 @@ app.post(
         req.user.id,
         "USER_REGISTERED",
         `Registered ${role}: ${name}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -16380,7 +16422,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to register user" });
     }
-  }
+  },
 );
 
 // GET All Users (SuperAdmin) - ENHANCED WITH FULL POPULATION
@@ -16427,24 +16469,24 @@ app.get(
       // 🆕 CALCULATE registration_fee_paid FOR ALL USERS
       // ============================================
       console.log(
-        `💰 Calculating registration_fee_paid for ${sanitizedUsers.length} users...`
+        `💰 Calculating registration_fee_paid for ${sanitizedUsers.length} users...`,
       );
 
       const enrichedUsers = await Promise.all(
         sanitizedUsers.map(async (user) => {
           const registration_fee_paid = await calculateRegistrationFeePaid(
-            user._id
+            user._id,
           );
 
           return {
             ...user,
             registration_fee_paid, // ✅ Add calculated field to user object
           };
-        })
+        }),
       );
 
       console.log(
-        `✅ Enriched ${enrichedUsers.length} users with payment data`
+        `✅ Enriched ${enrichedUsers.length} users with payment data`,
       );
 
       // ✅ FETCH TALENTS FOR STUDENTS
@@ -16518,7 +16560,7 @@ app.get(
         ...(process.env.NODE_ENV === "development" && { debug: error.message }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -16665,10 +16707,10 @@ app.get(
       });
 
       console.log(
-        `✅ Found payment info for ${Object.keys(paymentMap).length} users`
+        `✅ Found payment info for ${Object.keys(paymentMap).length} users`,
       );
       console.log(
-        `💰 Calculated registration_fee_paid for ${totalPaidByUser.length} users`
+        `💰 Calculated registration_fee_paid for ${totalPaidByUser.length} users`,
       );
 
       // Attach payment info to users
@@ -16694,7 +16736,7 @@ app.get(
       const total = await User.countDocuments(userQuery);
 
       console.log(
-        `✅ Returning ${usersWithPayments.length} users with payment data`
+        `✅ Returning ${usersWithPayments.length} users with payment data`,
       );
 
       res.json({
@@ -16720,7 +16762,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // MODERATE User
@@ -16764,7 +16806,7 @@ app.post(
         req.user.id,
         "USER_MODERATED",
         `${action} user: ${user.username}`,
-        req
+        req,
       );
 
       res.json({
@@ -16778,7 +16820,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to moderate user" });
     }
-  }
+  },
 );
 
 // GET Moderated Users
@@ -16800,7 +16842,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch moderated users" });
     }
-  }
+  },
 );
 
 // GET Location Statistics
@@ -16880,7 +16922,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch location stats" });
     }
-  }
+  },
 );
 
 // GET Staff Performance
@@ -16925,7 +16967,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch staff performance" });
     }
-  }
+  },
 );
 
 // GET Staff Reports
@@ -16953,7 +16995,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch staff reports" });
     }
-  }
+  },
 );
 
 // APPROVE Staff Report
@@ -16973,7 +17015,7 @@ app.post(
           reviewedAt: new Date(),
           reviewComments: comments,
         },
-        { new: true }
+        { new: true },
       );
 
       if (!report) {
@@ -16986,14 +17028,14 @@ app.post(
         report.userId,
         "Report Approved",
         "Your work report has been approved",
-        "success"
+        "success",
       );
 
       await logActivity(
         req.user.id,
         "REPORT_APPROVED",
         "Approved work report",
-        req
+        req,
       );
 
       res.json({
@@ -17007,7 +17049,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to approve report" });
     }
-  }
+  },
 );
 
 // REJECT Staff Report
@@ -17034,7 +17076,7 @@ app.post(
           reviewedAt: new Date(),
           reviewComments: comments,
         },
-        { new: true }
+        { new: true },
       );
 
       if (!report) {
@@ -17047,14 +17089,14 @@ app.post(
         report.userId,
         "Report Rejected",
         `Your work report was rejected: ${comments}`,
-        "warning"
+        "warning",
       );
 
       await logActivity(
         req.user.id,
         "REPORT_REJECTED",
         "Rejected work report",
-        req
+        req,
       );
 
       res.json({
@@ -17068,7 +17110,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to reject report" });
     }
-  }
+  },
 );
 
 // GET Permission Requests (SuperAdmin)
@@ -17097,7 +17139,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch permission requests" });
     }
-  }
+  },
 );
 
 // APPROVE Permission Request
@@ -17117,7 +17159,7 @@ app.post(
           reviewedAt: new Date(),
           reviewComments: comments,
         },
-        { new: true }
+        { new: true },
       );
 
       if (!request) {
@@ -17130,14 +17172,14 @@ app.post(
         request.userId,
         "Permission Approved",
         `Your ${request.type} request has been approved`,
-        "success"
+        "success",
       );
 
       await logActivity(
         req.user.id,
         "PERMISSION_APPROVED",
         `Approved ${request.type} request`,
-        req
+        req,
       );
 
       res.json({
@@ -17151,7 +17193,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to approve request" });
     }
-  }
+  },
 );
 
 // REJECT Permission Request
@@ -17178,7 +17220,7 @@ app.post(
           reviewedAt: new Date(),
           reviewComments: comments,
         },
-        { new: true }
+        { new: true },
       );
 
       if (!request) {
@@ -17191,14 +17233,14 @@ app.post(
         request.userId,
         "Permission Rejected",
         `Your ${request.type} request was rejected: ${comments}`,
-        "warning"
+        "warning",
       );
 
       await logActivity(
         req.user.id,
         "PERMISSION_REJECTED",
         `Rejected ${request.type} request`,
-        req
+        req,
       );
 
       res.json({
@@ -17212,7 +17254,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to reject request" });
     }
-  }
+  },
 );
 
 // GET Pending Students (SuperAdmin)
@@ -17236,10 +17278,10 @@ app.get(
         pendingStudents.map(async (student) => {
           const studentObj = student.toObject();
           studentObj.registration_fee_paid = await calculateRegistrationFeePaid(
-            student._id
+            student._id,
           );
           return studentObj;
-        })
+        }),
       );
 
       res.json({ success: true, data: enrichedStudents });
@@ -17249,7 +17291,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch pending students" });
     }
-  }
+  },
 );
 
 // GET Pending Teachers (SuperAdmin)
@@ -17275,7 +17317,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch pending teachers" });
     }
-  }
+  },
 );
 
 // GET All Pending Tasks (across all staff)
@@ -17297,7 +17339,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch pending tasks" });
     }
-  }
+  },
 );
 
 // ASSIGN Task
@@ -17324,7 +17366,7 @@ app.post(
           priority: priority || "medium",
           updatedAt: new Date(),
         },
-        { new: true }
+        { new: true },
       );
 
       if (!task) {
@@ -17337,14 +17379,14 @@ app.post(
         assigneeId,
         "New Task Assigned",
         `You have been assigned a new task: ${task.title}`,
-        "info"
+        "info",
       );
 
       await logActivity(
         req.user.id,
         "TASK_ASSIGNED",
         `Assigned task to user ${assigneeId}`,
-        req
+        req,
       );
 
       res.json({
@@ -17356,7 +17398,7 @@ app.post(
       console.error("❌ Error assigning task:", error);
       res.status(500).json({ success: false, error: "Failed to assign task" });
     }
-  }
+  },
 );
 
 // COMMENT on Task
@@ -17393,14 +17435,14 @@ app.post(
         task.userId,
         "Task Comment",
         `SuperAdmin commented on your task: ${comment}`,
-        "info"
+        "info",
       );
 
       await logActivity(
         req.user.id,
         "TASK_COMMENTED",
         "Commented on task",
-        req
+        req,
       );
 
       res.json({
@@ -17412,7 +17454,7 @@ app.post(
       console.error("❌ Error commenting on task:", error);
       res.status(500).json({ success: false, error: "Failed to add comment" });
     }
-  }
+  },
 );
 
 // GET Revenue Analytics (SuperAdmin)
@@ -17493,7 +17535,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch revenue analytics" });
     }
-  }
+  },
 );
 
 // GET Revenue Summary
@@ -17541,7 +17583,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch revenue summary" });
     }
-  }
+  },
 );
 
 // GET System Usage
@@ -17588,7 +17630,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch system usage" });
     }
-  }
+  },
 );
 
 // GET System Reports
@@ -17620,7 +17662,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch system reports" });
     }
-  }
+  },
 );
 
 // GET SuperAdmin Profile
@@ -17639,7 +17681,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch profile" });
     }
-  }
+  },
 );
 
 // ============================================
@@ -17655,7 +17697,7 @@ app.get(
     "national_official",
     "regional_official",
     "district_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -17681,19 +17723,19 @@ app.get(
         School.countDocuments({ ...schoolQuery, isActive: true }),
         User.countDocuments({
           role: "student",
-          isActive: true,
+          accountStatus: "active", // 🆕 PHASE 2
           ...(admin.districtId && { districtId: admin.districtId }),
           ...(admin.regionId && { regionId: admin.regionId }),
         }),
         User.countDocuments({
           role: "teacher",
-          isActive: true,
+          accountStatus: "active", // 🆕 PHASE 2
           ...(admin.districtId && { districtId: admin.districtId }),
           ...(admin.regionId && { regionId: admin.regionId }),
         }),
         User.countDocuments({
           role: "staff",
-          isActive: true,
+          accountStatus: "active", // 🆕 PHASE 2
           ...(admin.districtId && { districtId: admin.districtId }),
           ...(admin.regionId && { regionId: admin.regionId }),
         }),
@@ -17710,7 +17752,7 @@ app.get(
           .limit(20)
           .populate("userId", "firstName lastName role"),
         User.countDocuments({
-          isActive: false,
+          accountStatus: "inactive", // 🆕 PHASE 2: Only inactive (not suspended)
           role: { $in: ["student", "teacher"] },
           ...(admin.districtId && { districtId: admin.districtId }),
           ...(admin.regionId && { regionId: admin.regionId }),
@@ -17741,7 +17783,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // GET Admin Analytics - COMPLETE IMPLEMENTATION
@@ -17753,7 +17795,7 @@ app.get(
     "national_official",
     "regional_official",
     "district_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -17771,7 +17813,7 @@ app.get(
         23,
         59,
         59,
-        999
+        999,
       );
 
       // Build query based on admin level
@@ -17785,7 +17827,6 @@ app.get(
         schoolQuery.regionId = admin.regionId;
         userQuery.regionId = admin.regionId;
       }
-
       // Run all queries in parallel for performance
       const [
         // Basic counts
@@ -17835,31 +17876,44 @@ app.get(
         School.countDocuments({ ...schoolQuery, isActive: true }),
         School.countDocuments({ ...schoolQuery, isActive: false }),
 
-        User.countDocuments({ ...userQuery, role: "student", isActive: true }),
-        User.countDocuments({ ...userQuery, role: "teacher", isActive: true }),
+        // 🆕 PHASE 2: Use accountStatus instead of isActive
+        User.countDocuments({
+          ...userQuery,
+          role: "student",
+          accountStatus: "active",
+        }),
+        User.countDocuments({
+          ...userQuery,
+          role: "teacher",
+          accountStatus: "active",
+        }),
         User.countDocuments({
           ...userQuery,
           role: "headmaster",
-          isActive: true,
+          accountStatus: "active",
         }),
-        User.countDocuments({ ...userQuery, role: "staff", isActive: true }),
+        User.countDocuments({
+          ...userQuery,
+          role: "staff",
+          accountStatus: "active",
+        }),
         User.countDocuments({
           ...userQuery,
           role: "entrepreneur",
-          isActive: true,
+          accountStatus: "active",
         }),
 
-        // CTM Members
+        // CTM Members (active only)
         User.countDocuments({
           ...userQuery,
           is_ctm_student: true,
-          isActive: true,
+          accountStatus: "active",
         }),
 
         // Active users (logged in within 30 days)
         User.countDocuments({
           ...userQuery,
-          isActive: true,
+          accountStatus: "active",
           lastLogin: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
         }),
 
@@ -17867,20 +17921,26 @@ app.get(
         admin.regionId
           ? 1
           : admin.districtId
-          ? Region.countDocuments({
-              _id: { $in: await School.find(schoolQuery).distinct("regionId") },
-            })
-          : Region.countDocuments({ isActive: true }),
+            ? Region.countDocuments({
+                _id: {
+                  $in: await School.find(schoolQuery).distinct("regionId"),
+                },
+              })
+            : Region.countDocuments({ isActive: true }),
 
-        // Pending issues (customize based on your needs)
-        0, // Or: SupportTicket.countDocuments({ status: { $in: ['open', 'pending'] } })
+        // Pending issues
+        0,
 
-        // Moderated users
-        User.countDocuments({ ...userQuery, isActive: false }),
+        // 🆕 PHASE 2: Moderated users (inactive + suspended)
+        User.countDocuments({
+          ...userQuery,
+          accountStatus: { $in: ["inactive", "suspended"] },
+        }),
 
         // Active sessions (users active in last 24 hours)
         User.countDocuments({
           ...userQuery,
+          accountStatus: "active",
           lastLogin: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
         }),
 
@@ -17892,11 +17952,13 @@ app.get(
         User.countDocuments({
           ...userQuery,
           role: "student",
+          accountStatus: "active", // 🆕 Only count active
           createdAt: { $gte: startOfMonth, $lte: endOfMonth },
         }),
         User.countDocuments({
           ...userQuery,
           role: "teacher",
+          accountStatus: "active", // 🆕 Only count active
           createdAt: { $gte: startOfMonth, $lte: endOfMonth },
         }),
 
@@ -17945,7 +18007,7 @@ app.get(
                   $match: {
                     $expr: { $eq: ["$regionId", "$$regionId"] },
                     role: "student",
-                    isActive: true,
+                    accountStatus: "active", // 🆕 PHASE 2
                   },
                 },
                 { $count: "count" },
@@ -17991,7 +18053,7 @@ app.get(
         23,
         59,
         59,
-        999
+        999,
       );
 
       const lastMonthStudents = await User.countDocuments({
@@ -18078,8 +18140,8 @@ app.get(
           scope: admin.districtId
             ? "district"
             : admin.regionId
-            ? "region"
-            : "national",
+              ? "region"
+              : "national",
         },
       });
     } catch (error) {
@@ -18119,7 +18181,7 @@ app.get(
         },
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -18133,7 +18195,7 @@ app.get(
     "national_official",
     "regional_official",
     "district_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -18236,10 +18298,10 @@ app.get(
         stack: error.stack,
       });
     }
-  }
+  },
 );
 
-// GET All Users (Admin)
+// GET All Users (Admin) - PHASE 2 UPDATED
 app.get(
   "/api/admin/users",
   authenticateToken,
@@ -18248,23 +18310,57 @@ app.get(
     "national_official",
     "regional_official",
     "district_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
-      const { page = 1, limit = 50, role } = req.query;
+      const {
+        page = 1,
+        limit = 50,
+        role,
+        accountStatus, // 🆕 NEW: Account status filter
+        paymentStatus, // 🆕 NEW: Payment status filter
+        search, // 🆕 NEW: Search query
+      } = req.query;
+
       const admin = await User.findById(req.user.id);
 
+      // Build base query
       const query = {};
+
+      // Role filter
       if (role) query.role = role;
 
-      // Apply role-based filtering
+      // 🆕 PHASE 2: Status filters
+      if (accountStatus && isValidAccountStatus(accountStatus)) {
+        query.accountStatus = accountStatus;
+      }
+
+      if (paymentStatus && isValidPaymentStatus(paymentStatus)) {
+        query.paymentStatus = paymentStatus;
+      }
+
+      // 🆕 NEW: Search functionality
+      if (search) {
+        query.$or = [
+          { firstName: { $regex: search, $options: "i" } },
+          { lastName: { $regex: search, $options: "i" } },
+          { username: { $regex: search, $options: "i" } },
+          { email: { $regex: search, $options: "i" } },
+          { phoneNumber: { $regex: search, $options: "i" } },
+        ];
+      }
+
+      // Apply role-based filtering (regional/district scope)
       if (admin.districtId) {
         query.districtId = admin.districtId;
       } else if (admin.regionId) {
         query.regionId = admin.regionId;
       }
 
+      console.log(`📊 Fetching users with query:`, JSON.stringify(query));
+
+      // Fetch users
       const users = await User.find(query)
         .select("-password")
         .sort({ createdAt: -1 })
@@ -18274,19 +18370,54 @@ app.get(
         .populate("regionId", "name code")
         .populate("districtId", "name code");
 
-      // ✅ ADD THIS: Enrich with registration_fee_paid
+      // ✅ Enrich with registration_fee_paid
       const enrichedUsers = await Promise.all(
         users.map(async (user) => {
           const userObj = user.toObject();
           userObj.registration_fee_paid = await calculateRegistrationFeePaid(
-            user._id
+            user._id,
           );
           delete userObj.password; // Ensure password is removed
           return userObj;
-        })
+        }),
       );
 
+      // Get total count
       const total = await User.countDocuments(query);
+
+      // 🆕 PHASE 2: Get status breakdown
+      const statusAggregation = await User.aggregate([
+        { $match: query },
+        {
+          $group: {
+            _id: {
+              accountStatus: "$accountStatus",
+              paymentStatus: "$paymentStatus",
+            },
+            count: { $sum: 1 },
+          },
+        },
+      ]);
+
+      const statusCounts = formatStatusCounts(statusAggregation);
+
+      // 🆕 NEW: Get role breakdown
+      const roleBreakdown = await User.aggregate([
+        { $match: query },
+        {
+          $group: {
+            _id: "$role",
+            count: { $sum: 1 },
+          },
+        },
+      ]);
+
+      const roleCountsMap = {};
+      roleBreakdown.forEach((item) => {
+        roleCountsMap[item._id] = item.count;
+      });
+
+      console.log(`✅ Fetched ${enrichedUsers.length} users (total: ${total})`);
 
       res.json({
         success: true,
@@ -18296,6 +18427,20 @@ app.get(
           page: parseInt(page),
           limit: parseInt(limit),
           pages: Math.ceil(total / parseInt(limit)),
+
+          // 🆕 PHASE 2: Status breakdown
+          statusCounts,
+
+          // 🆕 NEW: Role breakdown
+          roleCounts: roleCountsMap,
+
+          // 🆕 NEW: Applied filters
+          appliedFilters: {
+            role: role || null,
+            accountStatus: accountStatus || null,
+            paymentStatus: paymentStatus || null,
+            search: search || null,
+          },
         },
       });
     } catch (error) {
@@ -18306,7 +18451,7 @@ app.get(
         ...(process.env.NODE_ENV === "development" && { debug: error.message }),
       });
     }
-  }
+  },
 );
 
 // CREATE User (Admin)
@@ -18318,7 +18463,7 @@ app.post(
     "national_official",
     "regional_official",
     "district_official",
-    "headmaster"
+    "headmaster",
   ),
   async (req, res) => {
     try {
@@ -18366,7 +18511,11 @@ app.post(
         schoolId: schoolId || req.user.schoolId,
         regionId: req.user.regionId,
         districtId: req.user.districtId,
-        isActive: false, // ✅ ALL USERS INACTIVE BY DEFAULT
+
+        // 🆕 PHASE 2: NEW STATUS SYSTEM
+        accountStatus: "inactive", // All new users start inactive
+        paymentStatus: "no_payment", // Default payment status
+        isActive: false, // ✅ Kept for backward compatibility (synced via pre-save)
       };
 
       // 🔹 Role-based extensions
@@ -18398,7 +18547,7 @@ app.post(
         req.user.id,
         "USER_CREATED",
         `Created ${role} user: ${username}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -18419,10 +18568,10 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
-// UPDATE User (Admin)
+// UPDATE User (Admin) - PHASE 2 UPDATED
 app.patch(
   "/api/admin/users/:userId",
   authenticateToken,
@@ -18431,7 +18580,7 @@ app.patch(
     "national_official",
     "regional_official",
     "district_official",
-    "headmaster"
+    "headmaster",
   ),
   async (req, res) => {
     try {
@@ -18461,26 +18610,87 @@ app.patch(
         });
       }
 
-      // Update user (excluding password and role)
-      const { password, role, ...updates } = req.body;
-      // ✅ ADD THIS: Sync classLevel with gradeLevel
+      // 🆕 PHASE 2: Extract and block direct status changes
+      const {
+        password,
+        role,
+        accountStatus, // 🆕 BLOCK direct changes
+        paymentStatus, // 🆕 BLOCK direct changes
+        isActive, // 🆕 BLOCK direct changes (deprecated)
+        payment_verified_by, // 🆕 BLOCK direct changes
+        payment_verified_at, // 🆕 BLOCK direct changes
+        payment_date, // 🆕 BLOCK direct changes
+        ...updates
+      } = req.body;
+
+      // 🆕 PHASE 2: Reject attempts to change status fields directly
+      if (
+        accountStatus !== undefined ||
+        paymentStatus !== undefined ||
+        isActive !== undefined
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "Account status and payment status cannot be changed directly",
+          message:
+            "Use the appropriate endpoints: /approve for activation, /payment/record for payment updates, /suspend for suspension",
+          blockedFields: {
+            accountStatus: accountStatus !== undefined,
+            paymentStatus: paymentStatus !== undefined,
+            isActive: isActive !== undefined,
+          },
+        });
+      }
+
+      // 🆕 PHASE 2: Block payment verification field changes
+      if (
+        payment_verified_by !== undefined ||
+        payment_verified_at !== undefined ||
+        payment_date !== undefined
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "Payment verification fields are read-only",
+          message:
+            "These fields are automatically managed by the payment system",
+        });
+      }
+
+      // 🆕 PHASE 2: Block role changes (security)
+      if (role !== undefined && role !== user.role) {
+        return res.status(400).json({
+          success: false,
+          error: "User role cannot be changed after creation",
+          message: "Create a new account if a different role is needed",
+        });
+      }
+
+      // ✅ Sync classLevel with gradeLevel (backward compatibility)
       if (updates.classLevel) {
-        updates.gradeLevel = updates.classLevel; // Maintain backward compatibility
+        updates.gradeLevel = updates.classLevel;
       }
 
       // If they somehow update gradeLevel instead, copy to classLevel
       if (updates.gradeLevel && !updates.classLevel) {
         updates.classLevel = updates.gradeLevel;
       }
+
+      // ✅ Apply allowed updates
       Object.assign(user, updates);
       user.updatedAt = new Date();
       await user.save();
+
+      console.log(`✅ Updated user: ${user.username} (${req.params.userId})`);
 
       await logActivity(
         req.user.id,
         "USER_UPDATED",
         `Updated user: ${user.username}`,
-        req
+        req,
+        {
+          userId: user._id,
+          updatedFields: Object.keys(updates),
+        },
       );
 
       res.json({
@@ -18501,7 +18711,7 @@ app.patch(
         }),
       });
     }
-  }
+  },
 );
 
 // DELETE User (Admin)
@@ -18513,7 +18723,7 @@ app.delete(
     "national_official",
     "regional_official",
     "district_official",
-    "headmaster"
+    "headmaster",
   ),
   async (req, res) => {
     try {
@@ -18543,21 +18753,22 @@ app.delete(
         });
       }
 
-      // Soft delete - deactivate instead of removing
-      user.isActive = false;
+      // 🆕 PHASE 2: Soft delete - suspend instead of removing
+      user.accountStatus = "suspended"; // New: Use accountStatus
+      user.isActive = false; // Kept for backward compatibility
       user.updatedAt = new Date();
       await user.save();
 
       await logActivity(
         req.user.id,
         "USER_DELETED",
-        `Deactivated user: ${user.username}`,
-        req
+        `Suspended user: ${user.username}`,
+        req,
       );
 
       res.json({
         success: true,
-        message: "User deactivated successfully",
+        message: "User suspended successfully",
       });
     } catch (error) {
       console.error("❌ Error deleting user:", error);
@@ -18569,7 +18780,7 @@ app.delete(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -18681,7 +18892,7 @@ app.delete(
         ]);
 
         console.log(
-          `🗑️ Deleted ${businesses.length} businesses for entrepreneur ${userName}`
+          `🗑️ Deleted ${businesses.length} businesses for entrepreneur ${userName}`,
         );
       }
 
@@ -18690,11 +18901,11 @@ app.delete(
         await Promise.all([
           Class.updateMany(
             { teacherId: userId },
-            { isActive: false, updatedAt: new Date() }
+            { isActive: false, updatedAt: new Date() },
           ),
           Assignment.updateMany(
             { teacherId: userId },
-            { status: "closed", updatedAt: new Date() }
+            { status: "closed", updatedAt: new Date() },
           ),
         ]);
 
@@ -18714,7 +18925,7 @@ app.delete(
           deletedUserEmail: userEmail,
           deletionType: "hard_delete",
           initiatedBy: req.user.username,
-        }
+        },
       );
 
       console.log(`✅ Successfully deleted user: ${userName} (${userId})`);
@@ -18740,7 +18951,7 @@ app.delete(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -18821,8 +19032,8 @@ app.post(
             continue;
           }
 
-          // Skip if already active
-          if (user.isActive) {
+          // ✅ FIX 1: Check accountStatus instead of isActive
+          if (user.accountStatus === "active") {
             const userName =
               `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
               user.username;
@@ -18842,14 +19053,43 @@ app.post(
           const newPassword = generateRandomPassword();
           const hashedPassword = await hashPassword(newPassword);
 
-          // Activate user
-          user.isActive = true;
+          // 🆕 PHASE 2: Activate user with new status system
+          const rolesRequiringPayment = [
+            "student",
+            "entrepreneur",
+            "nonstudent",
+          ];
+          const requiresPayment = rolesRequiringPayment.includes(user.role);
+
           user.password = hashedPassword;
+
+          if (!requiresPayment) {
+            // Non-payment roles - activate immediately
+            user.accountStatus = "active";
+            user.paymentStatus = "no_payment";
+            user.isActive = true;
+            user.payment_verified_by = req.user.id;
+            user.payment_verified_at = new Date();
+          } else {
+            // Payment roles - keep inactive until payment
+            user.accountStatus = "inactive";
+            user.paymentStatus = "no_payment";
+            user.isActive = false;
+          }
 
           user.updatedAt = new Date();
           await user.save();
 
-          console.log(`✅ User activated: ${user.username}`);
+          console.log(
+            `✅ User processed: ${user.username} - Status: ${user.accountStatus}`,
+          );
+
+          // ✅ FIX 2: REMOVED DUPLICATE ACTIVATION CODE HERE
+          // The following block was deleted:
+          // - user.isActive = true;
+          // - user.password = hashedPassword;
+          // - user.updatedAt = new Date();
+          // - await user.save();
 
           // Send SMS with password
           const userName =
@@ -18862,7 +19102,7 @@ app.post(
               user.phoneNumber,
               newPassword,
               userName,
-              user._id.toString()
+              user._id.toString(),
             );
 
             // Log SMS result
@@ -18880,7 +19120,7 @@ app.post(
               });
             } else {
               console.warn(
-                `⚠️ SMS failed for ${user.phoneNumber}: ${smsResult.error}`
+                `⚠️ SMS failed for ${user.phoneNumber}: ${smsResult.error}`,
               );
 
               await SMSLog.create({
@@ -18904,7 +19144,7 @@ app.post(
               user._id,
               "Account Approved! 🎉",
               `Your ${user.role} account has been approved! Check your SMS at ${user.phoneNumber} for your login password.`,
-              "success"
+              "success",
             );
           } catch (notifError) {
             console.error(`⚠️ Notification error:`, notifError);
@@ -18928,7 +19168,7 @@ app.post(
                   "paymentProof.status": "verified",
                   "paymentProof.verifiedBy": req.user.id,
                   "paymentProof.verifiedAt": new Date(),
-                }
+                },
               );
             } catch (invoiceError) {
               console.error(`⚠️ Invoice update error:`, invoiceError);
@@ -18951,15 +19191,15 @@ app.post(
                     reason: "Bulk approval by admin",
                   },
                 },
-              }
+              },
             );
           } catch (paymentError) {
             console.error(`⚠️ Payment history update error:`, paymentError);
           }
 
-          // ✅ PART 2: Calculate total paid from PaymentHistory
+          // ✅ Calculate total paid from PaymentHistory
           const registration_fee_paid = await calculateRegistrationFeePaid(
-            user._id
+            user._id,
           );
 
           // Add to success results
@@ -18972,12 +19212,14 @@ app.post(
             email: user.email,
             smsSent: smsResult.success,
             smsError: smsResult.success ? null : smsResult.error,
-            registration_fee_paid, // ✅ PART 2: Total amount paid
+            registration_fee_paid,
+            accountStatus: user.accountStatus, // ✅ NEW: Include status in response
+            paymentStatus: user.paymentStatus, // ✅ NEW: Include payment status
           });
           results.stats.approved++;
 
           console.log(
-            `✅ Successfully approved ${userName} (Paid: TZS ${registration_fee_paid})`
+            `✅ Successfully approved ${userName} (Status: ${user.accountStatus}, Paid: TZS ${registration_fee_paid})`,
           );
         } catch (userError) {
           console.error(`❌ Error processing user ${userId}:`, userError);
@@ -19002,7 +19244,7 @@ app.post(
           skipped: results.stats.skipped,
           successUserIds: results.success.map((u) => u.userId),
           failedUserIds: results.failed.map((f) => f.userId),
-        }
+        },
       );
 
       console.log(`\n✅ Bulk approval complete:`, results.stats);
@@ -19018,8 +19260,8 @@ app.post(
         message: allFailed
           ? "All approvals failed"
           : partialSuccess
-          ? `Approved ${results.stats.approved} users. ${results.stats.failed} failed.`
-          : `Successfully approved ${results.stats.approved} user(s)`,
+            ? `Approved ${results.stats.approved} users. ${results.stats.failed} failed.`
+            : `Successfully approved ${results.stats.approved} user(s)`,
         data: results,
         summary: {
           total: results.stats.total,
@@ -19042,7 +19284,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -19057,7 +19299,7 @@ app.post(
       const { userIds } = req.body;
 
       console.log(
-        `💰 Bulk payment reminder request for ${userIds?.length || 0} users`
+        `💰 Bulk payment reminder request for ${userIds?.length || 0} users`,
       );
 
       // Validate input
@@ -19108,7 +19350,7 @@ app.post(
           // Find user
           const user = await User.findById(userId).populate(
             "schoolId",
-            "name schoolCode"
+            "name schoolCode",
           );
 
           if (!user) {
@@ -19145,7 +19387,7 @@ app.post(
           // Calculate total amount due
           const totalDue = pendingInvoices.reduce(
             (sum, inv) => sum + inv.amount,
-            0
+            0,
           );
           results.stats.totalAmountDue += totalDue;
 
@@ -19153,7 +19395,7 @@ app.post(
           const urgentInvoice = pendingInvoices[0];
           const daysUntilDue = Math.ceil(
             (new Date(urgentInvoice.dueDate) - new Date()) /
-              (1000 * 60 * 60 * 24)
+              (1000 * 60 * 60 * 24),
           );
 
           // Prepare SMS message
@@ -19161,7 +19403,7 @@ app.post(
             `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
             user.username;
           const smsMessage = `Hello ${userName}! Payment Reminder:\n\nAmount Due: TZS ${totalDue.toLocaleString()}\nDue Date: ${new Date(
-            urgentInvoice.dueDate
+            urgentInvoice.dueDate,
           ).toLocaleDateString()}\n${
             daysUntilDue > 0 ? `(${daysUntilDue} days remaining)` : "(OVERDUE)"
           }\n\nPay via:\n- Vodacom Lipa: 5130676\n- CRDB: 0150814579600\n\nThank you!`;
@@ -19173,13 +19415,13 @@ app.post(
             smsResult = await smsService.sendSMS(
               user.phoneNumber,
               smsMessage,
-              "payment_reminder"
+              "payment_reminder",
             );
 
             // Log SMS result
             if (smsResult.success) {
               console.log(
-                `📱 Payment reminder SMS sent to ${user.phoneNumber}`
+                `📱 Payment reminder SMS sent to ${user.phoneNumber}`,
               );
 
               await SMSLog.create({
@@ -19193,7 +19435,7 @@ app.post(
               });
             } else {
               console.warn(
-                `⚠️ SMS failed for ${user.phoneNumber}: ${smsResult.error}`
+                `⚠️ SMS failed for ${user.phoneNumber}: ${smsResult.error}`,
               );
 
               await SMSLog.create({
@@ -19219,10 +19461,10 @@ app.post(
               `You have ${
                 pendingInvoices.length
               } pending invoice(s) totaling TZS ${totalDue.toLocaleString()}. Please complete payment by ${new Date(
-                urgentInvoice.dueDate
+                urgentInvoice.dueDate,
               ).toLocaleDateString()}.`,
               "warning",
-              `/invoices`
+              `/invoices`,
             );
           } catch (notifError) {
             console.error(`⚠️ Notification error:`, notifError);
@@ -19284,7 +19526,7 @@ app.post(
           totalAmountDue: results.stats.totalAmountDue,
           successUserIds: results.success.map((u) => u.userId),
           failedUserIds: results.failed.map((f) => f.userId),
-        }
+        },
       );
 
       console.log(`\n✅ Bulk payment reminder complete:`, results.stats);
@@ -19298,8 +19540,8 @@ app.post(
         message: allFailed
           ? "All reminders failed"
           : partialSuccess
-          ? `Sent ${results.stats.sent} reminders. ${results.stats.failed} failed.`
-          : `Successfully sent ${results.stats.sent} payment reminder(s)`,
+            ? `Sent ${results.stats.sent} reminders. ${results.stats.failed} failed.`
+            : `Successfully sent ${results.stats.sent} payment reminder(s)`,
         data: results,
         summary: {
           total: results.stats.total,
@@ -19323,7 +19565,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -19338,7 +19580,7 @@ app.post(
       const { userIds } = req.body;
 
       console.log(
-        `🔑 Bulk password resend request for ${userIds?.length || 0} users`
+        `🔑 Bulk password resend request for ${userIds?.length || 0} users`,
       );
 
       // Validate input
@@ -19435,7 +19677,7 @@ app.post(
               user.phoneNumber,
               newPassword,
               userName,
-              user._id.toString()
+              user._id.toString(),
             );
 
             // Log SMS result
@@ -19453,7 +19695,7 @@ app.post(
               });
             } else {
               console.warn(
-                `⚠️ SMS failed for ${user.phoneNumber}: ${smsResult.error}`
+                `⚠️ SMS failed for ${user.phoneNumber}: ${smsResult.error}`,
               );
 
               await SMSLog.create({
@@ -19477,7 +19719,7 @@ app.post(
               user._id,
               "Password Reset",
               `Your password has been reset by an administrator. Check your SMS at ${user.phoneNumber} for your new password.`,
-              "info"
+              "info",
             );
           } catch (notifError) {
             console.error(`⚠️ Notification error:`, notifError);
@@ -19520,7 +19762,7 @@ app.post(
           skipped: results.stats.skipped,
           successUserIds: results.success.map((u) => u.userId),
           failedUserIds: results.failed.map((f) => f.userId),
-        }
+        },
       );
 
       console.log(`\n✅ Bulk password reset complete:`, results.stats);
@@ -19534,8 +19776,8 @@ app.post(
         message: allFailed
           ? "All password resets failed"
           : partialSuccess
-          ? `Reset ${results.stats.sent} passwords. ${results.stats.failed} failed.`
-          : `Successfully reset ${results.stats.sent} password(s)`,
+            ? `Reset ${results.stats.sent} passwords. ${results.stats.failed} failed.`
+            : `Successfully reset ${results.stats.sent} password(s)`,
         data: results,
         summary: {
           total: results.stats.total,
@@ -19558,7 +19800,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -19763,17 +20005,17 @@ app.post(
 
             results.deletedData.entrepreneurs++;
             console.log(
-              `🗑️ Deleted ${businesses.length} businesses for entrepreneur ${userName}`
+              `🗑️ Deleted ${businesses.length} businesses for entrepreneur ${userName}`,
             );
           } else if (userRole === "teacher") {
             await Promise.allSettled([
               Class.updateMany(
                 { teacherId: userId },
-                { isActive: false, updatedAt: new Date() }
+                { isActive: false, updatedAt: new Date() },
               ),
               Assignment.updateMany(
                 { teacherId: userId },
-                { status: "closed", updatedAt: new Date() }
+                { status: "closed", updatedAt: new Date() },
               ),
             ]);
 
@@ -19799,7 +20041,7 @@ app.post(
           results.stats.deleted++;
 
           console.log(
-            `✅ Deleted user ${userName} (${recordsDeleted} total records)`
+            `✅ Deleted user ${userName} (${recordsDeleted} total records)`,
           );
         } catch (userError) {
           console.error(`❌ Error processing user ${userId}:`, userError);
@@ -19831,7 +20073,7 @@ app.post(
             entrepreneurs: results.deletedData.entrepreneurs,
             others: results.deletedData.others,
           },
-        }
+        },
       );
 
       console.log(`\n✅ Bulk deletion complete:`, results.stats);
@@ -19846,8 +20088,8 @@ app.post(
         message: allFailed
           ? "All deletions failed"
           : partialSuccess
-          ? `Deleted ${results.stats.deleted} users. ${results.stats.failed} failed.`
-          : `Successfully deleted ${results.stats.deleted} user(s)`,
+            ? `Deleted ${results.stats.deleted} users. ${results.stats.failed} failed.`
+            : `Successfully deleted ${results.stats.deleted} user(s)`,
         data: results,
         summary: {
           total: results.stats.total,
@@ -19872,7 +20114,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // GET Admin Profile
@@ -19884,7 +20126,7 @@ app.get(
     "national_official",
     "regional_official",
     "district_official",
-    "tamisemi"
+    "tamisemi",
   ),
   async (req, res) => {
     try {
@@ -19911,7 +20153,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -19980,7 +20222,7 @@ app.get(
         error: "Failed to fetch registration types",
       });
     }
-  }
+  },
 );
 
 // CREATE registration type (Admin)
@@ -19996,7 +20238,7 @@ app.post(
         req.user.id,
         "REGISTRATION_TYPE_CREATED",
         `Created registration type: ${name}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -20011,7 +20253,7 @@ app.post(
         error: "Failed to create registration type",
       });
     }
-  }
+  },
 );
 
 // UPDATE registration type (Admin)
@@ -20027,7 +20269,7 @@ app.patch(
         req.user.id,
         "REGISTRATION_TYPE_UPDATED",
         `Updated registration type: ${id}`,
-        req
+        req,
       );
 
       res.json({
@@ -20042,7 +20284,7 @@ app.patch(
         error: "Failed to update registration type",
       });
     }
-  }
+  },
 );
 
 // DELETE registration type (Admin)
@@ -20058,7 +20300,7 @@ app.delete(
         req.user.id,
         "REGISTRATION_TYPE_DELETED",
         `Deleted registration type: ${id}`,
-        req
+        req,
       );
 
       res.json({
@@ -20072,7 +20314,7 @@ app.delete(
         error: "Failed to delete registration type",
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -20103,7 +20345,7 @@ app.get(
         .skip((parseInt(page) - 1) * parseInt(limit))
         .populate(
           "senderId",
-          "firstName lastName email role profileImage schoolId"
+          "firstName lastName email role profileImage schoolId",
         )
         .populate({
           path: "senderId",
@@ -20132,7 +20374,7 @@ app.get(
       console.error("❌ Error fetching inbox:", error);
       res.status(500).json({ success: false, error: "Failed to fetch inbox" });
     }
-  }
+  },
 );
 
 // GET SuperAdmin Outbox
@@ -20153,7 +20395,7 @@ app.get(
         .skip((parseInt(page) - 1) * parseInt(limit))
         .populate(
           "recipientId",
-          "firstName lastName email role profileImage schoolId"
+          "firstName lastName email role profileImage schoolId",
         )
         .populate({
           path: "recipientId",
@@ -20179,7 +20421,7 @@ app.get(
       console.error("❌ Error fetching outbox:", error);
       res.status(500).json({ success: false, error: "Failed to fetch outbox" });
     }
-  }
+  },
 );
 
 // POST Send Message (Individual)
@@ -20217,7 +20459,7 @@ app.post(
         subject || "New Message from SuperAdmin",
         content.substring(0, 100),
         "message",
-        `/messages`
+        `/messages`,
       );
 
       // Emit real-time via Socket.io
@@ -20229,7 +20471,7 @@ app.post(
         req.user.id,
         "SUPERADMIN_MESSAGE_SENT",
         `Sent message to user ${recipientId}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -20241,7 +20483,7 @@ app.post(
       console.error("❌ Error sending message:", error);
       res.status(500).json({ success: false, error: "Failed to send message" });
     }
-  }
+  },
 );
 
 // POST Bulk Message
@@ -20279,17 +20521,17 @@ app.post(
         recipients = users;
       } else if (recipientType === "school" && schoolId) {
         const users = await User.find({ schoolId, isActive: true }).distinct(
-          "_id"
+          "_id",
         );
         recipients = users;
       } else if (recipientType === "region" && regionId) {
         const users = await User.find({ regionId, isActive: true }).distinct(
-          "_id"
+          "_id",
         );
         recipients = users;
       } else if (recipientType === "district" && districtId) {
         const users = await User.find({ districtId, isActive: true }).distinct(
-          "_id"
+          "_id",
         );
         recipients = users;
       } else if (recipientType === "all") {
@@ -20325,7 +20567,7 @@ app.post(
           subject || "New Message from SuperAdmin",
           content.substring(0, 100),
           "message",
-          `/messages`
+          `/messages`,
         );
 
         // Emit real-time
@@ -20339,7 +20581,7 @@ app.post(
         "SUPERADMIN_BULK_MESSAGE_SENT",
         `Sent bulk message to ${recipients.length} recipients`,
         req,
-        { recipientType, recipientCount: recipients.length }
+        { recipientType, recipientCount: recipients.length },
       );
 
       res.status(201).json({
@@ -20353,7 +20595,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to send bulk message" });
     }
-  }
+  },
 );
 
 // GET Users Search (for recipient autocomplete)
@@ -20409,7 +20651,7 @@ app.get(
       console.error("❌ Error searching users:", error);
       res.status(500).json({ success: false, error: "Failed to search users" });
     }
-  }
+  },
 );
 
 // PATCH Mark Message as Read
@@ -20428,7 +20670,7 @@ app.patch(
           isRead: true,
           readAt: new Date(),
         },
-        { new: true }
+        { new: true },
       );
 
       if (!message) {
@@ -20449,7 +20691,7 @@ app.patch(
         .status(500)
         .json({ success: false, error: "Failed to mark message as read" });
     }
-  }
+  },
 );
 
 // DELETE Message
@@ -20465,7 +20707,7 @@ app.delete(
           $or: [{ senderId: req.user.id }, { recipientId: req.user.id }],
         },
         { isDeleted: true, deletedAt: new Date() },
-        { new: true }
+        { new: true },
       );
 
       if (!message) {
@@ -20485,7 +20727,7 @@ app.delete(
         .status(500)
         .json({ success: false, error: "Failed to delete message" });
     }
-  }
+  },
 );
 
 // UPDATE School (SuperAdmin) - UPDATED to handle embedded location data
@@ -20626,7 +20868,7 @@ app.put(
         req.user.id,
         "SCHOOL_UPDATED",
         `Updated school: ${school.name}`,
-        req
+        req,
       );
 
       console.log(`✅ Successfully updated school: ${school.name}`);
@@ -20646,7 +20888,7 @@ app.put(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -20703,7 +20945,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch profile" });
     }
-  }
+  },
 );
 
 // GET Teacher Classes
@@ -20728,7 +20970,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch classes" });
     }
-  }
+  },
 );
 
 // GET /api/admin/class-level-requests - List all class level requests for admin review
@@ -20766,7 +21008,7 @@ app.get(
         .skip((parseInt(page) - 1) * parseInt(limit))
         .populate(
           "studentId",
-          "firstName lastName email username gradeLevel course"
+          "firstName lastName email username gradeLevel course",
         )
         .populate("reviewedBy", "firstName lastName");
 
@@ -20782,7 +21024,7 @@ app.get(
           }
 
           return requestObj;
-        })
+        }),
       );
 
       const total = await ClassLevelRequest.countDocuments(query);
@@ -20829,7 +21071,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // GET /api/admin/class-level-requests/:requestId - Get specific request details
@@ -20842,7 +21084,7 @@ app.get(
       const request = await ClassLevelRequest.findById(req.params.requestId)
         .populate(
           "studentId",
-          "firstName lastName email username phoneNumber gradeLevel course schoolId"
+          "firstName lastName email username phoneNumber gradeLevel course schoolId",
         )
         .populate("reviewedBy", "firstName lastName email");
 
@@ -20880,7 +21122,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // CREATE Class
@@ -20925,7 +21167,7 @@ app.post(
         req.user.id,
         "CLASS_CREATED",
         `Created class: ${name}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -20937,7 +21179,7 @@ app.post(
       console.error("❌ Error creating class:", error);
       res.status(500).json({ success: false, error: "Failed to create class" });
     }
-  }
+  },
 );
 
 // UPDATE Class
@@ -20966,7 +21208,7 @@ app.patch(
         req.user.id,
         "CLASS_UPDATED",
         `Updated class: ${classData.name}`,
-        req
+        req,
       );
 
       res.json({
@@ -20978,7 +21220,7 @@ app.patch(
       console.error("❌ Error updating class:", error);
       res.status(500).json({ success: false, error: "Failed to update class" });
     }
-  }
+  },
 );
 
 // DELETE Class
@@ -21007,7 +21249,7 @@ app.delete(
         req.user.id,
         "CLASS_DELETED",
         `Deleted class: ${classData.name}`,
-        req
+        req,
       );
 
       res.json({ success: true, message: "Class deleted successfully" });
@@ -21015,7 +21257,7 @@ app.delete(
       console.error("❌ Error deleting class:", error);
       res.status(500).json({ success: false, error: "Failed to delete class" });
     }
-  }
+  },
 );
 
 // GET Class Students
@@ -21030,7 +21272,7 @@ app.get(
         teacherId: req.user.id,
       }).populate(
         "students",
-        "firstName lastName email phoneNumber profileImage gradeLevel studentId"
+        "firstName lastName email phoneNumber profileImage gradeLevel studentId",
       );
 
       if (!classData) {
@@ -21046,34 +21288,111 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch students" });
     }
-  }
+  },
 );
 
-// GET All Students (Teacher's school)
+// GET All Students (Teacher's school) - PHASE 2 UPDATED
 app.get(
   "/api/teacher/students",
   authenticateToken,
   authorizeRoles("teacher"),
   async (req, res) => {
     try {
-      const students = await User.find({
+      const {
+        page = 1,
+        limit = 100,
+        classLevel, // Filter by class level
+        search, // Search students
+        accountStatus, // 🆕 NEW: Status filter (optional)
+      } = req.query;
+
+      // Build query
+      const query = {
         schoolId: req.user.schoolId,
         role: "student",
-        isActive: true,
-      })
-        .select(
-          "firstName lastName email phoneNumber profileImage gradeLevel studentId"
-        )
-        .sort({ firstName: 1 });
+        accountStatus: accountStatus || "active", // 🆕 PHASE 2: Default to active only
+      };
 
-      res.json({ success: true, data: students });
+      // Class level filter
+      if (classLevel) {
+        query.classLevel = classLevel;
+      }
+
+      // Search filter
+      if (search) {
+        query.$or = [
+          { firstName: { $regex: search, $options: "i" } },
+          { lastName: { $regex: search, $options: "i" } },
+          { username: { $regex: search, $options: "i" } },
+          { studentId: { $regex: search, $options: "i" } },
+        ];
+      }
+
+      console.log(
+        `👨‍🏫 Teacher ${req.user.username} fetching students:`,
+        JSON.stringify(query),
+      );
+
+      const students = await User.find(query)
+        .select(
+          "firstName lastName email phoneNumber profileImage gradeLevel classLevel studentId accountStatus paymentStatus registration_type",
+        )
+        .sort({ firstName: 1 })
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit));
+
+      const total = await User.countDocuments(query);
+
+      // 🆕 NEW: Get class level breakdown
+      const classLevelBreakdown = await User.aggregate([
+        {
+          $match: {
+            schoolId: req.user.schoolId,
+            role: "student",
+            accountStatus: "active",
+          },
+        },
+        {
+          $group: {
+            _id: "$classLevel",
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]);
+
+      const classLevelCounts = {};
+      classLevelBreakdown.forEach((item) => {
+        if (item._id) {
+          classLevelCounts[item._id] = item.count;
+        }
+      });
+
+      console.log(`✅ Found ${students.length} students (total: ${total})`);
+
+      res.json({
+        success: true,
+        data: students,
+        meta: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit)),
+          classLevelCounts,
+          appliedFilters: {
+            classLevel: classLevel || null,
+            search: search || null,
+            accountStatus: accountStatus || "active",
+          },
+        },
+      });
     } catch (error) {
       console.error("❌ Error fetching students:", error);
       res
         .status(500)
         .json({ success: false, error: "Failed to fetch students" });
     }
-  }
+  },
 );
 
 // GET Attendance for a class
@@ -21119,7 +21438,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch attendance" });
     }
-  }
+  },
 );
 
 // SAVE Attendance
@@ -21179,7 +21498,7 @@ app.post(
         req.user.id,
         "ATTENDANCE_RECORDED",
         `Recorded attendance for ${records.length} students`,
-        req
+        req,
       );
 
       res.json({
@@ -21193,7 +21512,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to save attendance" });
     }
-  }
+  },
 );
 
 // GET Teacher Assignments
@@ -21226,7 +21545,7 @@ app.get(
               pending: submissionCount - gradedCount,
             },
           };
-        })
+        }),
       );
 
       res.json({ success: true, data: assignmentsWithStats });
@@ -21236,7 +21555,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch assignments" });
     }
-  }
+  },
 );
 
 // CREATE Assignment
@@ -21282,7 +21601,7 @@ app.post(
         req.user.id,
         "ASSIGNMENT_CREATED",
         `Created assignment: ${title}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -21300,7 +21619,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 ); // ✅ FIXED: Closing app.post() for CREATE Assignment
 
 // GET Assignment Submissions
@@ -21327,7 +21646,7 @@ app.get(
       })
         .populate(
           "studentId",
-          "firstName lastName email profileImage studentId"
+          "firstName lastName email profileImage studentId",
         )
         .sort({ submittedAt: -1 });
 
@@ -21338,7 +21657,7 @@ app.get(
         .status(500)
         .json({ success: false, error: "Failed to fetch submissions" });
     }
-  }
+  },
 );
 
 // GRADE Submission
@@ -21358,7 +21677,7 @@ app.post(
       }
 
       const submission = await AssignmentSubmission.findById(
-        req.params.submissionId
+        req.params.submissionId,
       ).populate("assignmentId");
 
       if (!submission) {
@@ -21386,14 +21705,14 @@ app.post(
         submission.studentId,
         "Assignment Graded",
         `Your assignment "${submission.assignmentId.title}" has been graded: ${grade}/${submission.assignmentId.totalMarks}`,
-        "info"
+        "info",
       );
 
       await logActivity(
         req.user.id,
         "SUBMISSION_GRADED",
         "Graded assignment submission",
-        req
+        req,
       );
 
       res.json({
@@ -21407,7 +21726,7 @@ app.post(
         .status(500)
         .json({ success: false, error: "Failed to grade submission" });
     }
-  }
+  },
 );
 
 // GET Teacher Exams
@@ -21427,7 +21746,7 @@ app.get(
       console.error("❌ Error fetching exams:", error);
       res.status(500).json({ success: false, error: "Failed to fetch exams" });
     }
-  }
+  },
 );
 
 // CREATE Exam
@@ -21474,7 +21793,7 @@ app.post(
         req.user.id,
         "EXAM_CREATED",
         `Created exam: ${title}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -21486,7 +21805,7 @@ app.post(
       console.error("❌ Error creating exam:", error);
       res.status(500).json({ success: false, error: "Failed to create exam" });
     }
-  }
+  },
 );
 
 // SEND Bulk Message
@@ -21533,7 +21852,7 @@ app.post(
           recipientId,
           subject || "Message from Teacher",
           message,
-          "info"
+          "info",
         );
       }
 
@@ -21541,7 +21860,7 @@ app.post(
         req.user.id,
         "BULK_MESSAGE_SENT",
         `Sent message to ${recipients.length} recipients`,
-        req
+        req,
       );
 
       res.json({
@@ -21552,7 +21871,7 @@ app.post(
       console.error("❌ Error sending bulk message:", error);
       res.status(500).json({ success: false, error: "Failed to send message" });
     }
-  }
+  },
 );
 
 // GET Student Report
@@ -21605,7 +21924,7 @@ app.get(
       console.error("❌ Error fetching student report:", error);
       res.status(500).json({ success: false, error: "Failed to fetch report" });
     }
-  }
+  },
 );
 
 // GET Class Report
@@ -21681,7 +22000,7 @@ app.get(
       console.error("❌ Error fetching class report:", error);
       res.status(500).json({ success: false, error: "Failed to fetch report" });
     }
-  }
+  },
 );
 
 // ============================================================================
@@ -21781,7 +22100,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // GET student certificates
@@ -21813,7 +22132,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // CREATE certificate
@@ -21876,14 +22195,14 @@ app.post(
         "Certificate Issued",
         `You have been awarded a ${certificateType} certificate for ${certificate.talentId.name}`,
         "achievement",
-        `/certificates/${certificate._id}`
+        `/certificates/${certificate._id}`,
       );
 
       await logActivity(
         req.user.id,
         "CERTIFICATE_ISSUED",
         `Issued ${certificateType} certificate to ${certificate.studentId.firstName}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -21901,7 +22220,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // Verify certificate by number or code
@@ -21958,7 +22277,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // UPDATE certificate
@@ -21972,7 +22291,7 @@ app.put(
       const certificate = await Certificate.findByIdAndUpdate(
         req.params.id,
         req.body,
-        { new: true, runValidators: true }
+        { new: true, runValidators: true },
       );
 
       if (!certificate) {
@@ -21986,7 +22305,7 @@ app.put(
         req.user.id,
         "CERTIFICATE_UPDATED",
         `Updated certificate ${certificate.certificateNumber}`,
-        req
+        req,
       );
 
       res.json({
@@ -22004,7 +22323,7 @@ app.put(
         }),
       });
     }
-  }
+  },
 );
 
 // REVOKE certificate
@@ -22018,7 +22337,7 @@ app.patch(
       const certificate = await Certificate.findByIdAndUpdate(
         req.params.id,
         { isVerified: false },
-        { new: true }
+        { new: true },
       );
 
       if (!certificate) {
@@ -22032,14 +22351,14 @@ app.patch(
         certificate.studentId,
         "Certificate Revoked",
         `Your certificate ${certificate.certificateNumber} has been revoked`,
-        "warning"
+        "warning",
       );
 
       await logActivity(
         req.user.id,
         "CERTIFICATE_REVOKED",
         `Revoked certificate ${certificate.certificateNumber}`,
-        req
+        req,
       );
 
       res.json({
@@ -22057,7 +22376,7 @@ app.patch(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================================================
@@ -22106,7 +22425,7 @@ app.get("/api/groups", authenticateToken, async (req, res) => {
           latestMessage,
           unreadCount,
         };
-      })
+      }),
     );
 
     const total = await Group.countDocuments(query);
@@ -22180,7 +22499,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // CREATE group
@@ -22230,7 +22549,7 @@ app.post("/api/groups", authenticateToken, async (req, res) => {
           "Added to Group",
           `You have been added to the group "${name}"`,
           "info",
-          `/groups/${group._id}`
+          `/groups/${group._id}`,
         );
       });
     }
@@ -22239,7 +22558,7 @@ app.post("/api/groups", authenticateToken, async (req, res) => {
       req.user.id,
       "GROUP_CREATED",
       `Created group: ${name}`,
-      req
+      req,
     );
 
     res.status(201).json({
@@ -22295,7 +22614,7 @@ app.put(
         req.user.id,
         "GROUP_UPDATED",
         `Updated group: ${group.name}`,
-        req
+        req,
       );
 
       res.json({
@@ -22313,7 +22632,7 @@ app.put(
         }),
       });
     }
-  }
+  },
 );
 
 // DELETE group
@@ -22349,7 +22668,7 @@ app.delete(
         req.user.id,
         "GROUP_DELETED",
         `Deleted group: ${group.name}`,
-        req
+        req,
       );
 
       res.json({
@@ -22366,7 +22685,7 @@ app.delete(
         }),
       });
     }
-  }
+  },
 );
 
 // ADD member to group
@@ -22425,7 +22744,7 @@ app.post(
           "Added to Group",
           `You have been added to "${group.name}"`,
           "info",
-          `/groups/${group._id}`
+          `/groups/${group._id}`,
         );
       });
 
@@ -22444,7 +22763,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // REMOVE member from group
@@ -22479,10 +22798,10 @@ app.delete(
       }
 
       group.members = group.members.filter(
-        (m) => m.toString() !== req.params.userId
+        (m) => m.toString() !== req.params.userId,
       );
       group.admins = group.admins.filter(
-        (a) => a.toString() !== req.params.userId
+        (a) => a.toString() !== req.params.userId,
       );
       group.updatedAt = new Date();
       await group.save();
@@ -22501,7 +22820,7 @@ app.delete(
         }),
       });
     }
-  }
+  },
 );
 
 // GET group messages
@@ -22565,7 +22884,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // POST group message (REST endpoint, Socket.io also available)
@@ -22641,7 +22960,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================================================
@@ -22753,7 +23072,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // UPDATE product
@@ -22765,7 +23084,7 @@ app.put(
   async (req, res) => {
     try {
       const product = await Product.findById(req.params.id).populate(
-        "businessId"
+        "businessId",
       );
 
       if (!product) {
@@ -22794,7 +23113,7 @@ app.put(
         req.user.id,
         "PRODUCT_UPDATED",
         `Updated product: ${product.name}`,
-        req
+        req,
       );
 
       res.json({
@@ -22812,7 +23131,7 @@ app.put(
         }),
       });
     }
-  }
+  },
 );
 
 // DELETE product
@@ -22824,7 +23143,7 @@ app.delete(
   async (req, res) => {
     try {
       const product = await Product.findById(req.params.id).populate(
-        "businessId"
+        "businessId",
       );
 
       if (!product) {
@@ -22853,7 +23172,7 @@ app.delete(
         req.user.id,
         "PRODUCT_DELETED",
         `Deleted product: ${product.name}`,
-        req
+        req,
       );
 
       res.json({
@@ -22870,7 +23189,7 @@ app.delete(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================================================
@@ -22917,7 +23236,7 @@ app.get(
         req.user.id,
         "BOOK_DOWNLOADED",
         `Downloaded book: ${book.title}`,
-        req
+        req,
       );
 
       // In production, you would stream the file or return a signed URL
@@ -22941,7 +23260,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -23034,7 +23353,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================================================
@@ -23102,7 +23421,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================================================
@@ -23220,7 +23539,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // Talent distribution report
@@ -23315,7 +23634,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // Revenue report (detailed)
@@ -23399,16 +23718,16 @@ app.get(
           summary: {
             totalRevenue: revenueData.reduce(
               (sum, item) => sum + item.totalRevenue,
-              0
+              0,
             ),
             totalCommission: revenueData.reduce(
               (sum, item) => sum + item.totalCommission,
-              0
+              0,
             ),
             totalNet: revenueData.reduce((sum, item) => sum + item.totalNet, 0),
             totalTransactions: revenueData.reduce(
               (sum, item) => sum + item.transactionCount,
-              0
+              0,
             ),
           },
         },
@@ -23423,7 +23742,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -23506,7 +23825,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // CREATE subject (admin only)
@@ -23551,7 +23870,7 @@ app.post(
         req.user.id,
         "SUBJECT_CREATED",
         `Created subject: ${name}`,
-        req
+        req,
       );
 
       res.status(201).json({
@@ -23569,7 +23888,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // UPDATE subject
@@ -23584,7 +23903,7 @@ app.put(
       const subject = await Subject.findByIdAndUpdate(
         req.params.id,
         { ...req.body, updatedAt: new Date() },
-        { new: true, runValidators: true }
+        { new: true, runValidators: true },
       );
 
       if (!subject) {
@@ -23598,7 +23917,7 @@ app.put(
         req.user.id,
         "SUBJECT_UPDATED",
         `Updated subject: ${subject.name}`,
-        req
+        req,
       );
 
       res.json({
@@ -23616,7 +23935,7 @@ app.put(
         }),
       });
     }
-  }
+  },
 );
 
 // DELETE subject (soft delete)
@@ -23631,7 +23950,7 @@ app.delete(
       const subject = await Subject.findByIdAndUpdate(
         req.params.id,
         { isActive: false, updatedAt: new Date() },
-        { new: true }
+        { new: true },
       );
 
       if (!subject) {
@@ -23645,7 +23964,7 @@ app.delete(
         req.user.id,
         "SUBJECT_DELETED",
         `Deleted subject: ${subject.name}`,
-        req
+        req,
       );
 
       res.json({
@@ -23662,7 +23981,7 @@ app.delete(
         }),
       });
     }
-  }
+  },
 );
 
 // User growth report
@@ -23741,7 +24060,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================================================
@@ -23782,8 +24101,9 @@ app.post(
           if (userData.password) {
             userData.password = await hashPassword(userData.password);
           }
-
-          // ✅ ADD THIS LINE: Force all bulk imported users to be inactive
+          // 🆕 PHASE 2: Force all bulk imported users to be inactive
+          userData.accountStatus = "inactive";
+          userData.paymentStatus = "no_payment";
           userData.isActive = false;
 
           // Create user
@@ -23805,7 +24125,7 @@ app.post(
         req.user.id,
         "BULK_IMPORT_USERS",
         `Imported ${results.success.length} users, ${results.failed.length} failed`,
-        req
+        req,
       );
 
       res.json({
@@ -23823,7 +24143,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // Bulk register students for talents
@@ -23886,7 +24206,7 @@ app.post(
         req.user.id,
         "BULK_REGISTER_TALENTS",
         `Registered ${results.success.length} student talents`,
-        req
+        req,
       );
 
       res.json({
@@ -23904,7 +24224,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -23939,7 +24259,7 @@ app.post(
         error: error.message,
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -23958,7 +24278,7 @@ app.post(
         phone,
         password,
         userName,
-        "test123"
+        "test123",
       );
 
       res.json({
@@ -23971,7 +24291,7 @@ app.post(
         error: error.message,
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -24032,7 +24352,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 ); // ✅ FIXED: Closing app.get() for SMS Logs
 // ============================================
 // SMS STATISTICS ENDPOINT
@@ -24086,7 +24406,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 ); // ✅ FIXED: Closing app.get() for SMS Stats
 // ============================================
 // RESEND PASSWORD SMS (Manual Trigger for Admin)
@@ -24121,7 +24441,7 @@ app.post(
         user.phoneNumber,
         newPassword,
         userName,
-        user._id.toString()
+        user._id.toString(),
       );
 
       if (smsResult.success) {
@@ -24139,7 +24459,7 @@ app.post(
           req.user.id,
           "PASSWORD_RESENT",
           `Resent password to ${user.firstName} ${user.lastName}`,
-          req
+          req,
         );
         res.json({
           success: true,
@@ -24163,7 +24483,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 ); // ✅ FIXED: Closing app.post() for Resend Password SMS
 
 // ============================================
@@ -24199,7 +24519,7 @@ app.post(
         });
       }
 
-      // ✅ FIXED: Conditional activation based on role
+      // ✅ PHASE 2: Conditional activation based on role
       const rolesRequiringPayment = ["student", "entrepreneur", "nonstudent"];
       const requiresPayment = rolesRequiringPayment.includes(user.role);
 
@@ -24210,26 +24530,28 @@ app.post(
       // Update password
       user.password = hashedPassword;
 
-      // ✅ CRITICAL: Only activate users who DON'T require payment
+      // 🆕 UPDATE ACCOUNT STATUS AND PAYMENT STATUS
       if (!requiresPayment) {
+        // Non-payment roles (teacher, staff, etc.) - activate immediately
+        user.accountStatus = "active";
+        user.paymentStatus = "no_payment"; // They don't need to pay
         user.isActive = true;
         user.payment_verified_by = req.user.id;
         user.payment_verified_at = new Date();
         console.log(
-          `✅ User activated (no payment required): ${user.username}`
+          `✅ User activated (no payment required): ${user.username}`,
         );
       } else {
-        user.isActive = false; // Keep suspended until payment
+        // Payment-required roles (student, entrepreneur, nonstudent) - keep inactive
+        user.accountStatus = "inactive";
+        user.paymentStatus = "no_payment"; // Will be updated when payment is recorded
+        user.isActive = false;
         console.log(
-          `⚠️ User approved but suspended (requires payment): ${user.username}`
+          `⚠️ User approved but inactive (requires payment): ${user.username}`,
         );
       }
 
-      // ✅ REMOVED: user.payment_status = "verified" (field doesn't exist in User schema)
-      // Payment status is now tracked exclusively in PaymentHistory model
-
       user.updatedAt = new Date();
-
       await user.save();
 
       console.log(`✅ User activated: ${user.username} (${user.role})`);
@@ -24242,7 +24564,7 @@ app.post(
         user.phoneNumber,
         newPassword,
         userName,
-        user._id.toString()
+        user._id.toString(),
       );
 
       // Log SMS result
@@ -24271,20 +24593,21 @@ app.post(
           reference: `approval_${user._id}`,
         });
       }
-      // ✅ FIXED: Different notifications for payment vs non-payment users
+
+      // ✅ PHASE 2: Different notifications for payment vs non-payment users
       if (requiresPayment) {
         await createNotification(
           user._id,
           "Account Approved - Payment Required 💳",
           `Your ${user.role} account has been approved! Your password has been sent to ${user.phoneNumber}. Please complete your payment to activate your account.`,
-          "warning"
+          "warning",
         );
       } else {
         await createNotification(
           user._id,
           "Account Approved & Activated! 🎉",
           `Your ${user.role} account has been approved and activated! Check your SMS at ${user.phoneNumber} for your login password.`,
-          "success"
+          "success",
         );
       }
 
@@ -24305,7 +24628,7 @@ app.post(
             "paymentProof.status": "verified",
             "paymentProof.verifiedBy": req.user.id,
             "paymentProof.verifiedAt": new Date(),
-          }
+          },
         );
 
         console.log(`📄 Updated ${invoiceUpdate.modifiedCount} invoices`);
@@ -24326,7 +24649,7 @@ app.post(
               reason: "Account approved by admin",
             },
           },
-        }
+        },
       );
 
       // Log activity
@@ -24340,21 +24663,22 @@ app.post(
           userRole: user.role,
           phoneNumber: user.phoneNumber,
           smsSent: smsResult.success,
-          payment_reference: user.payment_reference || "N/A",
-          approvedWithoutPayment: !user.payment_reference,
-        }
+          accountStatus: user.accountStatus,
+          paymentStatus: user.paymentStatus,
+          requiresPayment: requiresPayment,
+        },
       );
 
       console.log(`✅ Approval complete for ${user.username}`);
 
-      // ✅ Get payment status from PaymentHistory (since it's not on User model)
+      // ✅ Get payment status from PaymentHistory
       const paymentHistoryRecord = await PaymentHistory.findOne({
         userId: user._id,
       }).sort({ createdAt: -1 });
 
       // ✅ CALCULATE TOTAL PAID FROM PAYMENTHISTORY
       const registration_fee_paid = await calculateRegistrationFeePaid(
-        user._id
+        user._id,
       );
 
       res.json({
@@ -24376,11 +24700,15 @@ app.post(
           phoneNumber: user.phoneNumber,
           email: user.email,
           smsSent: smsResult.success,
+
+          // 🆕 PHASE 2: New status fields
+          accountStatus: user.accountStatus,
+          paymentStatus: user.paymentStatus,
           isActive: user.isActive,
-          payment_status: paymentHistoryRecord?.status || "not_recorded",
+
           payment_verified_at: user.payment_verified_at,
           payment_verified_by: user.payment_verified_by,
-          registration_fee_paid, // ✅ NEW: Total amount paid
+          registration_fee_paid, // ✅ Total amount paid
         },
       });
     } catch (error) {
@@ -24393,7 +24721,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -24436,7 +24764,7 @@ app.post(
         user.phoneNumber,
         newPassword,
         userName,
-        user._id.toString()
+        user._id.toString(),
       );
 
       // Log SMS result
@@ -24471,7 +24799,7 @@ app.post(
         user._id,
         "Password Reset",
         `Your password has been reset by an administrator. Check your SMS at ${user.phoneNumber} for your new password.`,
-        "info"
+        "info",
       );
 
       // Log activity
@@ -24485,7 +24813,7 @@ app.post(
           userRole: user.role,
           phoneNumber: user.phoneNumber,
           smsSent: smsResult.success,
-        }
+        },
       );
 
       console.log(`✅ Password resend complete for ${user.username}`);
@@ -24511,7 +24839,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -24530,7 +24858,7 @@ app.post(
       // Find user and invoices
       const user = await User.findById(userId).populate(
         "schoolId",
-        "name schoolCode"
+        "name schoolCode",
       );
 
       if (!user) {
@@ -24556,13 +24884,13 @@ app.post(
       // Calculate total amount due
       const totalDue = pendingInvoices.reduce(
         (sum, inv) => sum + inv.amount,
-        0
+        0,
       );
 
       // Get most urgent invoice
       const urgentInvoice = pendingInvoices[0];
       const daysUntilDue = Math.ceil(
-        (new Date(urgentInvoice.dueDate) - new Date()) / (1000 * 60 * 60 * 24)
+        (new Date(urgentInvoice.dueDate) - new Date()) / (1000 * 60 * 60 * 24),
       );
 
       // Send SMS reminder
@@ -24570,7 +24898,7 @@ app.post(
         `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
         user.username;
       const smsMessage = `Hello ${userName}! Payment Reminder:\n\nAmount Due: TZS ${totalDue.toLocaleString()}\nDue Date: ${new Date(
-        urgentInvoice.dueDate
+        urgentInvoice.dueDate,
       ).toLocaleDateString()}\n${
         daysUntilDue > 0 ? `(${daysUntilDue} days remaining)` : "(OVERDUE)"
       }\n\nPay via:\n- Vodacom Lipa: 5130676\n- CRDB: 0150814579600\n\nThank you!`;
@@ -24578,7 +24906,7 @@ app.post(
       const smsResult = await smsService.sendSMS(
         user.phoneNumber,
         smsMessage,
-        "payment_reminder"
+        "payment_reminder",
       );
 
       // Log SMS result
@@ -24615,10 +24943,10 @@ app.post(
         `You have ${
           pendingInvoices.length
         } pending invoice(s) totaling TZS ${totalDue.toLocaleString()}. Please complete payment by ${new Date(
-          urgentInvoice.dueDate
+          urgentInvoice.dueDate,
         ).toLocaleDateString()}.`,
         "warning",
-        `/invoices`
+        `/invoices`,
       );
 
       // Create payment reminder record
@@ -24645,7 +24973,7 @@ app.post(
           invoiceCount: pendingInvoices.length,
           phoneNumber: user.phoneNumber,
           smsSent: smsResult.success,
-        }
+        },
       );
 
       console.log(`✅ Payment reminder sent for ${user.username}`);
@@ -24674,7 +25002,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -24714,7 +25042,7 @@ app.post(
       console.log(
         `💰 Amount: ${amount}, Total Required: ${
           totalRequired || "Not specified"
-        }`
+        }`,
       );
 
       // Validate required fields
@@ -24752,7 +25080,7 @@ app.post(
 
         actualTotalRequired = registrationFees[user.registration_type] || 15000;
         console.log(
-          `📊 Calculated totalRequired from registration_type: ${actualTotalRequired}`
+          `📊 Calculated totalRequired from registration_type: ${actualTotalRequired}`,
         );
       }
 
@@ -24836,7 +25164,7 @@ app.post(
       });
 
       console.log(
-        `✅ Invoice created: ${invoiceNumber} - Status: ${invoice.status}`
+        `✅ Invoice created: ${invoiceNumber} - Status: ${invoice.status}`,
       );
 
       // ✅ CREATE PAYMENT HISTORY RECORD WITH CORRECT STATUS
@@ -24880,21 +25208,32 @@ app.post(
       });
 
       console.log(
-        `✅ Payment history created: ${paymentHistory._id} - Status: ${paymentStatus}`
+        `✅ Payment history created: ${paymentHistory._id} - Status: ${paymentStatus}`,
       );
 
-      // ✅ CONDITIONALLY ACTIVATE USER (only for full payments)
-      if (shouldActivateUser && !user.isActive) {
+      // ✅ PHASE 2: UPDATE USER STATUS WITH NEW SYSTEM
+      if (shouldActivateUser && user.accountStatus !== "active") {
+        // Full payment - activate user
+        user.accountStatus = "active";
+        user.paymentStatus = "paid";
         user.isActive = true;
         user.payment_verified_by = req.user.id;
         user.payment_verified_at = new Date();
+        user.payment_date = new Date();
         await user.save();
-        console.log(`✅ User ACTIVATED: ${userName}`);
+        console.log(`✅ User ACTIVATED: ${userName} (Full payment)`);
       } else if (!shouldActivateUser) {
-        // Ensure user remains suspended for partial payments
+        // Partial payment - keep inactive
+        user.accountStatus = "inactive";
+        user.paymentStatus = "partial_paid";
         user.isActive = false;
+        user.payment_date = new Date();
         await user.save();
-        console.log(`⚠️ User remains SUSPENDED (partial payment): ${userName}`);
+        console.log(`⚠️ User remains INACTIVE (partial payment): ${userName}`);
+      } else {
+        // Already active, just update payment date
+        user.payment_date = new Date();
+        await user.save();
       }
 
       // ✅ CREATE APPROPRIATE NOTIFICATION
@@ -24905,7 +25244,7 @@ app.post(
           `Your full payment of ${
             currency || "TZS"
           } ${amount} has been recorded. Your account is now active!`,
-          "success"
+          "success",
         );
       } else {
         const remaining = actualTotalRequired - newTotal;
@@ -24917,7 +25256,7 @@ app.post(
           } ${amount} has been recorded. Remaining balance: ${
             currency || "TZS"
           } ${remaining.toLocaleString()}. Your account will be activated after full payment.`,
-          "warning"
+          "warning",
         );
       }
 
@@ -24947,7 +25286,7 @@ app.post(
           totalPaid: newTotal,
           remainingBalance: Math.max(0, actualTotalRequired - newTotal),
           userActivated: shouldActivateUser,
-        }
+        },
       );
 
       res.status(201).json({
@@ -24987,7 +25326,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -25050,7 +25389,7 @@ app.post(
 
         try {
           console.log(
-            `\n📝 [${recordNumber}/${payments.length}] Processing payment for user: ${payment.userId}`
+            `\n📝 [${recordNumber}/${payments.length}] Processing payment for user: ${payment.userId}`,
           );
 
           // Validate required fields for this payment
@@ -25069,7 +25408,7 @@ app.post(
             });
             results.stats.failed++;
             console.log(
-              `❌ [${recordNumber}] Validation failed - missing required fields`
+              `❌ [${recordNumber}] Validation failed - missing required fields`,
             );
             continue;
           }
@@ -25084,7 +25423,7 @@ app.post(
             });
             results.stats.failed++;
             console.log(
-              `❌ [${recordNumber}] Validation failed - invalid amount`
+              `❌ [${recordNumber}] Validation failed - invalid amount`,
             );
             continue;
           }
@@ -25104,13 +25443,13 @@ app.post(
               recordNumber,
               userId: payment.userId,
               error: `Invalid payment method. Must be one of: ${validMethods.join(
-                ", "
+                ", ",
               )}`,
               data: payment,
             });
             results.stats.failed++;
             console.log(
-              `❌ [${recordNumber}] Validation failed - invalid payment method`
+              `❌ [${recordNumber}] Validation failed - invalid payment method`,
             );
             continue;
           }
@@ -25214,7 +25553,7 @@ app.post(
             results.summary.invoicesUpdated++;
 
             console.log(
-              `📄 [${recordNumber}] Updated existing invoice: ${invoice._id}`
+              `📄 [${recordNumber}] Updated existing invoice: ${invoice._id}`,
             );
           } else {
             // Create new invoice
@@ -25252,7 +25591,7 @@ app.post(
                 {
                   description: getRegistrationDescription(
                     user.role,
-                    user.registrationType
+                    user.registrationType,
                   ),
                   quantity: 1,
                   unitPrice: payment.amount,
@@ -25274,7 +25613,7 @@ app.post(
             results.summary.invoicesCreated++;
 
             console.log(
-              `📄 [${recordNumber}] Created new invoice: ${invoiceNumber}`
+              `📄 [${recordNumber}] Created new invoice: ${invoiceNumber}`,
             );
           }
 
@@ -25314,7 +25653,7 @@ app.post(
           });
 
           console.log(
-            `💾 [${recordNumber}] Created payment history: ${paymentHistory._id}`
+            `💾 [${recordNumber}] Created payment history: ${paymentHistory._id}`,
           );
 
           // ========================================
@@ -25329,7 +25668,7 @@ app.post(
                 payment.payment_reference
               }`,
               "info",
-              `/invoices/${invoice._id}`
+              `/invoices/${invoice._id}`,
             );
 
             console.log(`🔔 [${recordNumber}] Notification sent to user`);
@@ -25380,12 +25719,12 @@ app.post(
           results.stats.totalAmount += payment.amount;
 
           console.log(
-            `✅ [${recordNumber}] Successfully processed: ${userName} - TZS ${payment.amount.toLocaleString()}`
+            `✅ [${recordNumber}] Successfully processed: ${userName} - TZS ${payment.amount.toLocaleString()}`,
           );
         } catch (paymentError) {
           console.error(
             `❌ [${recordNumber}] Error processing payment:`,
-            paymentError
+            paymentError,
           );
 
           results.failed.push({
@@ -25424,12 +25763,12 @@ app.post(
           recordedUserIds: results.success.map((r) => r.userId),
           failedUserIds: results.failed.map((f) => f.userId),
           skippedUserIds: results.skipped.map((s) => s.userId),
-        }
+        },
       );
 
       console.log(`\n✅ Batch payment recording complete:`, results.stats);
       console.log(
-        `💰 Total amount recorded: TZS ${results.stats.totalAmount.toLocaleString()}`
+        `💰 Total amount recorded: TZS ${results.stats.totalAmount.toLocaleString()}`,
       );
 
       // ========================================
@@ -25446,8 +25785,8 @@ app.post(
         message: allFailed
           ? "All payment recordings failed"
           : partialSuccess
-          ? `Recorded ${results.stats.recorded} payments. ${results.stats.failed} failed, ${results.stats.skipped} skipped.`
-          : `Successfully recorded ${results.stats.recorded} payment(s)`,
+            ? `Recorded ${results.stats.recorded} payments. ${results.stats.failed} failed, ${results.stats.skipped} skipped.`
+            : `Successfully recorded ${results.stats.recorded} payment(s)`,
         data: results,
         summary: {
           total: results.stats.total,
@@ -25477,7 +25816,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -25563,7 +25902,7 @@ app.post(
       });
 
       console.log(
-        `✅ Pre-fetch complete: ${existingReferencesSet.size} existing refs, ${userMap.size} users found`
+        `✅ Pre-fetch complete: ${existingReferencesSet.size} existing refs, ${userMap.size} users found`,
       );
 
       // ✅ NOW validate each payment (no more DB queries!)
@@ -25591,7 +25930,7 @@ app.post(
           !validMethods.includes(payment.payment_method)
         ) {
           errors.push(
-            `Invalid payment method. Must be one of: ${validMethods.join(", ")}`
+            `Invalid payment method. Must be one of: ${validMethods.join(", ")}`,
           );
         }
 
@@ -25607,7 +25946,7 @@ app.post(
               !["student", "entrepreneur", "nonstudent"].includes(user.role)
             ) {
               warnings.push(
-                `Payment recording not typically used for ${user.role} role`
+                `Payment recording not typically used for ${user.role} role`,
               );
             }
 
@@ -25653,7 +25992,7 @@ app.post(
       }
 
       console.log(
-        `✅ Validation complete: ${validationResults.stats.valid} valid, ${validationResults.stats.invalid} invalid, ${validationResults.stats.warnings} warnings`
+        `✅ Validation complete: ${validationResults.stats.valid} valid, ${validationResults.stats.invalid} invalid, ${validationResults.stats.warnings} warnings`,
       );
 
       res.json({
@@ -25684,7 +26023,7 @@ app.post(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -25700,7 +26039,7 @@ app.get(
     "super_admin",
     "national_official",
     "headmaster",
-    "district_official"
+    "district_official",
   ),
   async (req, res) => {
     try {
@@ -25773,7 +26112,7 @@ app.get(
       }, {});
 
       console.log(
-        `✅ Found ${paymentHistory.length} payment records for user ${userId}`
+        `✅ Found ${paymentHistory.length} payment records for user ${userId}`,
       );
 
       res.json({
@@ -25801,7 +26140,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -25818,7 +26157,7 @@ app.get(
       const { page = 1, limit = 20 } = req.query;
 
       console.log(
-        `📊 Fetching payment history for current user: ${req.user.id}`
+        `📊 Fetching payment history for current user: ${req.user.id}`,
       );
 
       // Fetch payment history
@@ -25876,7 +26215,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -25894,7 +26233,7 @@ app.get(
       const payment = await PaymentHistory.findById(req.params.paymentId)
         .populate(
           "userId",
-          "firstName lastName email phoneNumber username role"
+          "firstName lastName email phoneNumber username role",
         )
         .populate("verifiedBy", "firstName lastName username")
         .populate("invoiceId", "invoice_number amount status dueDate paidDate")
@@ -25923,7 +26262,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -25948,7 +26287,7 @@ app.patch(
       }
 
       const payment = await PaymentHistory.findById(
-        req.params.paymentId
+        req.params.paymentId,
       ).populate("userId", "firstName lastName email phoneNumber");
 
       if (!payment) {
@@ -26007,7 +26346,7 @@ app.patch(
           "Payment Verified ✅",
           `Your payment of TZS ${payment.amount.toLocaleString()} has been verified and approved.`,
           "success",
-          `/payments`
+          `/payments`,
         );
       } else if (status === "rejected") {
         await createNotification(
@@ -26017,7 +26356,7 @@ app.patch(
             reason || "Please contact support."
           }`,
           "error",
-          `/payments`
+          `/payments`,
         );
       }
 
@@ -26034,7 +26373,7 @@ app.patch(
           newStatus: status,
           amount: payment.amount,
           reason: reason || "",
-        }
+        },
       );
 
       console.log(`✅ Payment status updated: ${payment._id} -> ${status}`);
@@ -26054,7 +26393,7 @@ app.patch(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -26071,7 +26410,7 @@ app.get(
       const payment = await PaymentHistory.findById(req.params.paymentId)
         .populate(
           "userId",
-          "firstName lastName email phoneNumber username studentId"
+          "firstName lastName email phoneNumber username studentId",
         )
         .populate("verifiedBy", "firstName lastName username")
         .populate("invoiceId", "invoice_number amount status dueDate paidDate")
@@ -26169,7 +26508,7 @@ app.get(
           receiptNumber: receiptData.receiptNumber,
           amount: payment.amount,
           userId: payment.userId._id,
-        }
+        },
       );
 
       console.log(`✅ Generated receipt: ${receiptData.receiptNumber}`);
@@ -26188,7 +26527,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -26273,7 +26612,7 @@ app.get(
         }),
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -26296,7 +26635,7 @@ app.get(
       const indexes = await collection.indexes();
 
       const invoiceIdIndexes = indexes.filter(
-        (idx) => idx.key && idx.key.invoiceId !== undefined
+        (idx) => idx.key && idx.key.invoiceId !== undefined,
       );
 
       const indexList = indexes.map((idx) => ({
@@ -26314,8 +26653,8 @@ app.get(
           invoiceIdIndexes.length === 1
             ? "✅ Healthy - One invoiceId index"
             : invoiceIdIndexes.length > 1
-            ? "⚠️  Warning - Multiple invoiceId indexes"
-            : "⚠️  Warning - No invoiceId index",
+              ? "⚠️  Warning - Multiple invoiceId indexes"
+              : "⚠️  Warning - No invoiceId index",
         indexes: indexList,
         invoiceIdIndexes: invoiceIdIndexes.map((idx) => ({
           name: idx.name,
@@ -26330,7 +26669,7 @@ app.get(
         message: error.message,
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -26379,7 +26718,7 @@ app.get(
         error: "Failed to fetch failed jobs",
       });
     }
-  }
+  },
 );
 
 // POST Manual Retry Single Job
@@ -26420,7 +26759,7 @@ app.post(
         "FAILED_JOB_MANUAL_RETRY",
         `Manually retried failed job: ${failedJob.jobType}`,
         req,
-        { jobId: failedJob._id, results: retryResults }
+        { jobId: failedJob._id, results: retryResults },
       );
 
       res.json({
@@ -26435,7 +26774,7 @@ app.post(
         error: "Failed to retry job",
       });
     }
-  }
+  },
 );
 
 // DELETE Dismiss Failed Job
@@ -26467,7 +26806,7 @@ app.delete(
         "FAILED_JOB_DISMISSED",
         `Dismissed failed job: ${failedJob.jobType}`,
         req,
-        { jobId: failedJob._id, resolution: failedJob.resolution }
+        { jobId: failedJob._id, resolution: failedJob.resolution },
       );
 
       res.json({
@@ -26482,7 +26821,7 @@ app.delete(
         error: "Failed to dismiss job",
       });
     }
-  }
+  },
 );
 
 // ============================================
@@ -26517,7 +26856,7 @@ if (process.env.NODE_ENV === "production") {
       // ✅ Notify SuperAdmin of failure
       try {
         const superAdmins = await User.find({ role: "super_admin" }).distinct(
-          "_id"
+          "_id",
         );
         await Promise.all(
           superAdmins.map((adminId) =>
@@ -26525,9 +26864,9 @@ if (process.env.NODE_ENV === "production") {
               adminId,
               "Payment Reminder Job Failed",
               `Automated payment reminders failed: ${error.message}`,
-              "error"
-            )
-          )
+              "error",
+            ),
+          ),
         );
       } catch (notifError) {
         console.error("❌ Failed to send error notification:", notifError);
