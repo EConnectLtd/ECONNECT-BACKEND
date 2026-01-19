@@ -34,7 +34,7 @@ const {
   getRequiredTotal,
   ENTREPRENEUR_PACKAGES,
   STUDENT_PACKAGES,
-} = require("./backend/utils/packagePricing");
+} = require("./utils/packagePricing");
 
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
