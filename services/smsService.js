@@ -11,7 +11,7 @@ class SMSService {
     // Create Base64 encoded auth string
     if (this.username && this.password) {
       this.authToken = Buffer.from(
-        `${this.username}:${this.password}`
+        `${this.username}:${this.password}`,
       ).toString("base64");
     } else {
       console.warn("⚠️  NEXTSMS credentials not configured");
@@ -59,7 +59,7 @@ class SMSService {
       if (!this.authToken) {
         console.log(
           "⚠️  NEXTSMS not configured. SMS would have been sent to:",
-          phone
+          phone,
         );
         console.log("📱 Message:", message);
         return {
@@ -106,7 +106,7 @@ class SMSService {
             Accept: "application/json",
           },
           timeout: 10000, // 10 second timeout
-        }
+        },
       );
 
       console.log("✅ SMS sent successfully:", response.data);
@@ -120,7 +120,7 @@ class SMSService {
     } catch (error) {
       console.error(
         "❌ SMS sending failed:",
-        error.response?.data || error.message
+        error.response?.data || error.message,
       );
       return {
         success: false,
@@ -142,7 +142,7 @@ class SMSService {
         console.log(
           "⚠️  NEXTSMS not configured. Bulk SMS would have been sent to",
           phones.length,
-          "recipients"
+          "recipients",
         );
         return {
           success: false,
@@ -188,7 +188,7 @@ class SMSService {
             Accept: "application/json",
           },
           timeout: 15000, // 15 second timeout for bulk
-        }
+        },
       );
 
       console.log(`✅ Bulk SMS sent to ${formattedPhones.length} recipients`);
@@ -200,7 +200,7 @@ class SMSService {
     } catch (error) {
       console.error(
         "❌ Bulk SMS sending failed:",
-        error.response?.data || error.message
+        error.response?.data || error.message,
       );
       return {
         success: false,
@@ -259,7 +259,7 @@ class SMSService {
    * @returns {Promise} SMS send response
    */
   async sendEntrepreneurRegistrationSMS(phone, userName) {
-    const message = `Hongera ${userName}!\n\nUmefanikiwa kujisajili EConnect kama Mjasiriamali.\n\nUtapokea neno la siri baada ya kuidhinishwa.\n\nAsante!\nECONNECT`;
+    const message = `Hongera ${userName}!\n\nUmefanikiwa kujisajili EConnect kama Mjasiriamali.\nUtapokea neno la siri baada ya kuidhinishwa.\n\nAsante!\nECONNECT`;
 
     return await this.sendSMS(phone, message, "entrepreneur_registration");
   }
@@ -276,7 +276,7 @@ class SMSService {
     phone,
     userName,
     requiresPayment = false,
-    packageType = ""
+    packageType = "",
   ) {
     let message;
 
@@ -333,7 +333,7 @@ class SMSService {
             Accept: "application/json",
           },
           timeout: 10000,
-        }
+        },
       );
 
       return {
@@ -343,7 +343,7 @@ class SMSService {
     } catch (error) {
       console.error(
         "❌ Failed to get delivery report:",
-        error.response?.data || error.message
+        error.response?.data || error.message,
       );
       return {
         success: false,

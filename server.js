@@ -27,6 +27,14 @@ const {
   shouldAutoActivate,
   calculatePaymentStatus,
 } = require("./utils/statusHelpers");
+const {
+  getStudentRegistrationFee,
+  getEntrepreneurPackage,
+  getEntrepreneurRegistrationFee,
+  getRequiredTotal,
+  ENTREPRENEUR_PACKAGES,
+  STUDENT_PACKAGES,
+} = require("./backend/utils/packagePricing");
 
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -25067,18 +25075,36 @@ app.post(
       // ✅ DETERMINE TOTAL REQUIRED AMOUNT
       let actualTotalRequired = totalRequired;
 
-      // If totalRequired not provided, calculate based on registration type
+      // If totalRequired not provided, calculate based on role and registration type
       if (!actualTotalRequired) {
-        const registrationFees = {
-          normal: 15000,
-          premier: 70000,
-          silver: 49000,
-          diamond: 55000,
-        };
+        // ✅ FIXED: Use centralized pricing utility with role-based logic
+        if (user.role === "entrepreneur" || user.role === "nonstudent") {
+          // Entrepreneur/NonStudent: Get registration fee only (monthly fees handled separately)
+          const packageType = user.registration_type || "silver";
+          actualTotalRequired = getEntrepreneurRegistrationFee(
+            packageType,
+            false, // Don't include first month fee (just registration: 30k/100k/200k)
+          );
+          console.log(
+            `📊 Entrepreneur ${packageType} - Registration fee: ${actualTotalRequired}`,
+          );
+        } else if (user.role === "student") {
+          // Student: Get student package fee (8k/15k/49k/55k/70k)
+          actualTotalRequired = getStudentRegistrationFee(
+            user.registration_type,
+            user.institutionType,
+          );
+          console.log(
+            `📊 Student ${user.registration_type} - Fee: ${actualTotalRequired}`,
+          );
+        } else {
+          // Other roles (teacher, staff, etc.) - no payment required
+          actualTotalRequired = 0;
+          console.log(`📊 ${user.role} - No payment required`);
+        }
 
-        actualTotalRequired = registrationFees[user.registration_type] || 15000;
         console.log(
-          `📊 Calculated totalRequired from registration_type: ${actualTotalRequired}`,
+          `📊 Total required for ${user.role} (${user.registration_type}): ${actualTotalRequired}`,
         );
       }
 
