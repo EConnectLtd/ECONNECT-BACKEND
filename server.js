@@ -3424,7 +3424,9 @@ app.post(
         lastName: names.last,
         phoneNumber: phone,
         gender: gender || undefined,
-        isActive: false, // ✅ ALL USERS INACTIVE BY DEFAULT - REQUIRE ADMIN APPROVAL
+        accountStatus: "inactive", // ✅ PHASE 2: Explicit status
+        paymentStatus: "no_payment", // ✅ PHASE 2: Explicit payment status
+        isActive: false, // Backward compatibility
         accepted_terms: accepted_terms || true,
       };
 
@@ -4127,7 +4129,8 @@ app.patch(
       if (action === "approve") {
         student.payment_verified_by = adminId;
         student.payment_verified_at = new Date();
-        student.isActive = true;
+        student.accountStatus = "active"; // ✅ PHASE 2: Explicit activation
+        student.isActive = true; // Backward compatibility
 
         await student.save();
 
@@ -4201,6 +4204,8 @@ app.patch(
         student.payment_status = "rejected";
         student.payment_verified_by = adminId;
         student.payment_verified_at = new Date();
+        student.accountStatus = "active"; // ✅ PHASE 2: Explicit activation
+        student.isActive = true; // Backward compatibility
 
         await student.save();
 
@@ -5015,7 +5020,7 @@ app.post(
       // ========================================
       // CHECK IF ACCOUNT IS ACTIVE
       // ========================================
-      if (!user.isActive) {
+      if (user.accountStatus !== "active") {
         // Get user-friendly role name
         const roleName =
           {
@@ -5034,8 +5039,8 @@ app.post(
         // 1. CHECK FOR PARTIAL PAYMENT SUSPENSION
         // ========================================
         const paymentHistory = await PaymentHistory.find({
-          user: user._id,
-          status: { $in: ["completed", "paid"] },
+          userId: user._id, // ✅ FIXED: Correct field name
+          status: { $in: ["verified", "approved", "completed"] }, // ✅ FIXED: Phase 2 statuses
         });
 
         const totalPaid = paymentHistory.reduce(
@@ -13212,9 +13217,9 @@ app.post(
       // ✅ Generate NEW password for approved teacher
       const newPassword = generateRandomPassword();
       const hashedPassword = await hashPassword(newPassword);
-
       user.password = hashedPassword;
-      user.isActive = true;
+      user.accountStatus = "active"; // ✅ PHASE 2: Explicit activation
+      user.isActive = true; // Backward compatibility
       await user.save();
 
       // ✅ Send SMS with password using NEXTSMS
@@ -13341,9 +13346,9 @@ app.post(
       // ✅ Generate NEW password
       const newPassword = generateRandomPassword();
       const hashedPassword = await hashPassword(newPassword);
-
       user.password = hashedPassword;
-      user.isActive = true;
+      user.accountStatus = "active"; // ✅ PHASE 2: Explicit activation
+      user.isActive = true; // Backward compatibility
       await user.save();
 
       // ✅ Send SMS with password using NEXTSMS
@@ -19083,13 +19088,6 @@ app.post(
           console.log(
             `✅ User processed: ${user.username} - Status: ${user.accountStatus}`,
           );
-
-          // ✅ FIX 2: REMOVED DUPLICATE ACTIVATION CODE HERE
-          // The following block was deleted:
-          // - user.isActive = true;
-          // - user.password = hashedPassword;
-          // - user.updatedAt = new Date();
-          // - await user.save();
 
           // Send SMS with password
           const userName =
@@ -25092,18 +25090,19 @@ app.post(
       const newTotal = totalPaid + parseFloat(amount);
       console.log(`💵 New total after payment: ${newTotal}`);
 
-      // ✅ DETERMINE PAYMENT STATUS
-      let paymentStatus;
+      // ✅ FIX #3 & #7: Renamed variables for clarity and fixed invalid "partial" status
+      let historyStatus; // For PaymentHistory.status (pending, verified, rejected, failed)
+      let userPaymentStatus; // For User.paymentStatus (paid, partial_paid, no_payment, overdue)
       let shouldActivateUser;
 
       if (newTotal >= actualTotalRequired) {
-        paymentStatus = "verified"; // Full payment complete
+        historyStatus = "verified"; // PaymentHistory status
+        userPaymentStatus = "paid"; // User paymentStatus
         shouldActivateUser = true;
-        console.log(`✅ FULL PAYMENT - User will be activated`);
       } else {
-        paymentStatus = "partially_paid"; // ✅ FIXED - Now matches schema!
+        historyStatus = "pending"; // ✅ FIXED: Use "pending" for partial payments (was "partial")
+        userPaymentStatus = "partial_paid"; // User paymentStatus
         shouldActivateUser = false;
-        console.log(`⚠️ PARTIAL PAYMENT - User will remain suspended`);
       }
 
       // ✅ GENERATE INVOICE NUMBER
@@ -25157,8 +25156,8 @@ app.post(
         description,
         amount: parseFloat(amount),
         currency: currency || "TZS",
-        status: paymentStatus === "verified" ? "paid" : "partially_paid", // ✅ NEW: partial status for invoices too
-        paidDate: paymentStatus === "verified" ? new Date() : null,
+        status: historyStatus === "verified" ? "paid" : "partial_paid", // ✅ Use historyStatus
+        paidDate: historyStatus === "verified" ? new Date() : null,
         dueDate: new Date(),
         academicYear: new Date().getFullYear().toString(),
       });
@@ -25174,10 +25173,10 @@ app.post(
         transactionType: transactionType || "registration_fee",
         amount: parseFloat(amount),
         currency: currency || "TZS",
-        status: paymentStatus, // ✅ FIXED: Uses "partial" or "verified" based on amount
+        status: historyStatus, // ✅ FIXED: Uses "pending" or "verified" based on amount
         paymentDate: new Date(),
-        verifiedAt: paymentStatus === "verified" ? new Date() : null, // ✅ Only set if verified
-        verifiedBy: paymentStatus === "verified" ? req.user.id : null, // ✅ Only set if verified
+        verifiedAt: historyStatus === "verified" ? new Date() : null, // ✅ Only set if verified
+        verifiedBy: historyStatus === "verified" ? req.user.id : null, // ✅ Only set if verified
         description,
         metadata: {
           recordedBy: req.user.username,
@@ -25189,17 +25188,17 @@ app.post(
           totalPaidBefore: totalPaid,
           totalPaidAfter: newTotal,
           remainingBalance: Math.max(0, actualTotalRequired - newTotal),
-          isPartialPayment: paymentStatus === "partial",
+          isPartialPayment: historyStatus === "pending", // ✅ Use historyStatus
           ipAddress: req.ip || req.connection?.remoteAddress,
           userAgent: req.get("user-agent"),
         },
         statusHistory: [
           {
-            status: paymentStatus,
+            status: historyStatus, // ✅ Use historyStatus
             changedBy: req.user.id,
             changedAt: new Date(),
             reason:
-              paymentStatus === "partial"
+              historyStatus === "pending" // ✅ Use historyStatus
                 ? `Partial payment recorded (${amount}/${actualTotalRequired} TZS)`
                 : "Full payment recorded by admin",
             notes,
@@ -25208,36 +25207,32 @@ app.post(
       });
 
       console.log(
-        `✅ Payment history created: ${paymentHistory._id} - Status: ${paymentStatus}`,
+        `✅ Payment history created: ${paymentHistory._id} - Status: ${historyStatus}`, // ✅ Use historyStatus
       );
 
       // ✅ PHASE 2: UPDATE USER STATUS WITH NEW SYSTEM
       if (shouldActivateUser && user.accountStatus !== "active") {
-        // Full payment - activate user
         user.accountStatus = "active";
-        user.paymentStatus = "paid";
+        user.paymentStatus = userPaymentStatus; // ✅ Use variable!
         user.isActive = true;
         user.payment_verified_by = req.user.id;
         user.payment_verified_at = new Date();
         user.payment_date = new Date();
         await user.save();
-        console.log(`✅ User ACTIVATED: ${userName} (Full payment)`);
       } else if (!shouldActivateUser) {
-        // Partial payment - keep inactive
         user.accountStatus = "inactive";
-        user.paymentStatus = "partial_paid";
+        user.paymentStatus = userPaymentStatus; // ✅ Use variable!
         user.isActive = false;
         user.payment_date = new Date();
         await user.save();
-        console.log(`⚠️ User remains INACTIVE (partial payment): ${userName}`);
       } else {
-        // Already active, just update payment date
         user.payment_date = new Date();
+        user.paymentStatus = userPaymentStatus; // ✅ Update even if active!
         await user.save();
       }
-
       // ✅ CREATE APPROPRIATE NOTIFICATION
-      if (paymentStatus === "verified") {
+      if (historyStatus === "verified") {
+        // ✅ Use historyStatus
         await createNotification(
           userId,
           "Payment Verified - Account Activated! ✅",
@@ -25264,10 +25259,11 @@ app.post(
       await logActivity(
         req.user.id,
         "PAYMENT_RECORDED",
-        `Recorded ${paymentStatus} payment for ${userName}: ${
+        `Recorded ${historyStatus} payment for ${userName}: ${
+          // ✅ Use historyStatus
           currency || "TZS"
         } ${amount}${
-          paymentStatus === "partial"
+          historyStatus === "pending" // ✅ Use historyStatus
             ? ` (${newTotal}/${actualTotalRequired})`
             : ""
         }`,
@@ -25281,7 +25277,7 @@ app.post(
           transactionType,
           method,
           reference,
-          paymentStatus,
+          paymentStatus: historyStatus, // ✅ Use historyStatus
           totalRequired: actualTotalRequired,
           totalPaid: newTotal,
           remainingBalance: Math.max(0, actualTotalRequired - newTotal),
@@ -25292,7 +25288,7 @@ app.post(
       res.status(201).json({
         success: true,
         message:
-          paymentStatus === "verified"
+          historyStatus === "verified" // ✅ Use historyStatus
             ? "Full payment recorded successfully - User activated"
             : `Partial payment recorded - ${currency || "TZS"} ${(
                 actualTotalRequired - newTotal
@@ -25311,8 +25307,8 @@ app.post(
             totalPaidAfter: newTotal,
             totalRequired: actualTotalRequired,
             remainingBalance: Math.max(0, actualTotalRequired - newTotal),
-            status: paymentStatus,
-            isFullyPaid: paymentStatus === "verified",
+            status: historyStatus, // ✅ Use historyStatus
+            isFullyPaid: historyStatus === "verified", // ✅ Use historyStatus
           },
         },
       });
@@ -26078,7 +26074,7 @@ app.get(
         {
           $match: {
             userId: new mongoose.Types.ObjectId(userId),
-            status: { $in: ["verified", "submitted"] },
+            status: { $in: ["verified", "pending"] }, // ✅ Use "pending" instead
           },
         },
         {
@@ -26176,7 +26172,7 @@ app.get(
         {
           $match: {
             userId: new mongoose.Types.ObjectId(req.user.id),
-            status: { $in: ["verified", "submitted"] },
+            status: { $in: ["verified", "pending"] }, // ✅ Use "pending" instead
           },
         },
         {
