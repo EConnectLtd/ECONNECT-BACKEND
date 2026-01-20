@@ -26870,6 +26870,148 @@ app.delete(
 );
 
 // ============================================
+// MIGRATION API ENDPOINT
+// ============================================
+
+app.post(
+  "/api/superadmin/migrate-payment-status",
+  authenticateToken,
+  authorizeRoles("super_admin"),
+  async (req, res) => {
+    try {
+      const { dryRun = true } = req.body;
+
+      console.log(`🔄 Migration ${dryRun ? 'DRY RUN' : 'LIVE'} started by ${req.user.username}`);
+
+      const stats = {
+        total: 0,
+        updated: 0,
+        skipped: 0,
+        errors: 0,
+        byRole: {},
+        byStatus: {
+          active_paid: 0,
+          active_partial_paid: 0,
+          inactive_no_payment: 0,
+          suspended_overdue: 0,
+        },
+      };
+
+      // Get required fee helper
+      function getRequiredFee(user) {
+        const role = user.role;
+        const regType = (user.registration_type || '').toLowerCase();
+        const instType = (user.institutionType || 'government').toLowerCase();
+
+        if (role === 'entrepreneur' || role === 'nonstudent') {
+          return { silver: 30000, gold: 100000, platinum: 200000 }[regType] || 30000;
+        }
+        if (role === 'student') {
+          if (regType === 'normal' || regType === 'ctm_club') {
+            return instType === 'private' ? 35000 : 15000;
+          }
+          return { premier: 70000, silver: 49000, diamond: 55000 }[regType] || 15000;
+        }
+        return 0;
+      }
+
+      // Get all users
+      const users = await User.find({});
+      stats.total = users.length;
+
+      for (const user of users) {
+        try {
+          stats.byRole[user.role] = (stats.byRole[user.role] || 0) + 1;
+
+          // Skip if already migrated
+          if (user.accountStatus && user.paymentStatus) {
+            stats.skipped++;
+            continue;
+          }
+
+          let newAccountStatus, newPaymentStatus;
+          const rolesRequiringPayment = ['student', 'entrepreneur', 'nonstudent'];
+          const requiresPayment = rolesRequiringPayment.includes(user.role);
+
+          if (!requiresPayment) {
+            newAccountStatus = user.isActive ? 'active' : 'inactive';
+            newPaymentStatus = 'no_payment';
+            stats.byStatus[newAccountStatus === 'active' ? 'active_paid' : 'inactive_no_payment']++;
+          } else {
+            const totalPaid = await calculateRegistrationFeePaid(user._id);
+            const totalRequired = getRequiredFee(user);
+
+            if (totalPaid >= totalRequired) {
+              newAccountStatus = 'active';
+              newPaymentStatus = 'paid';
+              stats.byStatus.active_paid++;
+            } else if (totalPaid > 0) {
+              newAccountStatus = 'active';
+              newPaymentStatus = 'partial_paid';
+              stats.byStatus.active_partial_paid++;
+            } else {
+              newAccountStatus = 'inactive';
+              newPaymentStatus = 'no_payment';
+              stats.byStatus.inactive_no_payment++;
+            }
+
+            // Check overdue
+            if (user.payment_date && totalPaid < totalRequired) {
+              const days = Math.floor((Date.now() - new Date(user.payment_date)) / (1000 * 60 * 60 * 24));
+              if (days > 30) {
+                newAccountStatus = 'suspended';
+                newPaymentStatus = 'overdue';
+                stats.byStatus.suspended_overdue++;
+              }
+            }
+          }
+
+          // Apply update
+          if (!dryRun) {
+            await User.findByIdAndUpdate(user._id, {
+              accountStatus: newAccountStatus,
+              paymentStatus: newPaymentStatus,
+              isActive: newAccountStatus === 'active',
+              updatedAt: new Date(),
+            });
+          }
+          stats.updated++;
+
+        } catch (err) {
+          console.error(`Error processing ${user.username}:`, err.message);
+          stats.errors++;
+        }
+      }
+
+      await logActivity(
+        req.user.id,
+        dryRun ? 'MIGRATION_DRY_RUN' : 'MIGRATION_COMPLETED',
+        `Migration ${dryRun ? 'previewed' : 'completed'}: ${stats.updated} users`,
+        req,
+        stats,
+      );
+
+      res.json({
+        success: true,
+        message: dryRun 
+          ? `Preview complete - no changes made` 
+          : `Migration complete - ${stats.updated} users updated`,
+        dryRun,
+        stats,
+      });
+
+    } catch (error) {
+      console.error('Migration error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Migration failed',
+        message: error.message,
+      });
+    }
+  }
+);
+
+// ============================================
 // 🛡️ APPLY ERROR HANDLERS (MUST BE LAST!)
 // ============================================
 
