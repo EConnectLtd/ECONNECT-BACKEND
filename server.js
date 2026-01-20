@@ -24516,13 +24516,8 @@ app.post(
           error: "User not found",
         });
       }
-
-      // Check if user is already active
-      if (user.isActive) {
-        return res.status(400).json({
-          success: false,
-          error: "User is already active",
-        });
+      if (user.accountStatus === "active") {
+        return res.status(400).json({ error: "User is already active" });
       }
 
       // ✅ PHASE 2: Conditional activation based on role
@@ -25015,34 +25010,39 @@ app.post(
 // FIXED: RECORD PAYMENT ENDPOINT with Partial Payment Support
 // ============================================
 
-// POST Record Payment (SuperAdmin) - CORRECTED VERSION
+// POST Record Payment (SuperAdmin) - ✅ FULLY CORRECTED VERSION
 app.post(
   "/api/superadmin/payment/record",
   authenticateToken,
   authorizeRoles("super_admin", "national_official", "headmaster"),
   [
     body("userId").isMongoId().withMessage("Valid user ID is required"),
-    body("amount").isNumeric().withMessage("Valid amount is required"),
-    body("totalRequired").optional().isNumeric(), // ✅ NEW: Total amount required
-    body("currency").optional().isString(),
-    body("transactionType").optional().isString(),
-    body("method").optional().isString(),
-    body("reference").optional().isString(),
-    body("notes").optional().isString(),
+    body("paymentData.amount")
+      .isNumeric()
+      .withMessage("Valid amount is required"),
+    body("paymentData.totalRequired").optional().isNumeric(),
+    body("paymentData.currency").optional().isString(),
+    body("paymentData.transactionType").optional().isString(),
+    body("paymentData.method").optional().isString(),
+    body("paymentData.reference").optional().isString(),
+    body("paymentData.notes").optional().isString(),
   ],
   handleValidationErrors,
   async (req, res) => {
     try {
+      // ✅ FIXED: Extract paymentData first
+      const { userId, paymentData } = req.body;
+
+      // ✅ Then extract fields from paymentData
       const {
-        userId,
         amount,
-        totalRequired, // ✅ NEW: Accept totalRequired from PaymentModal
+        totalRequired,
         currency,
         transactionType,
         method,
         reference,
         notes,
-      } = req.body;
+      } = paymentData || {};
 
       console.log(`💳 Payment record request for user: ${userId}`);
       console.log(
@@ -25077,19 +25077,18 @@ app.post(
 
       // If totalRequired not provided, calculate based on role and registration type
       if (!actualTotalRequired) {
-        // ✅ FIXED: Use centralized pricing utility with role-based logic
         if (user.role === "entrepreneur" || user.role === "nonstudent") {
-          // Entrepreneur/NonStudent: Get registration fee only (monthly fees handled separately)
+          // Entrepreneur/NonStudent: Get registration fee only
           const packageType = user.registration_type || "silver";
           actualTotalRequired = getEntrepreneurRegistrationFee(
             packageType,
-            false, // Don't include first month fee (just registration: 30k/100k/200k)
+            false, // Don't include first month fee
           );
           console.log(
             `📊 Entrepreneur ${packageType} - Registration fee: ${actualTotalRequired}`,
           );
         } else if (user.role === "student") {
-          // Student: Get student package fee (8k/15k/49k/55k/70k)
+          // Student: Get student package fee
           actualTotalRequired = getStudentRegistrationFee(
             user.registration_type,
             user.institutionType,
@@ -25098,14 +25097,10 @@ app.post(
             `📊 Student ${user.registration_type} - Fee: ${actualTotalRequired}`,
           );
         } else {
-          // Other roles (teacher, staff, etc.) - no payment required
+          // Other roles - no payment required
           actualTotalRequired = 0;
           console.log(`📊 ${user.role} - No payment required`);
         }
-
-        console.log(
-          `📊 Total required for ${user.role} (${user.registration_type}): ${actualTotalRequired}`,
-        );
       }
 
       // ✅ CALCULATE TOTAL ALREADY PAID
@@ -25116,19 +25111,35 @@ app.post(
       const newTotal = totalPaid + parseFloat(amount);
       console.log(`💵 New total after payment: ${newTotal}`);
 
-      // ✅ FIX #3 & #7: Renamed variables for clarity and fixed invalid "partial" status
-      let historyStatus; // For PaymentHistory.status (pending, verified, rejected, failed)
+      // ============================================
+      // ✅ FIX: CORRECTED PAYMENT STATUS LOGIC
+      // ============================================
+      let historyStatus; // For PaymentHistory.status (pending, verified)
       let userPaymentStatus; // For User.paymentStatus (paid, partial_paid, no_payment, overdue)
       let shouldActivateUser;
 
       if (newTotal >= actualTotalRequired) {
-        historyStatus = "verified"; // PaymentHistory status
-        userPaymentStatus = "paid"; // User paymentStatus
+        // ✅ FULL PAYMENT
+        historyStatus = "verified";
+        userPaymentStatus = "paid";
         shouldActivateUser = true;
+        console.log(
+          "✅ Full payment detected - User will be ACTIVATED (Active + Paid)",
+        );
+      } else if (newTotal > 0) {
+        // ✅ PARTIAL PAYMENT - CORRECTED FIX!
+        historyStatus = "verified"; // ✅ FIXED: Admin-recorded payments are verified immediately
+        userPaymentStatus = "partial_paid";
+        shouldActivateUser = true; // ✅ FIXED: Partial payment ACTIVATES user
+        console.log(
+          "✅ Partial payment detected - User will be ACTIVATED (Active + Partial Paid)",
+        );
       } else {
-        historyStatus = "pending"; // ✅ FIXED: Use "pending" for partial payments (was "partial")
-        userPaymentStatus = "partial_paid"; // User paymentStatus
+        // ✅ NO PAYMENT
+        historyStatus = "pending";
+        userPaymentStatus = "no_payment";
         shouldActivateUser = false;
+        console.log("⚠️ No payment - User will remain INACTIVE");
       }
 
       // ✅ GENERATE INVOICE NUMBER
@@ -25161,10 +25172,10 @@ app.post(
       ) {
         description = user.registration_type
           ? `${user.registration_type.toUpperCase()} Registration Payment${
-              paymentStatus === "partial" ? " (Partial)" : ""
+              userPaymentStatus === "partial_paid" ? " (Partial)" : ""
             }`
           : `CTM Club Membership Payment${
-              paymentStatus === "partial" ? " (Partial)" : ""
+              userPaymentStatus === "partial_paid" ? " (Partial)" : ""
             }`;
       } else if (transactionType === "certificate_fee") {
         description = "Certificate Fee Payment";
@@ -25182,7 +25193,7 @@ app.post(
         description,
         amount: parseFloat(amount),
         currency: currency || "TZS",
-        status: historyStatus === "verified" ? "paid" : "partial_paid", // ✅ Use historyStatus
+        status: historyStatus === "verified" ? "paid" : "partial_paid",
         paidDate: historyStatus === "verified" ? new Date() : null,
         dueDate: new Date(),
         academicYear: new Date().getFullYear().toString(),
@@ -25192,17 +25203,17 @@ app.post(
         `✅ Invoice created: ${invoiceNumber} - Status: ${invoice.status}`,
       );
 
-      // ✅ CREATE PAYMENT HISTORY RECORD WITH CORRECT STATUS
+      // ✅ CREATE PAYMENT HISTORY RECORD
       const paymentHistory = await PaymentHistory.create({
         userId,
         invoiceId: invoice._id,
         transactionType: transactionType || "registration_fee",
         amount: parseFloat(amount),
         currency: currency || "TZS",
-        status: historyStatus, // ✅ FIXED: Uses "pending" or "verified" based on amount
+        status: historyStatus,
         paymentDate: new Date(),
-        verifiedAt: historyStatus === "verified" ? new Date() : null, // ✅ Only set if verified
-        verifiedBy: historyStatus === "verified" ? req.user.id : null, // ✅ Only set if verified
+        verifiedAt: historyStatus === "verified" ? new Date() : null,
+        verifiedBy: historyStatus === "verified" ? req.user.id : null,
         description,
         metadata: {
           recordedBy: req.user.username,
@@ -25214,17 +25225,17 @@ app.post(
           totalPaidBefore: totalPaid,
           totalPaidAfter: newTotal,
           remainingBalance: Math.max(0, actualTotalRequired - newTotal),
-          isPartialPayment: historyStatus === "pending", // ✅ Use historyStatus
+          isPartialPayment: userPaymentStatus === "partial_paid",
           ipAddress: req.ip || req.connection?.remoteAddress,
           userAgent: req.get("user-agent"),
         },
         statusHistory: [
           {
-            status: historyStatus, // ✅ Use historyStatus
+            status: historyStatus,
             changedBy: req.user.id,
             changedAt: new Date(),
             reason:
-              historyStatus === "pending" // ✅ Use historyStatus
+              userPaymentStatus === "partial_paid"
                 ? `Partial payment recorded (${amount}/${actualTotalRequired} TZS)`
                 : "Full payment recorded by admin",
             notes,
@@ -25233,32 +25244,41 @@ app.post(
       });
 
       console.log(
-        `✅ Payment history created: ${paymentHistory._id} - Status: ${historyStatus}`, // ✅ Use historyStatus
+        `✅ Payment history created: ${paymentHistory._id} - Status: ${historyStatus}`,
       );
 
-      // ✅ PHASE 2: UPDATE USER STATUS WITH NEW SYSTEM
-      if (shouldActivateUser && user.accountStatus !== "active") {
-        user.accountStatus = "active";
-        user.paymentStatus = userPaymentStatus; // ✅ Use variable!
+      // ============================================
+      // ✅ FIX: CORRECTED USER STATUS UPDATE LOGIC
+      // ============================================
+      if (shouldActivateUser) {
+        // ✅ ACTIVATE USER (for both full and partial payments)
+        user.accountStatus = "active"; // ✅ FIXED: Partial payments now activate user
+        user.paymentStatus = userPaymentStatus; // "paid" or "partial_paid"
         user.isActive = true;
         user.payment_verified_by = req.user.id;
         user.payment_verified_at = new Date();
         user.payment_date = new Date();
         await user.save();
-      } else if (!shouldActivateUser) {
+
+        console.log(
+          `✅ User ACTIVATED: ${user.username} - Payment Status: ${userPaymentStatus}`,
+        );
+      } else {
+        // ✅ KEEP USER INACTIVE (only for no payment)
         user.accountStatus = "inactive";
-        user.paymentStatus = userPaymentStatus; // ✅ Use variable!
+        user.paymentStatus = "no_payment";
         user.isActive = false;
         user.payment_date = new Date();
         await user.save();
-      } else {
-        user.payment_date = new Date();
-        user.paymentStatus = userPaymentStatus; // ✅ Update even if active!
-        await user.save();
+
+        console.log(
+          `⚠️ User remains INACTIVE: ${user.username} - No payment received`,
+        );
       }
+
       // ✅ CREATE APPROPRIATE NOTIFICATION
-      if (historyStatus === "verified") {
-        // ✅ Use historyStatus
+      if (userPaymentStatus === "paid") {
+        // Full payment notification
         await createNotification(
           userId,
           "Payment Verified - Account Activated! ✅",
@@ -25267,16 +25287,27 @@ app.post(
           } ${amount} has been recorded. Your account is now active!`,
           "success",
         );
-      } else {
+      } else if (userPaymentStatus === "partial_paid") {
+        // Partial payment notification
         const remaining = actualTotalRequired - newTotal;
         await createNotification(
           userId,
-          "Partial Payment Recorded 💳",
+          "Partial Payment Recorded - Account Activated! 💳",
           `Your payment of ${
             currency || "TZS"
-          } ${amount} has been recorded. Remaining balance: ${
+          } ${amount} has been recorded and your account is now active! Remaining balance: ${
             currency || "TZS"
-          } ${remaining.toLocaleString()}. Your account will be activated after full payment.`,
+          } ${remaining.toLocaleString()}. Please complete payment to avoid suspension.`,
+          "warning",
+        );
+      } else {
+        // No payment notification
+        await createNotification(
+          userId,
+          "Payment Required ⚠️",
+          `Please complete your payment of ${
+            currency || "TZS"
+          } ${actualTotalRequired.toLocaleString()} to activate your account.`,
           "warning",
         );
       }
@@ -25285,14 +25316,13 @@ app.post(
       await logActivity(
         req.user.id,
         "PAYMENT_RECORDED",
-        `Recorded ${historyStatus} payment for ${userName}: ${
-          // ✅ Use historyStatus
+        `Recorded ${userPaymentStatus} payment for ${userName}: ${
           currency || "TZS"
         } ${amount}${
-          historyStatus === "pending" // ✅ Use historyStatus
+          userPaymentStatus === "partial_paid"
             ? ` (${newTotal}/${actualTotalRequired})`
             : ""
-        }`,
+        } - User ${shouldActivateUser ? "ACTIVATED" : "remains INACTIVE"}`,
         req,
         {
           userId,
@@ -25303,28 +25333,34 @@ app.post(
           transactionType,
           method,
           reference,
-          paymentStatus: historyStatus, // ✅ Use historyStatus
+          paymentStatus: userPaymentStatus,
+          historyStatus,
           totalRequired: actualTotalRequired,
           totalPaid: newTotal,
           remainingBalance: Math.max(0, actualTotalRequired - newTotal),
           userActivated: shouldActivateUser,
+          accountStatus: user.accountStatus,
         },
       );
 
       res.status(201).json({
         success: true,
         message:
-          historyStatus === "verified" // ✅ Use historyStatus
+          userPaymentStatus === "paid"
             ? "Full payment recorded successfully - User activated"
-            : `Partial payment recorded - ${currency || "TZS"} ${(
-                actualTotalRequired - newTotal
-              ).toLocaleString()} remaining`,
+            : userPaymentStatus === "partial_paid"
+              ? `Partial payment recorded - User activated with ${currency || "TZS"} ${(
+                  actualTotalRequired - newTotal
+                ).toLocaleString()} remaining`
+              : "Payment information recorded - User remains inactive",
         data: {
           invoice,
           paymentHistory,
           user: {
             id: user._id,
             name: userName,
+            accountStatus: user.accountStatus, // ✅ NEW: Return account status
+            paymentStatus: user.paymentStatus, // ✅ NEW: Return payment status
             isActive: user.isActive,
           },
           paymentSummary: {
@@ -25333,8 +25369,11 @@ app.post(
             totalPaidAfter: newTotal,
             totalRequired: actualTotalRequired,
             remainingBalance: Math.max(0, actualTotalRequired - newTotal),
-            status: historyStatus, // ✅ Use historyStatus
-            isFullyPaid: historyStatus === "verified", // ✅ Use historyStatus
+            status: userPaymentStatus,
+            historyStatus: historyStatus,
+            isFullyPaid: userPaymentStatus === "paid",
+            isPartiallyPaid: userPaymentStatus === "partial_paid",
+            userActivated: shouldActivateUser,
           },
         },
       });
@@ -26901,6 +26940,342 @@ if (process.env.NODE_ENV === "production") {
   console.log("ℹ️  Cron jobs disabled (not in production environment)");
 }
 
+if (process.env.NODE_ENV === "production") {
+  // ============================================
+  // ✅ CORRECTED: OVERDUE PAYMENT CHECKER - Runs daily at midnight
+  // ============================================
+  cron.schedule("0 0 * * *", async () => {
+    console.log("\n🕐 ========================================");
+    console.log("🕐  RUNNING OVERDUE PAYMENT CHECK");
+    console.log("🕐 ========================================\n");
+
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // Start of today
+
+      // ✅ CORRECT: Find invoices that are past due (using actual due dates from Invoice model)
+      // ❌ OLD: Used hardcoded 30-day calculation from user.payment_date
+      // ✅ NEW: Uses Invoice.dueDate to determine if payment is overdue
+      const overdueInvoices = await Invoice.find({
+        status: { $in: ["pending", "partial_paid"] },
+        dueDate: { $lt: today }, // Due date has passed
+      }).populate(
+        "user_id",
+        "firstName lastName username phoneNumber accountStatus paymentStatus",
+      );
+
+      console.log(`📊 Found ${overdueInvoices.length} overdue invoices`);
+
+      let suspendedCount = 0;
+      let notificationsSent = 0;
+      const errors = [];
+
+      // ✅ Group invoices by user (one user may have multiple overdue invoices)
+      const userInvoicesMap = new Map();
+      overdueInvoices.forEach((invoice) => {
+        const userId = invoice.user_id._id.toString();
+        if (!userInvoicesMap.has(userId)) {
+          userInvoicesMap.set(userId, {
+            user: invoice.user_id,
+            invoices: [],
+          });
+        }
+        userInvoicesMap.get(userId).invoices.push(invoice);
+      });
+
+      console.log(
+        `👥 Overdue invoices belong to ${userInvoicesMap.size} users`,
+      );
+
+      // Process each user with overdue invoices
+      for (const [userId, { user, invoices }] of userInvoicesMap) {
+        try {
+          const userName =
+            `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
+            user.username;
+
+          // ✅ Skip if already suspended with overdue status (idempotent)
+          if (
+            user.accountStatus === "suspended" &&
+            user.paymentStatus === "overdue"
+          ) {
+            console.log(`⏭️  Skipping ${userName} - already suspended/overdue`);
+            continue;
+          }
+
+          // Calculate total overdue amount across all invoices
+          const totalOverdue = invoices.reduce(
+            (sum, inv) => sum + inv.amount,
+            0,
+          );
+
+          // Find oldest invoice to calculate days overdue
+          const oldestInvoice = invoices.sort(
+            (a, b) => new Date(a.dueDate) - new Date(b.dueDate),
+          )[0];
+          const daysOverdue = Math.floor(
+            (today - new Date(oldestInvoice.dueDate)) / (1000 * 60 * 60 * 24),
+          );
+
+          console.log(`\n⚠️  Processing overdue user: ${userName}`);
+          console.log(`   - Overdue invoices: ${invoices.length}`);
+          console.log(
+            `   - Total overdue: TZS ${totalOverdue.toLocaleString()}`,
+          );
+          console.log(`   - Days overdue: ${daysOverdue}`);
+          console.log(`   - Current account status: ${user.accountStatus}`);
+          console.log(`   - Current payment status: ${user.paymentStatus}`);
+
+          // ✅ UPDATE USER STATUS TO SUSPENDED + OVERDUE
+          const updatedUser = await User.findByIdAndUpdate(
+            userId,
+            {
+              accountStatus: "suspended", // Suspended because doesn't meet requirements
+              paymentStatus: "overdue", // Payment is past due
+              isActive: false, // Backward compatibility
+              updatedAt: new Date(),
+            },
+            { new: true },
+          );
+
+          suspendedCount++;
+          console.log(
+            `   ✅ User suspended: ${userName} (Suspended + Overdue)`,
+          );
+
+          // ✅ UPDATE INVOICES TO OVERDUE STATUS
+          // This marks the invoices as overdue in the Invoice collection
+          await Invoice.updateMany(
+            { _id: { $in: invoices.map((inv) => inv._id) } },
+            {
+              status: "overdue",
+              updatedAt: new Date(),
+            },
+          );
+
+          // ✅ Send in-app notification to user
+          try {
+            await createNotification(
+              userId,
+              "Payment Overdue - Account Suspended 🚫",
+              `Your payment is ${daysOverdue} days overdue (TZS ${totalOverdue.toLocaleString()}). Your account has been suspended. Please complete your payment immediately to reactivate your account.`,
+              "error",
+              "/payments",
+            );
+
+            notificationsSent++;
+            console.log(`   ✅ Notification sent to ${userName}`);
+          } catch (notifError) {
+            console.error(
+              `   ❌ Failed to send notification to ${userName}:`,
+              notifError.message,
+            );
+            errors.push({
+              userId,
+              userName,
+              error: `Notification failed: ${notifError.message}`,
+            });
+          }
+
+          // ✅ Optional: Send SMS reminder if phone number exists
+          if (user.phoneNumber && smsService) {
+            try {
+              const smsMessage = `Hello ${userName}! Your ECONNECT account has been SUSPENDED due to overdue payment (${daysOverdue} days, TZS ${totalOverdue.toLocaleString()}). Please pay immediately to reactivate. Thank you!`;
+
+              const smsResult = await smsService.sendSMS(
+                user.phoneNumber,
+                smsMessage,
+                "overdue_suspension",
+              );
+
+              if (smsResult.success) {
+                console.log(`   📱 SMS sent to ${user.phoneNumber}`);
+
+                await SMSLog.create({
+                  userId,
+                  phone: user.phoneNumber,
+                  message: smsMessage,
+                  type: "overdue_suspension",
+                  status: "sent",
+                  messageId: smsResult.messageId,
+                  reference: `overdue_${userId}`,
+                });
+              }
+            } catch (smsError) {
+              console.error(
+                `   ⚠️  SMS failed for ${user.phoneNumber}:`,
+                smsError.message,
+              );
+            }
+          }
+        } catch (userError) {
+          console.error(`❌ Error processing user ${userId}:`, userError);
+          errors.push({
+            userId,
+            error: userError.message,
+          });
+        }
+      }
+
+      // ✅ Log summary
+      console.log("\n✅ ========================================");
+      console.log("✅  OVERDUE CHECK COMPLETE");
+      console.log("✅ ========================================");
+      console.log(`📊 Total overdue invoices: ${overdueInvoices.length}`);
+      console.log(`👥 Users affected: ${userInvoicesMap.size}`);
+      console.log(`🚫 Users suspended: ${suspendedCount}`);
+      console.log(`🔔 Notifications sent: ${notificationsSent}`);
+      console.log(`❌ Errors: ${errors.length}`);
+      console.log("========================================\n");
+
+      // ✅ Notify super admins of completion
+      try {
+        const superAdmins = await User.find({ role: "super_admin" }).distinct(
+          "_id",
+        );
+
+        const summary = `Overdue Payment Check Complete:\n- ${overdueInvoices.length} overdue invoices\n- ${suspendedCount} users suspended\n- ${notificationsSent} notifications sent\n- ${errors.length} errors`;
+
+        await Promise.all(
+          superAdmins.map((adminId) =>
+            createNotification(
+              adminId,
+              "Overdue Payment Check Completed",
+              summary,
+              errors.length > 0 ? "warning" : "info",
+            ),
+          ),
+        );
+      } catch (notifError) {
+        console.error("❌ Failed to notify super admins:", notifError);
+      }
+
+      // ✅ Log activity for audit trail
+      if (suspendedCount > 0) {
+        await ActivityLog.create({
+          userId: null, // System activity
+          action: "OVERDUE_PAYMENT_CHECK",
+          description: `Suspended ${suspendedCount} users for overdue payments`,
+          metadata: {
+            totalInvoices: overdueInvoices.length,
+            usersAffected: userInvoicesMap.size,
+            suspended: suspendedCount,
+            notificationsSent,
+            errors: errors.length,
+            errorDetails: errors,
+          },
+          ipAddress: "system",
+          userAgent: "cron-job",
+        });
+      }
+    } catch (error) {
+      console.error("\n❌ ========================================");
+      console.error("❌  OVERDUE CHECK FAILED");
+      console.error("❌ ========================================");
+      console.error(error);
+      console.error("========================================\n");
+
+      // ✅ Notify SuperAdmin of failure
+      try {
+        const superAdmins = await User.find({ role: "super_admin" }).distinct(
+          "_id",
+        );
+        await Promise.all(
+          superAdmins.map((adminId) =>
+            createNotification(
+              adminId,
+              "Overdue Payment Check Failed ❌",
+              `Automated overdue payment check failed: ${error.message}`,
+              "error",
+            ),
+          ),
+        );
+      } catch (notifError) {
+        console.error("❌ Failed to send error notification:", notifError);
+      }
+    }
+  });
+
+  console.log("✅ Overdue payment checker scheduled (daily at midnight)");
+
+  // ============================================
+  // ✅ OPTIONAL: OVERDUE WARNING - Runs daily at 9 AM
+  // Sends 7-day warning before suspension
+  // ============================================
+  cron.schedule("0 9 * * *", async () => {
+    console.log("\n📧 Running overdue warning check (7-day notice)...");
+
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const sevenDaysFromNow = new Date(today);
+      sevenDaysFromNow.setDate(today.getDate() + 7);
+
+      // Find invoices due within 7 days
+      const upcomingDueInvoices = await Invoice.find({
+        status: { $in: ["pending", "partial_paid"] },
+        dueDate: { $gte: today, $lte: sevenDaysFromNow },
+      }).populate("user_id", "firstName lastName username phoneNumber");
+
+      console.log(
+        `📊 Found ${upcomingDueInvoices.length} invoices due within 7 days`,
+      );
+
+      let warningsSent = 0;
+
+      // Group by user
+      const userInvoicesMap = new Map();
+      upcomingDueInvoices.forEach((invoice) => {
+        const userId = invoice.user_id._id.toString();
+        if (!userInvoicesMap.has(userId)) {
+          userInvoicesMap.set(userId, {
+            user: invoice.user_id,
+            invoices: [],
+          });
+        }
+        userInvoicesMap.get(userId).invoices.push(invoice);
+      });
+
+      for (const [userId, { user, invoices }] of userInvoicesMap) {
+        try {
+          const userName =
+            `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
+            user.username;
+          const nearestInvoice = invoices.sort(
+            (a, b) => new Date(a.dueDate) - new Date(b.dueDate),
+          )[0];
+          const daysRemaining = Math.ceil(
+            (new Date(nearestInvoice.dueDate) - today) / (1000 * 60 * 60 * 24),
+          );
+          const totalDue = invoices.reduce((sum, inv) => sum + inv.amount, 0);
+
+          // Send warning notification
+          await createNotification(
+            userId,
+            "Payment Due Soon - Action Required ⚠️",
+            `Your payment of TZS ${totalDue.toLocaleString()} is due in ${daysRemaining} days. Please complete your payment to avoid account suspension.`,
+            "warning",
+            "/payments",
+          );
+
+          warningsSent++;
+          console.log(
+            `📧 Warning sent to ${userName} (${daysRemaining} days remaining)`,
+          );
+        } catch (userError) {
+          console.error(`❌ Error warning user:`, userError);
+        }
+      }
+
+      console.log(`✅ Overdue warnings complete: ${warningsSent} sent\n`);
+    } catch (error) {
+      console.error("❌ Overdue warning check failed:", error);
+    }
+  });
+
+  console.log("✅ Overdue warning checker scheduled (daily at 9 AM)");
+}
 // Start server
 server.listen(PORT, () => {
   console.log("");
