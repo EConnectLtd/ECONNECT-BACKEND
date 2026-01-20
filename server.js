@@ -3268,37 +3268,21 @@ const handleValidationErrors = (req, res, next) => {
 const isValidObjectId = (id) => {
   return mongoose.Types.ObjectId.isValid(id);
 };
-
 async function calculateRegistrationFeePaid(userId) {
   try {
-    const result = await PaymentHistory.aggregate([
-      {
-        $match: {
-          userId: new mongoose.Types.ObjectId(userId),
-          status: { $in: ["verified", "partial"] }, // ✅ FIXED: Include BOTH statuses
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: "$amount" },
-        },
-      },
-    ]);
+    // ✅ CRITICAL FIX: Use "pending" instead of "partial"
+    const paidPayments = await PaymentHistory.find({
+      userId,
+      status: { $in: ["verified", "pending"] } // ✅ CORRECT: Both verified and pending count
+    });
 
-    const total = result[0]?.total || 0;
-
-    console.log(
-      `💰 User ${userId}: Calculated registration_fee_paid = ${total} (from verified + partial payments)`,
-    );
+    // Sum all payment amounts
+    const total = paidPayments.reduce((sum, payment) => sum + payment.amount, 0);
 
     return total;
   } catch (error) {
-    console.error(
-      `❌ Error calculating registration_fee_paid for user ${userId}:`,
-      error,
-    );
-    return 0; // Return 0 on error to avoid breaking the response
+    console.error(`❌ Error calculating registration fee paid for user ${userId}:`, error);
+    return 0; // Return 0 on error to prevent crashes
   }
 }
 
