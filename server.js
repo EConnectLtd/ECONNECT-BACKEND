@@ -103,6 +103,51 @@ function sanitizeError(error) {
 }
 
 // ============================================
+// ✅ INVOICE STATUS VALIDATION HELPER
+// ============================================
+
+/**
+ * Valid invoice statuses in the system
+ * @constant {string[]}
+ */
+const VALID_INVOICE_STATUSES = [
+  "pending", // Invoice created, payment not yet received
+  "verification", // Payment proof submitted, awaiting admin verification
+  "paid", // Payment verified and completed
+  "partial_paid", // Partial payment received
+  "overdue", // Payment past due date
+  "cancelled", // Invoice cancelled by admin
+];
+
+/**
+ * Validates if an invoice status is valid
+ * @param {string} status - Status to validate
+ * @returns {boolean}
+ */
+function isValidInvoiceStatus(status) {
+  return VALID_INVOICE_STATUSES.includes(status);
+}
+
+/**
+ * Get invoice status display name
+ * @param {string} status - Status code
+ * @returns {string}
+ */
+function getInvoiceStatusDisplay(status) {
+  const statusMap = {
+    pending: "Pending Payment",
+    verification: "Under Verification",
+    paid: "Paid",
+    partial_paid: "Partially Paid",
+    overdue: "Overdue",
+    cancelled: "Cancelled",
+  };
+  return statusMap[status] || status;
+}
+
+console.log("✅ Invoice status helpers loaded");
+
+// ============================================
 // MULTER CONFIGURATION FOR FILE UPLOADS
 // ============================================
 
@@ -526,8 +571,6 @@ const userSchema = new mongoose.Schema({
     type: String,
     enum: ["ctm-club", "silver", "gold", "platinum"],
   },
-
-  registration_fee_paid: { type: Number, default: 0 },
   registration_date: Date,
   next_billing_date: Date,
   is_ctm_student: { type: Boolean, default: true },
@@ -3268,18 +3311,23 @@ const handleValidationErrors = (req, res, next) => {
 const isValidObjectId = (id) => {
   return mongoose.Types.ObjectId.isValid(id);
 };
+
 async function calculateRegistrationFeePaid(userId) {
   try {
-    // ✅ CRITICAL FIX: Use "pending" instead of "partial"
+    // ✅ FIX: ONLY count verified/approved/completed payments (exclude pending invoices!)
     const paidPayments = await PaymentHistory.find({
       userId,
-      status: { $in: ["verified", "pending"] }, // ✅ CORRECT: Both verified and pending count
+      status: { $in: ["verified", "approved", "completed"] }, // ✅ CORRECT
+      transactionType: "registration_fee", // ✅ ADDED: Only registration payments
     });
 
-    // Sum all payment amounts
     const total = paidPayments.reduce(
       (sum, payment) => sum + payment.amount,
       0,
+    );
+
+    console.log(
+      `💰 User ${userId}: Calculated registration_fee_paid = ${total} TZS`,
     );
 
     return total;
@@ -3288,7 +3336,7 @@ async function calculateRegistrationFeePaid(userId) {
       `❌ Error calculating registration fee paid for user ${userId}:`,
       error,
     );
-    return 0; // Return 0 on error to prevent crashes
+    return 0;
   }
 }
 
@@ -3917,33 +3965,15 @@ app.post(
             `💰 Invoice created: ${invoiceNumber} for ${registrationFee} TZS`,
           );
 
-          // ✅ Create payment history entry
-          await PaymentHistory.create({
-            userId: user._id,
-            invoiceId: invoice._id,
-            transactionType: "registration_fee",
-            amount: registrationFee, // ✅ CORRECT
-            currency: "TZS",
-            status: payment && payment.reference ? "submitted" : "pending",
-            paymentDate: null, // ✅ ADDED: Will be set when payment is verified
-            submittedAt: payment && payment.reference ? new Date() : null,
-            statusHistory: [
-              {
-                status: payment && payment.reference ? "submitted" : "pending",
-                changedAt: new Date(),
-                reason: "Initial registration",
-              },
-            ],
-            metadata: {
-              registrationType: student.registration_type,
-              institutionType: student.institution_type,
-              packageName: getPackageName(student.registration_type),
-              ipAddress: req.ip || req.connection?.remoteAddress,
-              userAgent: req.get("user-agent"),
-            },
-          });
+          // ✅ ONLY create Invoice during registration
+          // PaymentHistory will be created when student submits payment proof
 
-          console.log(`📊 Payment history entry created for user ${user._id}`);
+          console.log(
+            `💰 Invoice created: ${invoiceNumber} for ${registrationFee} TZS`,
+          );
+          console.log(
+            `📊 PaymentHistory will be created when payment proof is submitted`,
+          );
 
           // Set next billing date for monthly subscriptions (Silver, Gold, Platinum)
           if (
@@ -3958,14 +3988,14 @@ app.post(
       }
 
       // ============================================================================
-      // ✅ AUTO-GENERATE INVOICE FOR ENTREPRENEURS
+      // ✅ AUTO-GENERATE INVOICE FOR ENTREPRENEURS (INVOICE ONLY - NO PAYMENT HISTORY)
       // ============================================================================
 
       if (role === "entrepreneur" && entrepreneur?.registration_type) {
         // ✅ FIXED: Get ONLY registration fee (not including first month)
         const registrationFee = getEntrepreneurRegistrationFee(
           entrepreneur.registration_type,
-          false, // ✅ false = registration fee only (100,000 for Gold)
+          false, // ✅ false = registration fee only
         );
 
         if (registrationFee && registrationFee > 0) {
@@ -3990,7 +4020,7 @@ app.post(
             description: getEntrepreneurPackageName(
               entrepreneur.registration_type,
             ),
-            amount: registrationFee, // ✅ Now correctly 100,000 for Gold (not 250,000)
+            amount: registrationFee,
             currency: "TZS",
             status: payment && payment.reference ? "verification" : "unpaid",
             dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
@@ -4001,26 +4031,10 @@ app.post(
             `💰 Entrepreneur invoice created: ${invoiceNumber} for ${registrationFee} TZS`,
           );
 
-          // ✅ Create payment history entry
-          await PaymentHistory.create({
-            userId: user._id,
-            invoiceId: invoice._id,
-            transactionType: "registration_fee",
-            amount: registrationFee, // ✅ Now correctly 100,000 for Gold
-            currency: "TZS",
-            status: "pending",
-            paymentDate: null, // ✅ Will be set when payment is verified
-            statusHistory: [
-              {
-                status: "pending",
-                changedAt: new Date(),
-                reason: "Entrepreneur registration - awaiting payment",
-              },
-            ],
-          });
-
+          // ✅ REMOVED: Do NOT create PaymentHistory here!
+          // PaymentHistory will be created when entrepreneur submits payment proof
           console.log(
-            `📊 Payment history entry created for entrepreneur ${user._id}`,
+            `📊 PaymentHistory will be created when payment proof is submitted`,
           );
         }
       }
@@ -8314,7 +8328,7 @@ app.post(
 );
 
 // ============================================
-// PAYMENT PROOF UPLOAD ENDPOINT
+// PAYMENT PROOF UPLOAD ENDPOINT (FIXED VERSION)
 // ============================================
 
 app.post(
@@ -8327,14 +8341,16 @@ app.post(
       const userId = req.user.id;
       const file = req.file;
 
-      console.log("Payment proof upload request:", {
+      console.log("📤 Payment proof upload request:", {
         userId,
         invoiceId,
         transactionReference,
         fileName: file?.originalname,
       });
 
-      // Validate required fields
+      // ============================================
+      // 1️⃣ VALIDATE REQUIRED FIELDS
+      // ============================================
       if (!file) {
         return res.status(400).json({
           success: false,
@@ -8343,6 +8359,10 @@ app.post(
       }
 
       if (!invoiceId) {
+        // Clean up uploaded file if validation fails
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
         return res.status(400).json({
           success: false,
           error: "Invoice ID is required",
@@ -8350,13 +8370,19 @@ app.post(
       }
 
       if (!transactionReference || !transactionReference.trim()) {
+        // Clean up uploaded file if validation fails
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
         return res.status(400).json({
           success: false,
           error: "Transaction reference is required",
         });
       }
 
-      // Find invoice and verify ownership
+      // ============================================
+      // 2️⃣ FIND INVOICE AND VERIFY OWNERSHIP
+      // ============================================
       const invoice = await Invoice.findOne({
         _id: invoiceId,
         user_id: userId,
@@ -8364,23 +8390,190 @@ app.post(
 
       if (!invoice) {
         // Clean up uploaded file if invoice not found
-        fs.unlinkSync(file.path);
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
         return res.status(404).json({
           success: false,
           error: "Invoice not found or you do not have permission to access it",
         });
       }
 
-      // Check if invoice is already paid
+      // ============================================
+      // 3️⃣ CHECK IF INVOICE IS ALREADY PAID
+      // ============================================
       if (invoice.status === "paid") {
-        fs.unlinkSync(file.path);
+        // Clean up uploaded file
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
         return res.status(400).json({
           success: false,
           error: "This invoice has already been paid",
         });
       }
 
-      // Update invoice with payment proof
+      // ============================================
+      // 4️⃣ CHECK IF PAYMENT HISTORY ALREADY EXISTS
+      // ============================================
+      const existingPaymentHistory = await PaymentHistory.findOne({
+        invoiceId: invoiceId,
+        userId: userId,
+      });
+
+      if (existingPaymentHistory) {
+        console.warn(
+          `⚠️ PaymentHistory already exists for invoice ${invoiceId}`,
+        );
+
+        // ✅ UPDATE existing PaymentHistory instead of creating duplicate
+        existingPaymentHistory.status = "submitted";
+        existingPaymentHistory.submittedAt = new Date();
+        existingPaymentHistory.paymentProof = {
+          fileUrl: file.path,
+          fileName: file.filename,
+          fileType: file.mimetype,
+          uploadedAt: new Date(),
+        };
+        existingPaymentHistory.metadata = {
+          ...existingPaymentHistory.metadata,
+          transactionReference: transactionReference.trim(),
+          notes: notes || "",
+          resubmitted: true,
+          resubmittedAt: new Date(),
+        };
+
+        // Add to status history
+        existingPaymentHistory.statusHistory.push({
+          status: "submitted",
+          changedAt: new Date(),
+          reason: "Payment proof resubmitted by student",
+          notes: notes || "",
+        });
+
+        await existingPaymentHistory.save();
+
+        // Update invoice
+        invoice.status = "verification";
+        invoice.paymentProof = {
+          fileName: file.filename,
+          originalName: file.originalname,
+          filePath: file.path,
+          fileSize: file.size,
+          mimeType: file.mimetype,
+          uploadedAt: new Date(),
+          transactionReference: transactionReference.trim(),
+          notes: notes || "",
+          status: "pending",
+        };
+        await invoice.save();
+
+        console.log(
+          `✅ Updated existing PaymentHistory for invoice ${invoiceId}`,
+        );
+
+        // Create audit log
+        await logActivity(
+          userId,
+          "PAYMENT_PROOF_RESUBMITTED",
+          `Resubmitted payment proof for invoice ${invoice.invoiceNumber}`,
+          req,
+          {
+            invoice_id: invoiceId,
+            invoice_number: invoice.invoiceNumber,
+            transaction_reference: transactionReference.trim(),
+            file_name: file.originalname,
+            file_size: file.size,
+            amount: invoice.amount,
+            currency: invoice.currency,
+          },
+        );
+
+        // Create notification for student
+        await createNotification(
+          userId,
+          "Payment Proof Resubmitted",
+          `Your payment proof for invoice ${invoice.invoiceNumber} has been resubmitted for verification`,
+          "info",
+        );
+
+        return res.json({
+          success: true,
+          message:
+            "Payment proof resubmitted successfully. Your payment is being verified.",
+          data: {
+            invoiceId: invoice._id,
+            invoiceNumber: invoice.invoiceNumber,
+            status: invoice.status,
+            uploadedAt: invoice.paymentProof.uploadedAt,
+          },
+        });
+      }
+
+      // ============================================
+      // 5️⃣ CREATE NEW PAYMENT HISTORY RECORD
+      // ============================================
+      const paymentHistory = await PaymentHistory.create({
+        // ✅ User & Invoice References
+        userId: userId,
+        invoiceId: invoiceId,
+        schoolId: req.user.schoolId || null,
+
+        // ✅ Transaction Details
+        transactionType: "registration_fee",
+        amount: invoice.amount,
+        totalAmount: invoice.amount, // ✅ CRITICAL: Must match amount for full payment
+        paidAmount: 0, // Will be updated when verified
+        remainingAmount: invoice.amount, // Will be calculated by pre-save hook
+        currency: invoice.currency,
+
+        // ✅ Payment Status
+        status: "submitted", // ✅ CORRECT: Payment proof submitted, awaiting verification
+        paymentDate: null, // ✅ Will be set when admin verifies
+        submittedAt: new Date(),
+        dueDate: invoice.dueDate,
+
+        // ✅ Payment Proof
+        paymentProof: {
+          fileUrl: file.path,
+          fileName: file.filename,
+          fileType: file.mimetype,
+          uploadedAt: new Date(),
+        },
+
+        // ✅ Status History (Audit Trail)
+        statusHistory: [
+          {
+            status: "submitted",
+            changedAt: new Date(),
+            reason: "Payment proof submitted by student",
+            notes: notes || "",
+          },
+        ],
+
+        // ✅ Metadata
+        metadata: {
+          transactionReference: transactionReference.trim(),
+          notes: notes || "",
+          ipAddress: req.ip || req.connection?.remoteAddress,
+          userAgent: req.get("user-agent"),
+          registrationType: req.user.registrationType,
+          institutionType: req.user.institutionType,
+        },
+
+        // ✅ Additional Fields
+        description: `Payment proof for ${invoice.description}`,
+        reconciled: false,
+        isDeleted: false,
+      });
+
+      console.log(
+        `✅ PaymentHistory created: ${paymentHistory._id} for invoice ${invoiceId}`,
+      );
+
+      // ============================================
+      // 6️⃣ UPDATE INVOICE WITH PAYMENT PROOF
+      // ============================================
       invoice.paymentProof = {
         fileName: file.filename,
         originalName: file.originalname,
@@ -8398,7 +8591,13 @@ app.post(
 
       await invoice.save();
 
-      // Create audit log
+      console.log(
+        `✅ Invoice updated: ${invoice.invoiceNumber} - Status: verification`,
+      );
+
+      // ============================================
+      // 7️⃣ CREATE AUDIT LOG
+      // ============================================
       await logActivity(
         userId,
         "PAYMENT_PROOF_SUBMITTED",
@@ -8412,10 +8611,13 @@ app.post(
           file_size: file.size,
           amount: invoice.amount,
           currency: invoice.currency,
+          payment_history_id: paymentHistory._id,
         },
       );
 
-      // Create notification for student
+      // ============================================
+      // 8️⃣ CREATE NOTIFICATION FOR STUDENT
+      // ============================================
       await createNotification(
         userId,
         "Payment Proof Submitted",
@@ -8423,9 +8625,39 @@ app.post(
         "info",
       );
 
-      console.log("Payment proof submitted successfully:", {
+      // ============================================
+      // 9️⃣ NOTIFY ADMIN/HEADMASTER (OPTIONAL)
+      // ============================================
+      try {
+        if (req.user.schoolId) {
+          const headmaster = await User.findOne({
+            schoolId: req.user.schoolId,
+            role: "headmaster",
+            isActive: true,
+          });
+
+          if (headmaster) {
+            await createNotification(
+              headmaster._id,
+              "New Payment Proof Submitted",
+              `${req.user.firstName} ${req.user.lastName} submitted payment proof for ${invoice.description}`,
+              "info",
+              `/admin/invoices/${invoiceId}`,
+            );
+          }
+        }
+      } catch (notifyError) {
+        console.warn("⚠️ Failed to notify admin:", notifyError.message);
+        // Don't fail the request if notification fails
+      }
+
+      // ============================================
+      // 🎉 SUCCESS RESPONSE
+      // ============================================
+      console.log("✅ Payment proof submission completed successfully:", {
         invoiceId,
         invoiceNumber: invoice.invoiceNumber,
+        paymentHistoryId: paymentHistory._id,
         fileName: file.originalname,
       });
 
@@ -8438,23 +8670,30 @@ app.post(
           invoiceNumber: invoice.invoiceNumber,
           status: invoice.status,
           uploadedAt: invoice.paymentProof.uploadedAt,
+          paymentHistoryId: paymentHistory._id,
+          estimatedVerificationTime: "24-48 hours",
         },
       });
     } catch (error) {
-      console.error("Error submitting payment proof:", error);
+      console.error("❌ Error submitting payment proof:", error);
 
-      // Clean up uploaded file on error
+      // ============================================
+      // 🧹 CLEANUP: Remove uploaded file on error
+      // ============================================
       if (req.file && req.file.path) {
         try {
-          fs.unlinkSync(req.file.path);
+          if (fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+            console.log(`🧹 Cleaned up file: ${req.file.path}`);
+          }
         } catch (cleanupError) {
-          console.error("Error cleaning up file:", cleanupError);
+          console.error("❌ Error cleaning up file:", cleanupError);
         }
       }
 
       res.status(500).json({
         success: false,
-        error: "Failed to submit payment proof. Please try again.", // ✅ GOOD - Generic message
+        error: "Failed to submit payment proof. Please try again.",
       });
     }
   },
@@ -25631,9 +25870,9 @@ app.post(
             );
           }
 
-          // ========================================
-          // CREATE PAYMENT HISTORY ENTRY
-          // ========================================
+          // ============================================
+          // CREATE PAYMENT HISTORY ENTRY - ✅ FIXED WITH CLEAR STATUS FLOW
+          // ============================================
 
           const paymentHistory = await PaymentHistory.create({
             userId: payment.userId,
@@ -25645,29 +25884,40 @@ app.post(
             paymentDate: payment.payment_date
               ? new Date(payment.payment_date)
               : new Date(),
-            status: "pending", // ✅ FIXED: Changed from "submitted" to "pending"
+
+            // ✅ STATUS FLOW FOR BATCH IMPORTS:
+            // "pending" = Payment info recorded, awaiting admin verification
+            // "verified" = Admin has verified and approved the payment
+            // "rejected" = Admin has rejected the payment
+            status: "pending", // ✅ CORRECT: Batch imports start as pending
+
             invoiceId: invoice._id,
             notes: payment.notes || "",
-            // ✅ FIXED: Removed recordedBy field (doesn't exist in PaymentHistory schema)
+
+            // ✅ STATUS HISTORY: Track all status changes for audit trail
             statusHistory: [
               {
-                status: "pending", // ✅ FIXED: Changed from "submitted" to "pending"
+                status: "pending", // ✅ CORRECT: Matches initial status
                 changedBy: req.user.id,
                 changedAt: new Date(),
-                reason: "Payment information recorded via batch import",
+                reason:
+                  "Payment information recorded via batch import - awaiting verification",
               },
             ],
+
             metadata: {
               batchImport: true,
               batchRecordNumber: recordNumber,
               totalInBatch: payments.length,
               recordedByUsername: req.user.username,
+              recordedByRole: req.user.role,
               ipAddress: req.ip || req.connection?.remoteAddress,
+              userAgent: req.get("user-agent"),
             },
           });
 
           console.log(
-            `💾 [${recordNumber}] Created payment history: ${paymentHistory._id}`,
+            `💾 [${recordNumber}] Created payment history: ${paymentHistory._id} (Status: pending)`,
           );
 
           // ========================================
@@ -25834,10 +26084,9 @@ app.post(
 );
 
 // ============================================
-// BATCH PAYMENT VALIDATION ENDPOINT (Preview)
+// BATCH PAYMENT VALIDATION ENDPOINT (Preview) - ✅ FIXED VERSION
 // ============================================
 
-// POST /api/superadmin/payment/batch-validate
 app.post(
   "/api/superadmin/payment/batch-validate",
   authenticateToken,
@@ -25885,7 +26134,7 @@ app.post(
         "other",
       ];
 
-      // ✅ NEW: Fetch all data needed ONCE before the loop
+      // ✅ FIXED: Pre-fetch all data needed ONCE before the loop
       console.log("📊 Pre-fetching validation data...");
 
       // Get all payment references in one query
@@ -25907,7 +26156,7 @@ app.post(
 
       const existingUsers = await User.find({
         _id: { $in: allUserIds },
-      }).select("_id role payment_reference");
+      }).select("_id role firstName lastName username"); // ✅ REMOVED payment_reference from select
 
       // Create user lookup map
       const userMap = new Map();
@@ -25948,7 +26197,7 @@ app.post(
           );
         }
 
-        // ✅ IMPROVED: Check user from pre-fetched map (no DB query!)
+        // ✅ FIXED: Check user from pre-fetched map (no DB query!)
         if (payment.userId && mongoose.Types.ObjectId.isValid(payment.userId)) {
           const user = userMap.get(payment.userId);
 
@@ -25964,12 +26213,17 @@ app.post(
               );
             }
 
-            // ✅ Check duplicate payment reference from pre-fetched Set (no DB query!)
-            if (existingReferencesSet.has(payment.payment_reference)) {
-              warnings.push("Payment reference already exists in system");
+            // ✅ FIXED: Check duplicate payment reference from PaymentHistory only
+            if (
+              payment.payment_reference &&
+              existingReferencesSet.has(payment.payment_reference)
+            ) {
+              errors.push(
+                "Payment reference already exists in system - This payment may be a duplicate",
+              );
             }
 
-            // ✅ REMOVED: user.payment_reference check (field doesn't exist on User model)
+            // ✅ REMOVED: No longer checking user.payment_reference
             // Payment references are tracked exclusively in PaymentHistory model
           }
         } else if (payment.userId) {
@@ -26280,10 +26534,9 @@ app.get(
 );
 
 // ============================================
-// UPDATE PAYMENT STATUS (Verify/Reject)
+// UPDATE PAYMENT STATUS (Verify/Reject) - ✅ FIXED VERSION
 // ============================================
 
-// PATCH /api/superadmin/payments/:paymentId/status - Update payment status
 app.patch(
   "/api/superadmin/payments/:paymentId/status",
   authenticateToken,
@@ -26293,10 +26546,14 @@ app.patch(
     try {
       const { status, reason } = req.body;
 
-      if (!status || !["verified", "rejected", "pending"].includes(status)) {
+      // ✅ FIXED: Validate status against allowed values
+      const VALID_PAYMENT_STATUSES = ["pending", "verified", "rejected"];
+
+      if (!status || !VALID_PAYMENT_STATUSES.includes(status)) {
         return res.status(400).json({
           success: false,
-          error: "Valid status is required (verified, rejected, pending)",
+          error: `Invalid status. Must be one of: ${VALID_PAYMENT_STATUSES.join(", ")}`,
+          allowedStatuses: VALID_PAYMENT_STATUSES,
         });
       }
 
@@ -26313,27 +26570,69 @@ app.patch(
 
       const previousStatus = payment.status;
 
+      // ✅ Prevent changing already-verified payments back to pending
+      if (previousStatus === "verified" && status === "pending") {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Cannot change verified payment back to pending. Use 'rejected' to reverse.",
+        });
+      }
+
       // Update payment status
       payment.status = status;
 
-      // Add to status history
+      // Add to status history with proper tracking
       payment.statusHistory.push({
         status,
         changedBy: req.user.id,
         changedAt: new Date(),
-        reason: reason || `Status changed to ${status}`,
+        reason: reason || `Status changed from ${previousStatus} to ${status}`,
+        previousStatus, // ✅ Track previous status for audit
       });
 
-      // Set verification fields if verified
+      // ✅ VERIFIED STATUS: Update user and invoice
       if (status === "verified") {
         payment.verifiedBy = req.user.id;
         payment.verifiedAt = new Date();
 
         // Update user payment status
-        await User.findByIdAndUpdate(payment.userId._id, {
-          payment_verified_by: req.user.id,
-          payment_verified_at: new Date(),
-        });
+        const user = await User.findById(payment.userId._id);
+        if (user) {
+          // Calculate new total paid
+          const totalPaid = await calculateRegistrationFeePaid(user._id);
+
+          // Determine if full or partial payment
+          let totalRequired = 0;
+          if (user.role === "entrepreneur" || user.role === "nonstudent") {
+            const packageType = user.registration_type || "silver";
+            totalRequired = getEntrepreneurRegistrationFee(packageType, false);
+          } else if (user.role === "student") {
+            totalRequired = getStudentRegistrationFee(
+              user.registration_type,
+              user.institutionType,
+            );
+          }
+
+          // Update user status based on payment
+          if (totalPaid >= totalRequired && totalRequired > 0) {
+            user.accountStatus = "active";
+            user.paymentStatus = "paid";
+            user.isActive = true;
+          } else if (totalPaid > 0) {
+            user.accountStatus = "active"; // ✅ Partial payment activates user
+            user.paymentStatus = "partial_paid";
+            user.isActive = true;
+          }
+
+          user.payment_verified_by = req.user.id;
+          user.payment_verified_at = new Date();
+          await user.save();
+
+          console.log(
+            `✅ User ${user.username} updated: ${user.accountStatus} + ${user.paymentStatus}`,
+          );
+        }
 
         // Update invoice if exists
         if (payment.invoiceId) {
@@ -26344,6 +26643,22 @@ app.patch(
             "paymentProof.verifiedBy": req.user.id,
             "paymentProof.verifiedAt": new Date(),
           });
+          console.log(`✅ Invoice ${payment.invoiceId} marked as paid`);
+        }
+      }
+
+      // ✅ REJECTED STATUS: Update invoice
+      if (status === "rejected") {
+        if (payment.invoiceId) {
+          await Invoice.findByIdAndUpdate(payment.invoiceId, {
+            status: "pending",
+            "paymentProof.status": "rejected",
+            "paymentProof.verifiedBy": req.user.id,
+            "paymentProof.verifiedAt": new Date(),
+          });
+          console.log(
+            `✅ Invoice ${payment.invoiceId} marked as pending (payment rejected)`,
+          );
         }
       }
 
@@ -26358,7 +26673,7 @@ app.patch(
         await createNotification(
           payment.userId._id,
           "Payment Verified ✅",
-          `Your payment of TZS ${payment.amount.toLocaleString()} has been verified and approved.`,
+          `Your payment of ${payment.currency || "TZS"} ${payment.amount.toLocaleString()} has been verified and approved.`,
           "success",
           `/payments`,
         );
@@ -26366,10 +26681,18 @@ app.patch(
         await createNotification(
           payment.userId._id,
           "Payment Rejected ❌",
-          `Your payment of TZS ${payment.amount.toLocaleString()} has been rejected. ${
-            reason || "Please contact support."
+          `Your payment of ${payment.currency || "TZS"} ${payment.amount.toLocaleString()} has been rejected. ${
+            reason || "Please contact support for details."
           }`,
           "error",
+          `/payments`,
+        );
+      } else if (status === "pending") {
+        await createNotification(
+          payment.userId._id,
+          "Payment Status Updated",
+          `Your payment status has been changed to pending for review.`,
+          "info",
           `/payments`,
         );
       }
@@ -26390,7 +26713,9 @@ app.patch(
         },
       );
 
-      console.log(`✅ Payment status updated: ${payment._id} -> ${status}`);
+      console.log(
+        `✅ Payment status updated: ${payment._id} (${previousStatus} → ${status})`,
+      );
 
       res.json({
         success: true,
@@ -26996,15 +27321,41 @@ if (process.env.NODE_ENV === "production") {
             `   ✅ User suspended: ${userName} (Suspended + Overdue)`,
           );
 
-          // ✅ UPDATE INVOICES TO OVERDUE STATUS
-          // This marks the invoices as overdue in the Invoice collection
-          await Invoice.updateMany(
-            { _id: { $in: invoices.map((inv) => inv._id) } },
-            {
-              status: "overdue",
-              updatedAt: new Date(),
-            },
-          );
+          // ✅ UPDATE INVOICES TO OVERDUE STATUS (with validation)
+          const invoiceIds = invoices.map((inv) => inv._id);
+
+          try {
+            const updateResult = await Invoice.updateMany(
+              {
+                _id: { $in: invoiceIds },
+                status: { $in: ["pending", "partial_paid", "verification"] }, // Only update these statuses
+              },
+              {
+                status: "overdue", // ✅ Valid status per Invoice schema
+                updatedAt: new Date(),
+                metadata: {
+                  ...invoices[0].metadata,
+                  overdueSetAt: new Date(),
+                  overdueSetBy: "system_cron",
+                  daysOverdue: daysOverdue,
+                },
+              },
+            );
+
+            console.log(
+              `   ✅ Updated ${updateResult.modifiedCount} invoices to overdue status`,
+            );
+          } catch (invoiceUpdateError) {
+            console.error(
+              `   ❌ Failed to update invoices:`,
+              invoiceUpdateError.message,
+            );
+            errors.push({
+              userId,
+              userName,
+              error: `Invoice update failed: ${invoiceUpdateError.message}`,
+            });
+          }
 
           // ✅ Send in-app notification to user
           try {
