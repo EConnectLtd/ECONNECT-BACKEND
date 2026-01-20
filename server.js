@@ -3273,15 +3273,21 @@ async function calculateRegistrationFeePaid(userId) {
     // ✅ CRITICAL FIX: Use "pending" instead of "partial"
     const paidPayments = await PaymentHistory.find({
       userId,
-      status: { $in: ["verified", "pending"] } // ✅ CORRECT: Both verified and pending count
+      status: { $in: ["verified", "pending"] }, // ✅ CORRECT: Both verified and pending count
     });
 
     // Sum all payment amounts
-    const total = paidPayments.reduce((sum, payment) => sum + payment.amount, 0);
+    const total = paidPayments.reduce(
+      (sum, payment) => sum + payment.amount,
+      0,
+    );
 
     return total;
   } catch (error) {
-    console.error(`❌ Error calculating registration fee paid for user ${userId}:`, error);
+    console.error(
+      `❌ Error calculating registration fee paid for user ${userId}:`,
+      error,
+    );
     return 0; // Return 0 on error to prevent crashes
   }
 }
@@ -3864,26 +3870,13 @@ app.post(
       // ============================================================================
 
       if (role === "student" && student?.registration_type) {
-        const registrationFees = {
-          normal: 8000,
-          silver: 20000,
-          gold: 40000,
-          platinum: 80000,
-        };
+        // ✅ FIXED: Use centralized pricing from utils/packagePricing.js
+        const registrationFee = getStudentRegistrationFee(
+          student.registration_type,
+          student.institution_type || "government",
+        );
 
-        const amount = registrationFees[student.registration_type];
-
-        // ✅ For "normal" (CTM), calculate dynamic price based on institution type
-        let finalAmount = amount;
-        if (student.registration_type === "normal") {
-          if (student.institution_type === "private") {
-            finalAmount = 15000;
-          } else {
-            finalAmount = 8000;
-          }
-        }
-
-        if (amount) {
+        if (registrationFee && registrationFee > 0) {
           const invoiceNumber = `INV-${Date.now()}-${Math.random()
             .toString(36)
             .substring(2, 9)
@@ -3892,6 +3885,7 @@ app.post(
           const getPackageName = (type) => {
             const names = {
               normal: "CTM Club Membership",
+              "ctm-club": "CTM Club Membership",
               silver: "EConnect Talent Hub - Silver Package",
               gold: "EConnect Talent Hub - Gold Package",
               platinum: "EConnect Talent Hub - Platinum Package",
@@ -3904,9 +3898,9 @@ app.post(
             invoiceNumber,
             type: "ctm_membership",
             description: getPackageName(student.registration_type),
-            amount: finalAmount,
+            amount: registrationFee, // ✅ CORRECT - Uses centralized pricing
             currency: "TZS",
-            status: payment && payment.reference ? "verification" : "pending",
+            status: payment && payment.reference ? "verification" : "unpaid", // ✅ FIXED: "unpaid" instead of "pending"
             dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
             academicYear: new Date().getFullYear().toString(),
             ...(payment &&
@@ -3920,7 +3914,7 @@ app.post(
           });
 
           console.log(
-            `💰 Invoice created: ${invoiceNumber} for ${finalAmount} TZS`,
+            `💰 Invoice created: ${invoiceNumber} for ${registrationFee} TZS`,
           );
 
           // ✅ Create payment history entry
@@ -3928,9 +3922,10 @@ app.post(
             userId: user._id,
             invoiceId: invoice._id,
             transactionType: "registration_fee",
-            amount: finalAmount,
+            amount: registrationFee, // ✅ CORRECT
             currency: "TZS",
             status: payment && payment.reference ? "submitted" : "pending",
+            paymentDate: null, // ✅ ADDED: Will be set when payment is verified
             submittedAt: payment && payment.reference ? new Date() : null,
             statusHistory: [
               {
@@ -3941,6 +3936,7 @@ app.post(
             ],
             metadata: {
               registrationType: student.registration_type,
+              institutionType: student.institution_type,
               packageName: getPackageName(student.registration_type),
               ipAddress: req.ip || req.connection?.remoteAddress,
               userAgent: req.get("user-agent"),
@@ -3966,15 +3962,13 @@ app.post(
       // ============================================================================
 
       if (role === "entrepreneur" && entrepreneur?.registration_type) {
-        const entrepreneurFees = {
-          silver: 49000, // Silver Package (one-time)
-          gold: 120000, // Gold Package (one-time)
-          platinum: 55000, // Platinum Package (monthly)
-        };
+        // ✅ FIXED: Get ONLY registration fee (not including first month)
+        const registrationFee = getEntrepreneurRegistrationFee(
+          entrepreneur.registration_type,
+          false, // ✅ false = registration fee only (100,000 for Gold)
+        );
 
-        const amount = entrepreneurFees[entrepreneur.registration_type];
-
-        if (amount) {
+        if (registrationFee && registrationFee > 0) {
           const invoiceNumber = `INV-${Date.now()}-${Math.random()
             .toString(36)
             .substring(2, 9)
@@ -3984,7 +3978,7 @@ app.post(
             const names = {
               silver: "EConnect Entrepreneur - Silver Package",
               gold: "EConnect Entrepreneur - Gold Package",
-              platinum: "EConnect Entrepreneur - Platinum Package (Monthly)",
+              platinum: "EConnect Entrepreneur - Platinum Package",
             };
             return names[type] || type.toUpperCase();
           };
@@ -3996,34 +3990,26 @@ app.post(
             description: getEntrepreneurPackageName(
               entrepreneur.registration_type,
             ),
-            amount: amount,
+            amount: registrationFee, // ✅ Now correctly 100,000 for Gold (not 250,000)
             currency: "TZS",
-            status: payment && payment.reference ? "verification" : "pending",
-            dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+            status: payment && payment.reference ? "verification" : "unpaid",
+            dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
             academicYear: new Date().getFullYear().toString(),
-            ...(payment &&
-              payment.reference && {
-                paymentProof: {
-                  reference: payment.reference,
-                  method: payment.method || "other",
-                  status: "pending",
-                  uploadedAt: new Date(),
-                },
-              }),
           });
 
           console.log(
-            `💰 Entrepreneur invoice created: ${invoiceNumber} for ${amount} TZS`,
+            `💰 Entrepreneur invoice created: ${invoiceNumber} for ${registrationFee} TZS`,
           );
 
-          // Create payment history entry
+          // ✅ Create payment history entry
           await PaymentHistory.create({
             userId: user._id,
             invoiceId: invoice._id,
             transactionType: "registration_fee",
-            amount: amount,
+            amount: registrationFee, // ✅ Now correctly 100,000 for Gold
             currency: "TZS",
-            status: payment && payment.reference ? "pending" : "pending",
+            status: "pending",
+            paymentDate: null, // ✅ Will be set when payment is verified
             statusHistory: [
               {
                 status: "pending",
@@ -4031,28 +4017,11 @@ app.post(
                 reason: "Entrepreneur registration - awaiting payment",
               },
             ],
-            metadata: {
-              registrationType: entrepreneur.registration_type,
-              packageName: getEntrepreneurPackageName(
-                entrepreneur.registration_type,
-              ),
-              ipAddress: req.ip || req.connection?.remoteAddress,
-              userAgent: req.get("user-agent"),
-            },
           });
 
           console.log(
             `📊 Payment history entry created for entrepreneur ${user._id}`,
           );
-
-          // Set next billing date for Platinum (monthly subscription)
-          if (entrepreneur.registration_type === "platinum") {
-            user.next_billing_date = new Date(
-              Date.now() + 30 * 24 * 60 * 60 * 1000,
-            );
-            await user.save();
-            console.log(`📅 Next billing date set for Platinum subscription`);
-          }
         }
       }
 
@@ -26867,148 +26836,6 @@ app.delete(
       });
     }
   },
-);
-
-// ============================================
-// MIGRATION API ENDPOINT
-// ============================================
-
-app.post(
-  "/api/superadmin/migrate-payment-status",
-  authenticateToken,
-  authorizeRoles("super_admin"),
-  async (req, res) => {
-    try {
-      const { dryRun = true } = req.body;
-
-      console.log(`🔄 Migration ${dryRun ? 'DRY RUN' : 'LIVE'} started by ${req.user.username}`);
-
-      const stats = {
-        total: 0,
-        updated: 0,
-        skipped: 0,
-        errors: 0,
-        byRole: {},
-        byStatus: {
-          active_paid: 0,
-          active_partial_paid: 0,
-          inactive_no_payment: 0,
-          suspended_overdue: 0,
-        },
-      };
-
-      // Get required fee helper
-      function getRequiredFee(user) {
-        const role = user.role;
-        const regType = (user.registration_type || '').toLowerCase();
-        const instType = (user.institutionType || 'government').toLowerCase();
-
-        if (role === 'entrepreneur' || role === 'nonstudent') {
-          return { silver: 30000, gold: 100000, platinum: 200000 }[regType] || 30000;
-        }
-        if (role === 'student') {
-          if (regType === 'normal' || regType === 'ctm_club') {
-            return instType === 'private' ? 35000 : 15000;
-          }
-          return { premier: 70000, silver: 49000, diamond: 55000 }[regType] || 15000;
-        }
-        return 0;
-      }
-
-      // Get all users
-      const users = await User.find({});
-      stats.total = users.length;
-
-      for (const user of users) {
-        try {
-          stats.byRole[user.role] = (stats.byRole[user.role] || 0) + 1;
-
-          // Skip if already migrated
-          if (user.accountStatus && user.paymentStatus) {
-            stats.skipped++;
-            continue;
-          }
-
-          let newAccountStatus, newPaymentStatus;
-          const rolesRequiringPayment = ['student', 'entrepreneur', 'nonstudent'];
-          const requiresPayment = rolesRequiringPayment.includes(user.role);
-
-          if (!requiresPayment) {
-            newAccountStatus = user.isActive ? 'active' : 'inactive';
-            newPaymentStatus = 'no_payment';
-            stats.byStatus[newAccountStatus === 'active' ? 'active_paid' : 'inactive_no_payment']++;
-          } else {
-            const totalPaid = await calculateRegistrationFeePaid(user._id);
-            const totalRequired = getRequiredFee(user);
-
-            if (totalPaid >= totalRequired) {
-              newAccountStatus = 'active';
-              newPaymentStatus = 'paid';
-              stats.byStatus.active_paid++;
-            } else if (totalPaid > 0) {
-              newAccountStatus = 'active';
-              newPaymentStatus = 'partial_paid';
-              stats.byStatus.active_partial_paid++;
-            } else {
-              newAccountStatus = 'inactive';
-              newPaymentStatus = 'no_payment';
-              stats.byStatus.inactive_no_payment++;
-            }
-
-            // Check overdue
-            if (user.payment_date && totalPaid < totalRequired) {
-              const days = Math.floor((Date.now() - new Date(user.payment_date)) / (1000 * 60 * 60 * 24));
-              if (days > 30) {
-                newAccountStatus = 'suspended';
-                newPaymentStatus = 'overdue';
-                stats.byStatus.suspended_overdue++;
-              }
-            }
-          }
-
-          // Apply update
-          if (!dryRun) {
-            await User.findByIdAndUpdate(user._id, {
-              accountStatus: newAccountStatus,
-              paymentStatus: newPaymentStatus,
-              isActive: newAccountStatus === 'active',
-              updatedAt: new Date(),
-            });
-          }
-          stats.updated++;
-
-        } catch (err) {
-          console.error(`Error processing ${user.username}:`, err.message);
-          stats.errors++;
-        }
-      }
-
-      await logActivity(
-        req.user.id,
-        dryRun ? 'MIGRATION_DRY_RUN' : 'MIGRATION_COMPLETED',
-        `Migration ${dryRun ? 'previewed' : 'completed'}: ${stats.updated} users`,
-        req,
-        stats,
-      );
-
-      res.json({
-        success: true,
-        message: dryRun 
-          ? `Preview complete - no changes made` 
-          : `Migration complete - ${stats.updated} users updated`,
-        dryRun,
-        stats,
-      });
-
-    } catch (error) {
-      console.error('Migration error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Migration failed',
-        message: error.message,
-      });
-    }
-  }
 );
 
 // ============================================
