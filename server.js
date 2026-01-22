@@ -3647,149 +3647,157 @@ app.post(
       });
 
       // ============================================================================
-      // ✅ SEND REGISTRATION SMS USING CONFIRMED MESSAGES
+      // ✅ SEND WELCOME SMS WITH CONTACT NUMBER 0758061582
       // ============================================================================
 
       const userName = `${names.first} ${names.last}`;
 
       try {
         // ============================================================================
-        // 1️⃣ ENTREPRENEUR - Simple approval message
-        // ============================================================================
-        if (role === "entrepreneur") {
-          const smsResult = await smsService.sendEntrepreneurRegistrationSMS(
-            phone,
-            userName,
-          );
-
-          if (smsResult.success) {
-            console.log(`📱 Entrepreneur registration SMS sent to ${phone}`);
-            await SMSLog.create({
-              userId: user._id,
-              phone: phone,
-              message: "Entrepreneur registration SMS",
-              type: "general",
-              status: "sent",
-              messageId: smsResult.messageId,
-              reference: `entrepreneur_registration`,
-            });
-          } else {
-            console.warn(
-              `⚠️ Failed to send entrepreneur SMS to ${phone}:`,
-              smsResult.error,
-            );
-            await SMSLog.create({
-              userId: user._id,
-              phone: phone,
-              message: "Entrepreneur registration SMS (failed)",
-              type: "general",
-              status: "failed",
-              errorMessage: smsResult.error || "Unknown error",
-              reference: `entrepreneur_registration`,
-            });
-          }
-        }
-
-        // ============================================================================
-        // 2️⃣ STUDENT - Package-specific messages (Free, CTM, Silver, Gold, Platinum)
+        // 1️⃣ STUDENT - Send welcome SMS
         // ============================================================================
         if (role === "student") {
-          // Determine package type and payment requirement
-          let packageType = "Free";
-          let requiresPayment = false;
-
-          if (student?.registration_type) {
-            const packageMap = {
-              normal: "CTM", // CTM Club
-              silver: "Silver", // Silver Package
-              gold: "Gold", // Gold Package
-              platinum: "Platinum", // Platinum Package
-            };
-
-            packageType = packageMap[student.registration_type] || "Free";
-
-            // Only Silver, Gold, Platinum require payment
-            requiresPayment = ["silver", "gold", "platinum"].includes(
-              student.registration_type,
-            );
-          }
-
-          const smsResult = await smsService.sendStudentRegistrationSMS(
+          const smsResult = await smsService.sendStudentWelcomeSMS(
             phone,
             userName,
-            requiresPayment,
-            packageType,
+            user._id.toString(),
           );
 
           if (smsResult.success) {
-            console.log(
-              `📱 Student registration SMS sent to ${phone} (${packageType})`,
-            );
+            console.log(`📱 Student welcome SMS sent to ${phone}`);
             await SMSLog.create({
               userId: user._id,
               phone: phone,
-              message: `Student registration SMS - ${packageType} package`,
+              message: "Student welcome SMS",
               type: "general",
               status: "sent",
               messageId: smsResult.messageId,
-              reference: `student_registration`,
+              reference: `student_welcome_${user._id}`,
             });
           } else {
-            console.warn(
-              `⚠️ Failed to send student SMS to ${phone}:`,
-              smsResult.error,
-            );
+            console.warn(`⚠️ Failed to send student SMS:`, smsResult.error);
             await SMSLog.create({
               userId: user._id,
               phone: phone,
-              message: `Student registration SMS (failed) - ${packageType}`,
+              message: "Student welcome SMS (failed)",
               type: "general",
               status: "failed",
               errorMessage: smsResult.error || "Unknown error",
-              reference: `student_registration`,
+              reference: `student_welcome_${user._id}`,
             });
           }
         }
 
         // ============================================================================
-        // 3️⃣ TEACHER - Headmaster approval message
+        // 2️⃣ TEACHER - Send welcome SMS
         // ============================================================================
         if (role === "teacher") {
-          const smsResult = await smsService.sendTeacherRegistrationSMS(
+          const smsResult = await smsService.sendTeacherWelcomeSMS(
             phone,
             userName,
+            user._id.toString(),
           );
 
           if (smsResult.success) {
-            console.log(`📱 Teacher registration SMS sent to ${phone}`);
+            console.log(`📱 Teacher welcome SMS sent to ${phone}`);
             await SMSLog.create({
               userId: user._id,
               phone: phone,
-              message: "Teacher registration SMS",
+              message: "Teacher welcome SMS",
               type: "general",
               status: "sent",
               messageId: smsResult.messageId,
-              reference: `teacher_registration`,
+              reference: `teacher_welcome_${user._id}`,
             });
           } else {
-            console.warn(
-              `⚠️ Failed to send teacher SMS to ${phone}:`,
-              smsResult.error,
-            );
+            console.warn(`⚠️ Failed to send teacher SMS:`, smsResult.error);
             await SMSLog.create({
               userId: user._id,
               phone: phone,
-              message: "Teacher registration SMS (failed)",
+              message: "Teacher welcome SMS (failed)",
               type: "general",
               status: "failed",
               errorMessage: smsResult.error || "Unknown error",
-              reference: `teacher_registration`,
+              reference: `teacher_welcome_${user._id}`,
             });
           }
         }
 
         // ============================================================================
-        // 4️⃣ HEADMASTER / STAFF / OFFICIALS - Generic pending approval message
+        // 3️⃣ ENTREPRENEUR - Send welcome SMS (NEW!)
+        // ============================================================================
+        if (role === "entrepreneur") {
+          const smsResult = await smsService.sendEntrepreneurWelcomeSMS(
+            phone,
+            userName,
+            user._id.toString(),
+          );
+
+          if (smsResult.success) {
+            console.log(`📱 Entrepreneur welcome SMS sent to ${phone}`);
+            await SMSLog.create({
+              userId: user._id,
+              phone: phone,
+              message: "Entrepreneur welcome SMS",
+              type: "general",
+              status: "sent",
+              messageId: smsResult.messageId,
+              reference: `entrepreneur_welcome_${user._id}`,
+            });
+          } else {
+            console.warn(
+              `⚠️ Failed to send entrepreneur SMS:`,
+              smsResult.error,
+            );
+            await SMSLog.create({
+              userId: user._id,
+              phone: phone,
+              message: "Entrepreneur welcome SMS (failed)",
+              type: "general",
+              status: "failed",
+              errorMessage: smsResult.error || "Unknown error",
+              reference: `entrepreneur_welcome_${user._id}`,
+            });
+          }
+        }
+
+        // ============================================================================
+        // 4️⃣ NON-STUDENT - Send welcome SMS
+        // ============================================================================
+        if (role === "nonstudent") {
+          const smsResult = await smsService.sendNonStudentWelcomeSMS(
+            phone,
+            userName,
+            user._id.toString(),
+          );
+
+          if (smsResult.success) {
+            console.log(`📱 Non-student welcome SMS sent to ${phone}`);
+            await SMSLog.create({
+              userId: user._id,
+              phone: phone,
+              message: "Non-student welcome SMS",
+              type: "general",
+              status: "sent",
+              messageId: smsResult.messageId,
+              reference: `nonstudent_welcome_${user._id}`,
+            });
+          } else {
+            console.warn(`⚠️ Failed to send non-student SMS:`, smsResult.error);
+            await SMSLog.create({
+              userId: user._id,
+              phone: phone,
+              message: "Non-student welcome SMS (failed)",
+              type: "general",
+              status: "failed",
+              errorMessage: smsResult.error || "Unknown error",
+              reference: `nonstudent_welcome_${user._id}`,
+            });
+          }
+        }
+
+        // ============================================================================
+        // 5️⃣ OTHER ROLES (Headmaster, Staff, Officials) - Send welcome SMS
         // ============================================================================
         if (
           [
@@ -3801,34 +3809,34 @@ app.post(
             "tamisemi",
           ].includes(role)
         ) {
-          const smsMessage = `Hongera ${userName}!\n\nUsajili wako umefanikiwa ECONNECT.\n\nAkaunti yako inasubiri idhini. Utapokea neno la siri baada ya kuidhinishwa.\n\nAsante!\nECONNECT`;
+          const smsMessage = `Karibu ECONNECT, ${userName}!\n\nUmefanikiwa kujisajili. Akaunti yako inasubiri idhini.\n\nUtapokea ujumbe baada ya kuidhinishwa.\n\nUna maswali? Piga simu: 0758061582\n\nAsante!`;
 
           const smsResult = await smsService.sendSMS(
             phone,
             smsMessage,
-            `${role}_registration`,
+            `${role}_welcome_${user._id}`,
           );
 
           if (smsResult.success) {
-            console.log(`📱 ${role} registration SMS sent to ${phone}`);
+            console.log(`📱 ${role} welcome SMS sent to ${phone}`);
             await SMSLog.create({
               userId: user._id,
               phone: phone,
-              message: `${role} registration SMS`,
+              message: `${role} welcome SMS`,
               type: "general",
               status: "sent",
               messageId: smsResult.messageId,
-              reference: `${role}_registration`,
+              reference: `${role}_welcome_${user._id}`,
             });
           } else {
             await SMSLog.create({
               userId: user._id,
               phone: phone,
-              message: `${role} registration SMS (failed)`,
+              message: `${role} welcome SMS (failed)`,
               type: "general",
               status: "failed",
               errorMessage: smsResult.error,
-              reference: `${role}_registration`,
+              reference: `${role}_welcome_${user._id}`,
             });
           }
         }

@@ -31,12 +31,13 @@ const generalLimiter = rateLimit({
 });
 
 /**
- * Strict limiter for authentication endpoints
- * 5 login attempts per 15 minutes per IP
+ * Limiter for authentication endpoints
+ * ✅ UPDATED: 1000 login attempts per 15 minutes per IP (increased from 5)
+ * Allows bulk testing and school-wide logins
  */
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // Limit to 5 login attempts
+  max: 1000, // ✅ Limit to 1000 login attempts (previously 5)
   skipSuccessfulRequests: true, // Don't count successful logins
   message: {
     success: false,
@@ -46,7 +47,7 @@ const authLimiter = rateLimit({
     console.warn(`🚨 Multiple failed login attempts from IP: ${req.ip}`);
     res.status(429).json({
       success: false,
-      error: "Too many login attempts. Account temporarily locked.",
+      error: "Too many login attempts. Please try again later.",
       retryAfter: Math.ceil(req.rateLimit.resetTime / 1000),
     });
   },
@@ -54,11 +55,12 @@ const authLimiter = rateLimit({
 
 /**
  * Limiter for registration endpoints
- * 3 registrations per hour per IP
+ * ✅ UPDATED: 1000 registrations per hour per IP (increased from 3)
+ * Supports bulk student/teacher registration for schools
  */
 const registrationLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 3, // Limit to 3 registrations per hour
+  max: 1000, // ✅ Limit to 1000 registrations per hour (previously 3)
   message: {
     success: false,
     error: "Too many registration attempts, please try again after 1 hour",
@@ -118,11 +120,11 @@ function applyRateLimiters(app) {
 
   // Authentication rate limiter
   app.use("/api/auth/login", authLimiter);
-  console.log("✅ Auth rate limiter applied (5 attempts/15min)");
+  console.log("✅ Auth rate limiter applied (1000 attempts/15min)");
 
   // Registration rate limiter
   app.use("/api/auth/register", registrationLimiter);
-  console.log("✅ Registration rate limiter applied (3 reg/hour)");
+  console.log("✅ Registration rate limiter applied (1000 reg/hour)");
 
   // Password reset limiter
   app.use("/api/auth/reset-password", passwordResetLimiter);
