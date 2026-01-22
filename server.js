@@ -3291,6 +3291,87 @@ app.get("/api/health", async (req, res) => {
 });
 
 // ============================================
+// REFRESH TOKEN ENDPOINT
+// ============================================
+
+app.post("/api/auth/refresh", async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(401).json({
+        success: false,
+        error: "Refresh token is required",
+      });
+    }
+
+    // Verify refresh token
+    let decoded;
+    try {
+      decoded = jwt.verify(refreshToken, process.env.JWT_SECRET);
+    } catch (error) {
+      return res.status(401).json({
+        success: false,
+        error: "Invalid or expired refresh token",
+      });
+    }
+
+    // Find user
+    const user = await User.findById(decoded.id).select("-password");
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+      });
+    }
+
+    // Check if user is active
+    if (user.accountStatus !== "active") {
+      return res.status(403).json({
+        success: false,
+        error: "Account is not active",
+      });
+    }
+
+    // Generate new access token
+    const newAccessToken = jwt.sign(
+      {
+        id: user._id,
+        role: user.role,
+        username: user.username,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "24h" }, // 24 hours
+    );
+
+    console.log(`✅ Token refreshed for user: ${user.username}`);
+
+    res.json({
+      success: true,
+      message: "Token refreshed successfully",
+      data: {
+        token: newAccessToken,
+        user: {
+          id: user._id,
+          username: user.username,
+          role: user.role,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error refreshing token:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to refresh token",
+    });
+  }
+});
+
+// ============================================
 // VALIDATION MIDDLEWARE HELPERS
 // ============================================
 
