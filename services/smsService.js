@@ -1,148 +1,330 @@
-// /services/smsService.js
-const axios = require("axios");
+const axios = require('axios');
 
 class SMSService {
   constructor() {
-    this.apiKey = process.env.NEXTSMS_API_KEY;
-    this.baseURL = "https://messaging-service.co.tz/api/sms/v1/text/single";
-    this.senderID = process.env.NEXTSMS_SENDER_ID || "ECONNECT";
+    this.username = process.env.NEXTSMS_USERNAME;
+    this.password = process.env.NEXTSMS_PASSWORD;
+    this.senderId = process.env.NEXTSMS_SENDER_ID || 'ECONNECT';
+    this.baseUrl = process.env.NEXTSMS_BASE_URL || 'https://messaging-service.co.tz';
+    
+    // Create Base64 encoded auth string
+    if (this.username && this.password) {
+      this.authToken = Buffer.from(`${this.username}:${this.password}`).toString('base64');
+    } else {
+      console.warn('⚠️  NEXTSMS credentials not configured');
+      this.authToken = null;
+    }
   }
 
   /**
-   * Core SMS sending function
+   * Format phone number to NEXTSMS format (255XXXXXXXXX)
+   * @param {string} phone - Phone number to format
+   * @returns {string} Formatted phone number
    */
-  async sendSMS(phoneNumber, message, type = "general") {
+  formatPhoneNumber(phone) {
+    if (!phone) return '';
+    
+    // Remove all non-numeric characters
+    let cleaned = phone.replace(/\D/g, '');
+    
+    // If starts with +255, remove the +
+    if (phone.startsWith('+255')) {
+      cleaned = phone.substring(1).replace(/\D/g, '');
+    }
+    // If starts with 0, replace with 255
+    else if (cleaned.startsWith('0')) {
+      cleaned = '255' + cleaned.substring(1);
+    }
+    // If doesn't start with 255, add it
+    else if (!cleaned.startsWith('255')) {
+      cleaned = '255' + cleaned;
+    }
+    
+    return cleaned;
+  }
+
+  /**
+   * Send SMS to a single recipient
+   * @param {string} phone - Phone number in format 255XXXXXXXXX
+   * @param {string} message - SMS message content
+   * @param {string} reference - Optional reference for tracking
+   * @returns {Promise} SMS send response
+   */
+  async sendSMS(phone, message, reference = null) {
     try {
-      if (!this.apiKey) {
-        console.error("❌ NEXTSMS API Key not configured");
+      // Check if credentials are configured
+      if (!this.authToken) {
+        console.log('⚠️  NEXTSMS not configured. SMS would have been sent to:', phone);
+        console.log('📱 Message:', message);
         return {
           success: false,
-          error: "SMS service not configured",
+          error: 'NEXTSMS credentials not configured'
         };
       }
 
-      // Validate phone number
-      if (!phoneNumber) {
-        return { success: false, error: "Phone number is required" };
+      // Ensure phone number is in correct format (255XXXXXXXXX)
+      const formattedPhone = this.formatPhoneNumber(phone);
+      
+      if (!formattedPhone || formattedPhone.length < 12) {
+        console.error('❌ Invalid phone number format:', phone);
+        return {
+          success: false,
+          error: 'Invalid phone number format'
+        };
       }
-
-      // Clean phone number (remove spaces, dashes)
-      const cleanPhone = phoneNumber.replace(/[\s\-]/g, "");
-
-      console.log(`📱 Sending ${type} SMS to ${cleanPhone}...`);
 
       const payload = {
-        from: this.senderID,
-        to: cleanPhone,
-        text: message,
+        from: this.senderId,
+        to: formattedPhone,
+        text: message
       };
 
-      const response = await axios.post(this.baseURL, payload, {
-        headers: {
-          Authorization: `Basic ${this.apiKey}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        timeout: 10000, // 10 seconds
+      if (reference) {
+        payload.reference = reference;
+      }
+
+      console.log('📤 Sending SMS:', {
+        to: formattedPhone,
+        from: this.senderId,
+        messageLength: message.length,
+        reference
       });
 
-      if (response.data && response.status === 200) {
-        console.log(`✅ SMS sent successfully to ${cleanPhone}`);
-        return {
-          success: true,
-          messageId: response.data.messageId || response.data.data?.messageId,
-          data: response.data,
-        };
-      } else {
-        console.error("❌ SMS API returned error:", response.data);
-        return {
-          success: false,
-          error: response.data.message || "SMS sending failed",
-        };
-      }
+      const response = await axios.post(
+        `${this.baseUrl}/api/sms/v1/text/single`,
+        payload,
+        {
+          headers: {
+            'Authorization': `Basic ${this.authToken}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          timeout: 10000 // 10 second timeout
+        }
+      );
+
+      console.log('✅ SMS sent successfully:', response.data);
+      
+      return {
+        success: true,
+        data: response.data,
+        messageId: response.data.messages?.[0]?.messageId || null,
+        status: response.data.messages?.[0]?.status || null
+      };
+
     } catch (error) {
-      console.error("❌ SMS sending error:", error.message);
+      console.error('❌ SMS sending failed:', error.response?.data || error.message);
       return {
         success: false,
-        error: error.response?.data?.message || error.message,
+        error: error.response?.data || error.message
       };
     }
   }
 
   /**
-   * Send password SMS (for account approval)
+   * Send SMS to multiple recipients
+   * @param {Array} phones - Array of phone numbers
+   * @param {string} message - SMS message content
+   * @param {string} reference - Optional reference for tracking
+   * @returns {Promise} SMS send response
    */
-  async sendPasswordSMS(phoneNumber, password, userName, userId) {
-    const message = `Habari ${userName}! Akaunti yako ya ECONNECT imeidhinishwa! 🎉\n\nNenosiri lako: ${password}\n\nIngia kwenye mfumo kwa simu: ${phoneNumber}\n\nMaswali? Piga: 0758061582\n\nAsante!`;
+  async sendBulkSMS(phones, message, reference = null) {
+    try {
+      if (!this.authToken) {
+        console.log('⚠️  NEXTSMS not configured. Bulk SMS would have been sent to', phones.length, 'recipients');
+        return {
+          success: false,
+          error: 'NEXTSMS credentials not configured'
+        };
+      }
 
-    return this.sendSMS(phoneNumber, message, "password");
-  }
+      const formattedPhones = phones.map(phone => this.formatPhoneNumber(phone)).filter(p => p);
+      
+      if (formattedPhones.length === 0) {
+        return {
+          success: false,
+          error: 'No valid phone numbers provided'
+        };
+      }
 
-  /**
-   * ✅ NEW: Send welcome SMS to STUDENTS
-   */
-  async sendStudentWelcomeSMS(phoneNumber, firstName, userId) {
-    const message = `Karibu ${firstName}! 🎓\n\nUmesajiliwa katika ECONNECT - Mfumo wa Talanta na Shule!\n\nID yako: ${userId}\n\nSimu yako: ${phoneNumber}\n\nMaswali? Piga: 0758061582\n\nKaribu sana!`;
+      const payload = {
+        from: this.senderId,
+        to: formattedPhones,
+        text: message
+      };
 
-    return this.sendSMS(phoneNumber, message, "student_welcome");
-  }
+      if (reference) {
+        payload.reference = reference;
+      }
 
-  /**
-   * ✅ NEW: Send welcome SMS to TEACHERS
-   */
-  async sendTeacherWelcomeSMS(phoneNumber, firstName, userId) {
-    const message = `Karibu Mwalimu ${firstName}! 👨‍🏫\n\nUmesajiliwa katika ECONNECT - Mfumo wa Talanta na Shule!\n\nID yako: ${userId}\n\nSimu yako: ${phoneNumber}\n\nMaswali? Piga: 0758061582\n\nAsante kwa kujiunga nasi!`;
-
-    return this.sendSMS(phoneNumber, message, "teacher_welcome");
-  }
-
-  /**
-   * ✅ NEW: Send welcome SMS to ENTREPRENEURS
-   */
-  async sendEntrepreneurWelcomeSMS(phoneNumber, firstName, userId) {
-    const message = `Karibu ${firstName}! 💼\n\nUmesajiliwa katika ECONNECT - Jukwaa la Biashara na Talanta!\n\nID yako: ${userId}\n\nSimu yako: ${phoneNumber}\n\nFungua biashara yako leo!\n\nMaswali? Piga: 0758061582\n\nKaribu sana!`;
-
-    return this.sendSMS(phoneNumber, message, "entrepreneur_welcome");
-  }
-
-  /**
-   * ✅ NEW: Send welcome SMS to NON-STUDENTS
-   */
-  async sendNonStudentWelcomeSMS(phoneNumber, firstName, userId) {
-    const message = `Karibu ${firstName}! 🌟\n\nUmesajiliwa katika ECONNECT - Jukwaa la Talanta!\n\nID yako: ${userId}\n\nSimu yako: ${phoneNumber}\n\nOnyesha talanta yako!\n\nMaswali? Piga: 0758061582\n\nKaribu sana!`;
-
-    return this.sendSMS(phoneNumber, message, "nonstudent_welcome");
-  }
-
-  /**
-   * Send payment reminder SMS
-   */
-  async sendPaymentReminderSMS(phoneNumber, userName, amount, dueDate) {
-    const message = `Habari ${userName}! Ukumbusho wa malipo:\n\nKiasi: TZS ${amount.toLocaleString()}\nTarehe: ${new Date(
-      dueDate
-    ).toLocaleDateString()}\n\nLipa kwa:\n- Vodacom Lipa: 5130676\n- CRDB: 0150814579600\n\nAsante!`;
-
-    return this.sendSMS(phoneNumber, message, "payment_reminder");
-  }
-
-  /**
-   * Send bulk SMS (for notifications, announcements, etc.)
-   */
-  async sendBulkSMS(phoneNumbers, message, type = "bulk") {
-    const results = [];
-
-    for (const phone of phoneNumbers) {
-      const result = await this.sendSMS(phone, message, type);
-      results.push({
-        phone,
-        success: result.success,
-        error: result.error || null,
+      console.log('📤 Sending Bulk SMS:', {
+        recipients: formattedPhones.length,
+        from: this.senderId,
+        messageLength: message.length,
+        reference
       });
-    }
 
-    return results;
+      const response = await axios.post(
+        `${this.baseUrl}/api/sms/v1/text/single`,
+        payload,
+        {
+          headers: {
+            'Authorization': `Basic ${this.authToken}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          timeout: 15000 // 15 second timeout for bulk
+        }
+      );
+
+      console.log(`✅ Bulk SMS sent to ${formattedPhones.length} recipients`);
+      return {
+        success: true,
+        data: response.data,
+        sentCount: formattedPhones.length
+      };
+
+    } catch (error) {
+      console.error('❌ Bulk SMS sending failed:', error.response?.data || error.message);
+      return {
+        success: false,
+        error: error.response?.data || error.message
+      };
+    }
+  }
+
+  /**
+   * Send password to new user
+   * @param {string} phone - User's phone number
+   * @param {string} password - Auto-generated password
+   * @param {string} userName - User's name
+   * @param {string} userId - User ID for reference
+   * @returns {Promise} SMS send response
+   */
+  async sendPasswordSMS(phone, password, userName, userId = null) {
+    const message = `Karibu ECONNECT ${userName}!\n\nNeno lako la siri: ${password}\n\nBadilisha baada ya kuingia mara ya kwanza.\n\nIngia: econnect.co.tz`;
+    
+    const reference = userId ? `pwd_${userId}` : `pwd_${Date.now()}`;
+    
+    return await this.sendSMS(phone, message, reference);
+  }
+
+  /**
+   * Send payment confirmation SMS
+   * @param {string} phone - User's phone number
+   * @param {string} userName - User's name
+   * @param {number} amount - Payment amount
+   * @param {string} packageType - Package type
+   * @returns {Promise} SMS send response
+   */
+  async sendPaymentConfirmationSMS(phone, userName, amount, packageType) {
+    const message = `Habari ${userName},\n\nMalipo yako ya ${packageType} TZS ${amount.toLocaleString()} yamepokelewa. Unahitaji kuthibitishwa.\n\nAsante,\nECONNECT`;
+    
+    return await this.sendSMS(phone, message, `payment_${packageType}`);
+  }
+
+  /**
+   * Send payment approval SMS
+   * @param {string} phone - User's phone number
+   * @param {string} userName - User's name
+   * @param {string} packageType - Package type
+   * @returns {Promise} SMS send response
+   */
+  async sendPaymentApprovalSMS(phone, userName, packageType) {
+    const message = `Hongera ${userName}!\n\nMalipo yako ya ${packageType} yamethibitishwa. Una ufikiaji kamili sasa.\n\nIngia: econnect.co.tz\n\nECONNECT`;
+    
+    return await this.sendSMS(phone, message, `approval_${packageType}`);
+  }
+
+  /**
+   * Send entrepreneur registration congratulations SMS
+   * @param {string} phone - User's phone number
+   * @param {string} userName - User's name (e.g., "James Juma")
+   * @returns {Promise} SMS send response
+   */
+  async sendEntrepreneurRegistrationSMS(phone, userName) {
+    const message = `Hongera ${userName}!\n\nUmefanikiwa kujisajili EConnect kama Mjasiriamali.\nUtapokea neno la siri baada ya kuidhinishwa.\n\nAsante!\nECONNECT`;
+    
+    return await this.sendSMS(phone, message, 'entrepreneur_registration');
+  }
+
+  /**
+   * Send student registration congratulations SMS
+   * @param {string} phone - User's phone number
+   * @param {string} userName - User's name
+   * @param {boolean} requiresPayment - Whether payment is required
+   * @param {string} packageType - Package type (e.g., 'CTM', 'Free', 'Silver', 'Gold', 'Platinum')
+   * @returns {Promise} SMS send response
+   */
+  async sendStudentRegistrationSMS(phone, userName, requiresPayment = false, packageType = '') {
+    let message;
+    
+    // Special message for CTM package
+    if (packageType === 'CTM') {
+      message = `Hongera ${userName}!\n\nUsajili wako umefanikiwa EConnect - CTM Club ili kuendeleza kipaji chako.\nKamilisha utaratibu ili kuwa mshiriki hai.\n\nAsante!\nECONNECT`;
+    } 
+    // Paid packages (Silver, Gold, Platinum) - with payment instructions
+    else if (requiresPayment && ['Silver', 'Gold', 'Platinum'].includes(packageType)) {
+      message = `Hongera ${userName}!\n\nUsajili wako umefanikiwa EConnect - ${packageType} Package kuendeleza kipaji.\n\nHATUA IFUATAYO:\n1. Fanya malipo\n2. Tuma risiti kwa +255758061582\n3. Tutathibitisha malipo\n4. Utapokea neno la siri\n\nAsante!\nECONNECT`;
+    }
+    // Free package - standard congratulations
+    else {
+      message = `Hongera ${userName}!\nUmefanikiwa kujisajili EConnect kama Mwanafunzi.\nUtapokea neno la siri baada ya kuidhinishwa.\n\nAsante!\nECONNECT`;
+    }
+    
+    return await this.sendSMS(phone, message, 'student_registration');
+  }
+
+  /**
+   * Send teacher registration congratulations SMS
+   * @param {string} phone - User's phone number
+   * @param {string} userName - User's name
+   * @returns {Promise} SMS send response
+   */
+  async sendTeacherRegistrationSMS(phone, userName) {
+    const message = `Hongera ${userName}!\n\nUsajili wako umefanikiwa ECONNECT kama Mwalimu.\n\nAkaunti yako inasubiri idhini kutoka kwa Mkuu wa Shule. Utapokea neno la siri baada ya kuidhinishwa.\n\nAsante!\nECONNECT`;
+    
+    return await this.sendSMS(phone, message, 'teacher_registration');
+  }
+
+  /**
+   * Get SMS delivery report
+   * @param {string} messageId - Message ID from send response
+   * @returns {Promise} Delivery report
+   */
+  async getDeliveryReport(messageId) {
+    try {
+      if (!this.authToken) {
+        return {
+          success: false,
+          error: 'NEXTSMS credentials not configured'
+        };
+      }
+
+      const response = await axios.get(
+        `${this.baseUrl}/api/sms/v1/reports?messageId=${messageId}`,
+        {
+          headers: {
+            'Authorization': `Basic ${this.authToken}`,
+            'Accept': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+
+      return {
+        success: true,
+        data: response.data
+      };
+
+    } catch (error) {
+      console.error('❌ Failed to get delivery report:', error.response?.data || error.message);
+      return {
+        success: false,
+        error: error.response?.data || error.message
+      };
+    }
   }
 }
 
-// Export singleton instance
 module.exports = new SMSService();
