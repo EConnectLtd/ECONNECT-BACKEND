@@ -3926,90 +3926,92 @@ app.post(
         // Don't fail registration if SMS fails - just log it
       }
 
-// ============================================================================
-// 🎯 SAVE TALENTS TO StudentTalent COLLECTION - FIXED WITH AUTO-CREATE
-// ============================================================================
+      // ============================================================================
+      // 🎯 SAVE TALENTS TO StudentTalent COLLECTION - FIXED WITH AUTO-CREATE
+      // ============================================================================
 
-const talentsArray = student?.talents || entrepreneur?.talents || [];
+      const talentsArray = student?.talents || entrepreneur?.talents || [];
 
-if (
-  (role === "student" ||
-    role === "entrepreneur" ||
-    role === "nonstudent") &&
-  talentsArray.length > 0
-) {
-  console.log(
-    `🎯 Processing ${talentsArray.length} talents for ${role} ${user._id}`,
-  );
-
-  try {
-    let savedTalentsCount = 0;
-
-    for (const talentName of talentsArray) {
-      // Skip empty talent names
-      if (!talentName || talentName.trim() === "") {
-        continue;
-      }
-
-      // ✅ Find talent by name (case-insensitive)
-      let talent = await Talent.findOne({
-        name: { $regex: new RegExp(`^${talentName.trim()}$`, "i") },
-        isActive: true,
-      });
-
-      // ✅ AUTO-CREATE IF NOT FOUND
-      if (!talent) {
-        console.log(`🆕 Auto-creating talent: "${talentName}"`);
-        
-        talent = await Talent.create({
-          name: talentName.trim(),
-          category: "Other",
-          description: `Auto-created from ${role} registration`,
-          isActive: true,
-          icon: "🎯",
-        });
-
-        console.log(`✅ Created new talent: ${talent.name} (${talent._id})`);
-      }
-
-      // Check if already exists
-      const exists = await StudentTalent.findOne({
-        studentId: user._id,
-        talentId: talent._id,
-      });
-
-      if (!exists) {
-        await StudentTalent.create({
-          studentId: user._id,
-          talentId: talent._id,
-          schoolId: user.schoolId,
-          proficiencyLevel: "beginner",
-          yearsOfExperience: 0,
-          status: "active",
-          registeredAt: new Date(),
-          updatedAt: new Date(),
-        });
-        savedTalentsCount++;
+      if (
+        (role === "student" ||
+          role === "entrepreneur" ||
+          role === "nonstudent") &&
+        talentsArray.length > 0
+      ) {
         console.log(
-          `✅ Created StudentTalent: ${talentName} for ${role} ${user._id}`,
+          `🎯 Processing ${talentsArray.length} talents for ${role} ${user._id}`,
         );
-      } else {
-        console.log(`⏭️ StudentTalent already exists: ${talentName}`);
-      }
-    }
 
-    console.log(
-      `✅ Successfully saved ${savedTalentsCount}/${talentsArray.length} talents for ${role} ${user._id}`,
-    );
-  } catch (talentError) {
-    console.error(`❌ Error saving ${role} talents:`, talentError);
-    // Don't fail registration if talents fail
-  }
-} else {
-  console.log(
-    `ℹ️ No talents provided for ${role} ${user._id} - skipping (talents are optional)`,
-  );
-}
+        try {
+          let savedTalentsCount = 0;
+
+          for (const talentName of talentsArray) {
+            // Skip empty talent names
+            if (!talentName || talentName.trim() === "") {
+              continue;
+            }
+
+            // ✅ Find talent by name (case-insensitive)
+            let talent = await Talent.findOne({
+              name: { $regex: new RegExp(`^${talentName.trim()}$`, "i") },
+              isActive: true,
+            });
+
+            // ✅ AUTO-CREATE IF NOT FOUND
+            if (!talent) {
+              console.log(`🆕 Auto-creating talent: "${talentName}"`);
+
+              talent = await Talent.create({
+                name: talentName.trim(),
+                category: "Other",
+                description: `Auto-created from ${role} registration`,
+                isActive: true,
+                icon: "🎯",
+              });
+
+              console.log(
+                `✅ Created new talent: ${talent.name} (${talent._id})`,
+              );
+            }
+
+            // Check if already exists
+            const exists = await StudentTalent.findOne({
+              studentId: user._id,
+              talentId: talent._id,
+            });
+
+            if (!exists) {
+              await StudentTalent.create({
+                studentId: user._id,
+                talentId: talent._id,
+                schoolId: user.schoolId,
+                proficiencyLevel: "beginner",
+                yearsOfExperience: 0,
+                status: "active",
+                registeredAt: new Date(),
+                updatedAt: new Date(),
+              });
+              savedTalentsCount++;
+              console.log(
+                `✅ Created StudentTalent: ${talentName} for ${role} ${user._id}`,
+              );
+            } else {
+              console.log(`⏭️ StudentTalent already exists: ${talentName}`);
+            }
+          }
+
+          console.log(
+            `✅ Successfully saved ${savedTalentsCount}/${talentsArray.length} talents for ${role} ${user._id}`,
+          );
+        } catch (talentError) {
+          console.error(`❌ Error saving ${role} talents:`, talentError);
+          // Don't fail registration if talents fail
+        }
+      } else {
+        console.log(
+          `ℹ️ No talents provided for ${role} ${user._id} - skipping (talents are optional)`,
+        );
+      }
 
       // ============================================================================
       // ✅ AUTO-GENERATE INVOICE if registration type requires payment
@@ -16786,7 +16788,7 @@ app.get(
         `✅ Enriched ${enrichedUsers.length} users with payment data`,
       );
 
-      // ✅ FETCH TALENTS FOR STUDENTS
+      // ✅ FETCH TALENTS FOR STUDENTS (FIXED TO SEND STRINGS)
       if (role === "student") {
         const userIds = enrichedUsers.map((u) => u._id);
 
@@ -16801,7 +16803,11 @@ app.get(
         studentTalents.forEach((st) => {
           const studentId = st.studentId.toString();
           if (!talentMap[studentId]) talentMap[studentId] = [];
-          talentMap[studentId].push(st.talentId);
+
+          // ✅ FIX: Push just the NAME (string) instead of the whole object
+          if (st.talentId && st.talentId.name) {
+            talentMap[studentId].push(st.talentId.name); // ✅ String format
+          }
         });
 
         enrichedUsers.forEach((user) => {
