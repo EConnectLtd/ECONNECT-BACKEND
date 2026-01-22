@@ -3805,13 +3805,16 @@ app.post(
         }
 
         // ============================================================================
-        // 3️⃣ ENTREPRENEUR - Send welcome SMS (NEW!)
+        // 3️⃣ ENTREPRENEUR - Send welcome SMS (FIXED!)
         // ============================================================================
         if (role === "entrepreneur") {
           const smsResult = await smsService.sendEntrepreneurWelcomeSMS(
             phone,
             userName,
             user._id.toString(),
+            entrepreneur?.registration_type ||
+              user.registration_type ||
+              "silver", // ✅ Added comma + fallback
           );
 
           if (smsResult.success) {
@@ -3841,7 +3844,6 @@ app.post(
             });
           }
         }
-
         // ============================================================================
         // 4️⃣ NON-STUDENT - Send welcome SMS
         // ============================================================================
