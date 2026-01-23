@@ -273,7 +273,7 @@ class SMSService {
    * @returns {Promise} SMS send response
    */
   async sendStudentWelcomeSMS(phone, userName, userId) {
-    const message = `Karibu ECONNECT, ${userName}!\n\nUmefanikiwa kujisajili kama Mwanafunzi. Akaunti yako inasubiri idhini.\n\nUtapokea neno la siri baada ya kuidhinishwa.\n\nUna maswali? Piga simu: 0758061582\n\nAsante!`;
+    const message = `Hongera ${userName}!\nUmefanikiwa kujisajili EConnect kama Mwanafunzi.\nUtapokea neno la siri baada ya kuidhinishwa.\n\nKwa maswali zaidi piga simu 0758061582`;
 
     return await this.sendSMS(phone, message, `student_welcome_${userId}`);
   }
@@ -286,7 +286,7 @@ class SMSService {
    * @returns {Promise} SMS send response
    */
   async sendTeacherWelcomeSMS(phone, userName, userId) {
-    const message = `Karibu ECONNECT, ${userName}!\n\nUmefanikiwa kujisajili kama Mwalimu. Akaunti yako inasubiri idhini kutoka kwa Mkuu wa Shule.\n\nUtapokea neno la siri baada ya kuidhinishwa.\n\nUna maswali? Piga simu: 0758061582\n\nAsante!`;
+    const message = `Karibu ECONNECT, ${userName}!\nUmefanikiwa kujisajili kama Mwalimu.\nUtapokea neno la siri baada ya kuidhinishwa.\n\nKwa maswali Piga simu 0758061582\n\nAsante!`;
 
     return await this.sendSMS(phone, message, `teacher_welcome_${userId}`);
   }
@@ -310,7 +310,7 @@ class SMSService {
     const registrationFee = pkg.registrationFee;
     const monthlyFee = pkg.monthlyFee;
 
-    const message = `Karibu ECONNECT, ${userName}!\n\nUmefanikiwa kujisajili kama Mjasiriamali - ${pkg.name}.\n\nMalipo:\n• Usajili: TZS ${registrationFee.toLocaleString()}\n• Kila mwezi: TZS ${monthlyFee.toLocaleString()}\n\nAkaunti yako inasubiri idhini.\n\nUna maswali? Piga: 0758061582\n\nAsante!`;
+    const message = `Karibu ECONNECT, ${userName}!\nUmefanikiwa kujisajili kama Mjasiriamali.\nAkaunti yako inasubiri idhini.\n\nUna maswali? Piga: 0758061582\n\nAsante!`;
 
     return await this.sendSMS(phone, message, `entrepreneur_welcome_${userId}`);
   }
