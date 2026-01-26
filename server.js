@@ -41,6 +41,7 @@ const {
   getPackageDescription,
   getPackageDetails,
 } = require("./utils/packagePricing");
+const jobRetryService = require("./services/jobRetryService");
 const monthlyBillingService = require("./services/monthlyBillingService");
 
 const bcrypt = require("bcryptjs");
@@ -2969,6 +2970,203 @@ function generateReferenceId(prefix = "ECON") {
   const timestamp = Date.now();
   const random = Math.random().toString(36).substring(2, 9).toUpperCase();
   return `${prefix}-${timestamp}-${random}`;
+}
+
+// ============================================
+// ACTIVITY LOGGING HELPER
+// ============================================
+
+/**
+ * Log user activity to ActivityLog collection
+ * @param {string} userId - User ID performing the action
+ * @param {string} action - Action type (e.g., "USER_LOGIN", "PAYMENT_VERIFIED")
+ * @param {string} description - Human-readable description
+ * @param {Object} req - Express request object (for IP/user agent)
+ * @param {Object} metadata - Additional metadata (optional)
+ */
+async function logActivity(
+  userId,
+  action,
+  description,
+  req = {},
+  metadata = {},
+) {
+  try {
+    await ActivityLog.create({
+      userId,
+      action,
+      description,
+      metadata,
+      ipAddress: req.ip || req.connection?.remoteAddress || "unknown",
+      userAgent:
+        req.get?.("user-agent") || req.headers?.["user-agent"] || "unknown",
+    });
+  } catch (error) {
+    // Don't fail the request if activity logging fails
+    console.error("❌ Failed to log activity:", error.message);
+  }
+}
+
+// ============================================
+// HELPER: Calculate Total Registration Fee Paid
+// ============================================
+
+/**
+ * Calculate total registration fee paid by user from PaymentHistory
+ * ✅ CORRECTED: Uses "pending" and "verified" statuses
+ * @param {string} userId - The user's MongoDB ObjectId
+ * @returns {Promise<number>} Total amount paid (sum of verified + pending payments)
+ */
+async function calculateRegistrationFeePaid(userId) {
+  try {
+    // ✅ CORRECT: PaymentHistory uses "pending" and "verified" statuses
+    const paidPayments = await PaymentHistory.find({
+      userId: new mongoose.Types.ObjectId(userId),
+      status: { $in: ["verified", "pending"] }, // ✅ These are the valid statuses
+      transactionType: "registration_fee",
+    });
+
+    const totalPaid = paidPayments.reduce(
+      (sum, payment) => sum + payment.amount,
+      0,
+    );
+    return totalPaid;
+  } catch (error) {
+    console.error("❌ Error calculating registration fee:", error);
+    return 0;
+  }
+}
+
+// ============================================
+// HELPER: Send Bulk Payment Reminders (for Cron Job)
+// ============================================
+
+/**
+ * Send payment reminders to users with upcoming due payments
+ * Used by automated cron job (runs daily at 9 AM)
+ * @returns {Promise<object>} Results summary
+ */
+async function sendBulkPaymentReminders() {
+  try {
+    console.log("\n📧 ========================================");
+    console.log("📧  BULK PAYMENT REMINDERS");
+    console.log("📧 ========================================\n");
+
+    const today = new Date();
+    const sevenDaysFromNow = new Date();
+    sevenDaysFromNow.setDate(today.getDate() + 7);
+
+    // Find invoices due within 7 days
+    const pendingInvoices = await Invoice.find({
+      status: { $in: ["pending", "verification", "partial_paid"] },
+      dueDate: { $gte: today, $lte: sevenDaysFromNow },
+    }).populate("user_id", "firstName lastName phoneNumber email username");
+
+    console.log(
+      `📊 Found ${pendingInvoices.length} invoices due within 7 days`,
+    );
+
+    if (pendingInvoices.length === 0) {
+      console.log("✅ No invoices require reminders\n");
+      return {
+        success: true,
+        sentCount: 0,
+        failedCount: 0,
+        totalInvoices: 0,
+        usersNotified: 0,
+      };
+    }
+
+    let sentCount = 0;
+    let failedCount = 0;
+
+    // Group by user (one user may have multiple invoices)
+    const userInvoicesMap = new Map();
+    pendingInvoices.forEach((invoice) => {
+      if (!invoice.user_id) return; // Skip if user was deleted
+
+      const userId = invoice.user_id._id.toString();
+      if (!userInvoicesMap.has(userId)) {
+        userInvoicesMap.set(userId, {
+          user: invoice.user_id,
+          invoices: [],
+        });
+      }
+      userInvoicesMap.get(userId).invoices.push(invoice);
+    });
+
+    console.log(`👥 Reminders needed for ${userInvoicesMap.size} users\n`);
+
+    // Send reminders to each user
+    for (const [userId, { user, invoices }] of userInvoicesMap) {
+      try {
+        const totalDue = invoices.reduce((sum, inv) => sum + inv.amount, 0);
+        const nearestInvoice = invoices.sort(
+          (a, b) => new Date(a.dueDate) - new Date(b.dueDate),
+        )[0];
+        const daysRemaining = Math.ceil(
+          (new Date(nearestInvoice.dueDate) - today) / (1000 * 60 * 60 * 24),
+        );
+
+        const userName =
+          `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
+          user.username;
+
+        // Send in-app notification
+        await createNotification(
+          userId,
+          "Payment Reminder ⏰",
+          `You have ${invoices.length} pending invoice(s) totaling TZS ${totalDue.toLocaleString()}. Due in ${daysRemaining} day(s).`,
+          "warning",
+          "/payments",
+        );
+
+        // Optional: Send SMS if phone number exists
+        if (user.phoneNumber && smsService) {
+          try {
+            const smsMessage = `Hello ${userName}! Payment reminder: TZS ${totalDue.toLocaleString()} due in ${daysRemaining} days. Pay via Vodacom Lipa: 5130676 or CRDB: 0150814579600. Thank you!`;
+
+            await smsService.sendSMS(
+              user.phoneNumber,
+              smsMessage,
+              "payment_reminder",
+            );
+            console.log(`📱 SMS sent to ${user.phoneNumber}`);
+          } catch (smsError) {
+            console.error(
+              `⚠️  SMS failed for ${user.phoneNumber}:`,
+              smsError.message,
+            );
+          }
+        }
+
+        sentCount++;
+        console.log(
+          `✅ Reminder sent to ${userName} (${daysRemaining} days, TZS ${totalDue.toLocaleString()})`,
+        );
+      } catch (error) {
+        console.error(`❌ Failed to send reminder:`, error.message);
+        failedCount++;
+      }
+    }
+
+    console.log("\n✅ ========================================");
+    console.log(
+      `✅  REMINDERS COMPLETE: ${sentCount} sent, ${failedCount} failed`,
+    );
+    console.log("========================================\n");
+
+    return {
+      success: true,
+      sentCount,
+      failedCount,
+      totalInvoices: pendingInvoices.length,
+      usersNotified: userInvoicesMap.size,
+    };
+  } catch (error) {
+    console.error("❌ Bulk payment reminders failed:", error);
+    throw error;
+  }
 }
 
 // Create notification
