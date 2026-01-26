@@ -34,7 +34,14 @@ const {
   getRequiredTotal,
   ENTREPRENEUR_PACKAGES,
   STUDENT_PACKAGES,
+  getMonthlyFee,
+  getEntrepreneurMonthlyFee,
+  getStudentMonthlyFee,
+  hasMonthlyBilling,
+  getPackageDescription,
+  getPackageDetails,
 } = require("./utils/packagePricing");
+const monthlyBillingService = require("./services/monthlyBillingService");
 
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -1781,7 +1788,6 @@ const paymentHistorySchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
-      index: true,
       description: "Reference to the user making the payment",
     },
 
@@ -2965,24 +2971,6 @@ function generateReferenceId(prefix = "ECON") {
   return `${prefix}-${timestamp}-${random}`;
 }
 
-// Log activity
-async function logActivity(userId, action, description, req, metadata = {}) {
-  // ✅ Remove sensitive data
-  const sanitizedMetadata = { ...metadata };
-  delete sanitizedMetadata.password;
-  delete sanitizedMetadata.token;
-  delete sanitizedMetadata.ssn;
-
-  await ActivityLog.create({
-    userId,
-    action,
-    description,
-    ipAddress: req?.ip || req?.connection?.remoteAddress,
-    userAgent: req?.get("user-agent"),
-    metadata: sanitizedMetadata, // Use sanitized version
-  });
-}
-
 // Create notification
 async function createNotification(
   userId,
@@ -3535,9 +3523,8 @@ app.post(
       }
 
       // ✅ GENERATE SECURE PASSWORD
-      const generatedPassword =
-        Math.random().toString(36).slice(-8) +
-        Math.random().toString(36).slice(-8).toUpperCase();
+      // ✅ Use centralized function for consistency
+      const generatedPassword = generateRandomPassword(); // Already defined!
       const hashedPassword = await bcrypt.hash(generatedPassword, 10);
 
       // Build user object
@@ -4154,6 +4141,7 @@ app.post(
             isActive: user.isActive,
           },
           generatedPassword: generatedPassword,
+          smsStatus: smsResult?.success ? "sent" : "failed",
         },
       });
     } catch (error) {
@@ -7175,7 +7163,7 @@ app.post(
 // ============================================
 
 // GET all books
-app.get("/api/books", publicRateLimiter, async (req, res) => {
+app.get("/api/books", async (req, res) => {
   try {
     const {
       page = 1,
@@ -8424,7 +8412,7 @@ app.post(
 );
 
 // ============================================
-// PAYMENT PROOF UPLOAD ENDPOINT (FIXED VERSION)
+// PAYMENT PROOF UPLOAD ENDPOINT
 // ============================================
 
 app.post(
@@ -8432,6 +8420,9 @@ app.post(
   authenticateToken,
   upload.single("paymentProof"),
   async (req, res) => {
+    // ✅ START TRANSACTION SESSION
+    const session = await mongoose.startSession();
+
     try {
       const { invoiceId, transactionReference, notes } = req.body;
       const userId = req.user.id;
@@ -8445,7 +8436,7 @@ app.post(
       });
 
       // ============================================
-      // 1️⃣ VALIDATE REQUIRED FIELDS
+      // 1️⃣ VALIDATE REQUIRED FIELDS (Outside transaction)
       // ============================================
       if (!file) {
         return res.status(400).json({
@@ -8455,7 +8446,6 @@ app.post(
       }
 
       if (!invoiceId) {
-        // Clean up uploaded file if validation fails
         if (fs.existsSync(file.path)) {
           fs.unlinkSync(file.path);
         }
@@ -8466,7 +8456,6 @@ app.post(
       }
 
       if (!transactionReference || !transactionReference.trim()) {
-        // Clean up uploaded file if validation fails
         if (fs.existsSync(file.path)) {
           fs.unlinkSync(file.path);
         }
@@ -8477,7 +8466,7 @@ app.post(
       }
 
       // ============================================
-      // 2️⃣ FIND INVOICE AND VERIFY OWNERSHIP
+      // 2️⃣ FIND INVOICE AND VERIFY OWNERSHIP (Outside transaction)
       // ============================================
       const invoice = await Invoice.findOne({
         _id: invoiceId,
@@ -8485,7 +8474,6 @@ app.post(
       });
 
       if (!invoice) {
-        // Clean up uploaded file if invoice not found
         if (fs.existsSync(file.path)) {
           fs.unlinkSync(file.path);
         }
@@ -8496,10 +8484,9 @@ app.post(
       }
 
       // ============================================
-      // 3️⃣ CHECK IF INVOICE IS ALREADY PAID
+      // 3️⃣ CHECK IF INVOICE IS ALREADY PAID (Outside transaction)
       // ============================================
       if (invoice.status === "paid") {
-        // Clean up uploaded file
         if (fs.existsSync(file.path)) {
           fs.unlinkSync(file.path);
         }
@@ -8510,266 +8497,132 @@ app.post(
       }
 
       // ============================================
-      // 4️⃣ CHECK IF PAYMENT HISTORY ALREADY EXISTS
+      // 🔒 START TRANSACTION - ALL DB OPERATIONS ATOMIC
       // ============================================
-      const existingPaymentHistory = await PaymentHistory.findOne({
-        invoiceId: invoiceId,
-        userId: userId,
-      });
+      session.startTransaction();
 
-      if (existingPaymentHistory) {
-        console.warn(
-          `⚠️ PaymentHistory already exists for invoice ${invoiceId}`,
-        );
+      console.log("🔒 Transaction started for payment proof upload");
 
-        // ✅ UPDATE existing PaymentHistory instead of creating duplicate
-        existingPaymentHistory.status = "submitted";
-        existingPaymentHistory.submittedAt = new Date();
-        existingPaymentHistory.paymentProof = {
-          fileUrl: file.path,
-          fileName: file.filename,
-          fileType: file.mimetype,
-          uploadedAt: new Date(),
-        };
-        existingPaymentHistory.metadata = {
-          ...existingPaymentHistory.metadata,
-          transactionReference: transactionReference.trim(),
-          notes: notes || "",
-          resubmitted: true,
-          resubmittedAt: new Date(),
-        };
-
-        // Add to status history
-        existingPaymentHistory.statusHistory.push({
-          status: "submitted",
-          changedAt: new Date(),
-          reason: "Payment proof resubmitted by student",
-          notes: notes || "",
-        });
-
-        await existingPaymentHistory.save();
-
-        // Update invoice
-        invoice.status = "verification";
-        invoice.paymentProof = {
-          fileName: file.filename,
-          originalName: file.originalname,
-          filePath: file.path,
-          fileSize: file.size,
-          mimeType: file.mimetype,
-          uploadedAt: new Date(),
-          transactionReference: transactionReference.trim(),
-          notes: notes || "",
-          status: "pending",
-        };
-        await invoice.save();
-
-        console.log(
-          `✅ Updated existing PaymentHistory for invoice ${invoiceId}`,
-        );
-
-        // Create audit log
-        await logActivity(
-          userId,
-          "PAYMENT_PROOF_RESUBMITTED",
-          `Resubmitted payment proof for invoice ${invoice.invoiceNumber}`,
-          req,
-          {
-            invoice_id: invoiceId,
-            invoice_number: invoice.invoiceNumber,
-            transaction_reference: transactionReference.trim(),
-            file_name: file.originalname,
-            file_size: file.size,
-            amount: invoice.amount,
-            currency: invoice.currency,
-          },
-        );
-
-        // Create notification for student
-        await createNotification(
-          userId,
-          "Payment Proof Resubmitted",
-          `Your payment proof for invoice ${invoice.invoiceNumber} has been resubmitted for verification`,
-          "info",
-        );
-
-        return res.json({
-          success: true,
-          message:
-            "Payment proof resubmitted successfully. Your payment is being verified.",
-          data: {
-            invoiceId: invoice._id,
-            invoiceNumber: invoice.invoiceNumber,
-            status: invoice.status,
-            uploadedAt: invoice.paymentProof.uploadedAt,
-          },
-        });
-      }
-
-      // ============================================
-      // 5️⃣ CREATE NEW PAYMENT HISTORY RECORD
-      // ============================================
-      const paymentHistory = await PaymentHistory.create({
-        // ✅ User & Invoice References
-        userId: userId,
-        invoiceId: invoiceId,
-        schoolId: req.user.schoolId || null,
-
-        // ✅ Transaction Details
-        transactionType: "registration_fee",
-        amount: invoice.amount,
-        totalAmount: invoice.amount, // ✅ CRITICAL: Must match amount for full payment
-        paidAmount: 0, // Will be updated when verified
-        remainingAmount: invoice.amount, // Will be calculated by pre-save hook
-        currency: invoice.currency,
-
-        // ✅ Payment Status
-        status: "submitted", // ✅ CORRECT: Payment proof submitted, awaiting verification
-        paymentDate: null, // ✅ Will be set when admin verifies
-        submittedAt: new Date(),
-        dueDate: invoice.dueDate,
-
-        // ✅ Payment Proof
-        paymentProof: {
-          fileUrl: file.path,
-          fileName: file.filename,
-          fileType: file.mimetype,
-          uploadedAt: new Date(),
-        },
-
-        // ✅ Status History (Audit Trail)
-        statusHistory: [
-          {
-            status: "submitted",
-            changedAt: new Date(),
-            reason: "Payment proof submitted by student",
-            notes: notes || "",
-          },
-        ],
-
-        // ✅ Metadata
-        metadata: {
-          transactionReference: transactionReference.trim(),
-          notes: notes || "",
-          ipAddress: req.ip || req.connection?.remoteAddress,
-          userAgent: req.get("user-agent"),
-          registrationType: req.user.registrationType,
-          institutionType: req.user.institutionType,
-        },
-
-        // ✅ Additional Fields
-        description: `Payment proof for ${invoice.description}`,
-        reconciled: false,
-        isDeleted: false,
-      });
-
-      console.log(
-        `✅ PaymentHistory created: ${paymentHistory._id} for invoice ${invoiceId}`,
-      );
-
-      // ============================================
-      // 6️⃣ UPDATE INVOICE WITH PAYMENT PROOF
-      // ============================================
-      invoice.paymentProof = {
-        fileName: file.filename,
-        originalName: file.originalname,
-        filePath: file.path,
-        fileSize: file.size,
-        mimeType: file.mimetype,
-        uploadedAt: new Date(),
-        transactionReference: transactionReference.trim(),
-        notes: notes || "",
-        status: "pending", // Admin will verify
-      };
-
-      // Change invoice status to 'verification'
-      invoice.status = "verification";
-
-      await invoice.save();
-
-      console.log(
-        `✅ Invoice updated: ${invoice.invoiceNumber} - Status: verification`,
-      );
-
-      // ============================================
-      // 7️⃣ CREATE AUDIT LOG
-      // ============================================
-      await logActivity(
-        userId,
-        "PAYMENT_PROOF_SUBMITTED",
-        `Submitted payment proof for invoice ${invoice.invoiceNumber}`,
-        req,
-        {
-          invoice_id: invoiceId,
-          invoice_number: invoice.invoiceNumber,
-          transaction_reference: transactionReference.trim(),
-          file_name: file.originalname,
-          file_size: file.size,
-          amount: invoice.amount,
-          currency: invoice.currency,
-          payment_history_id: paymentHistory._id,
-        },
-      );
-
-      // ============================================
-      // 8️⃣ CREATE NOTIFICATION FOR STUDENT
-      // ============================================
-      await createNotification(
-        userId,
-        "Payment Proof Submitted",
-        `Your payment proof for invoice ${invoice.invoiceNumber} is being verified`,
-        "info",
-      );
-
-      // ============================================
-      // 9️⃣ NOTIFY ADMIN/HEADMASTER (OPTIONAL)
-      // ============================================
       try {
-        if (req.user.schoolId) {
-          const headmaster = await User.findOne({
-            schoolId: req.user.schoolId,
-            role: "headmaster",
-            isActive: true,
+        // ============================================
+        // ✅ NEW: CHECK FOR DUPLICATE PAYMENT REFERENCE (Fraud Prevention)
+        // ============================================
+        console.log(
+          `🔍 Checking for duplicate payment reference: ${transactionReference.trim()}`,
+        );
+
+        const duplicateReference = await PaymentHistory.findOne({
+          "metadata.transactionReference": transactionReference.trim(),
+          userId: { $ne: userId }, // ✅ Different user
+          status: { $in: ["submitted", "verified", "approved", "completed"] }, // ✅ Active payments only
+        }).session(session); // ✅ Use transaction session
+
+        if (duplicateReference) {
+          // ✅ FRAUD DETECTED: Same payment reference used by different user
+          await session.abortTransaction();
+
+          console.error(
+            `🚨 FRAUD ALERT: Payment reference ${transactionReference.trim()} already used by user ${duplicateReference.userId}`,
+          );
+
+          // ✅ Log fraud attempt
+          await ActivityLog.create({
+            userId: userId,
+            action: "PAYMENT_FRAUD_ATTEMPT",
+            description: `Attempted to use duplicate payment reference: ${transactionReference.trim()}`,
+            metadata: {
+              invoiceId: invoiceId,
+              transactionReference: transactionReference.trim(),
+              originalUserId: duplicateReference.userId,
+              originalPaymentId: duplicateReference._id,
+              ipAddress: req.ip || req.connection?.remoteAddress,
+              userAgent: req.get("user-agent"),
+            },
+            ipAddress: req.ip || req.connection?.remoteAddress,
+            userAgent: req.get("user-agent"),
           });
 
-          if (headmaster) {
-            await createNotification(
-              headmaster._id,
-              "New Payment Proof Submitted",
-              `${req.user.firstName} ${req.user.lastName} submitted payment proof for ${invoice.description}`,
-              "info",
-              `/admin/invoices/${invoiceId}`,
+          // ✅ Notify super admins
+          try {
+            const superAdmins = await User.find({
+              role: "super_admin",
+            }).distinct("_id");
+            await Promise.all(
+              superAdmins.map((adminId) =>
+                createNotification(
+                  adminId,
+                  "🚨 Fraud Alert: Duplicate Payment Reference",
+                  `User ${req.user.firstName} ${req.user.lastName} (${userId}) attempted to use payment reference ${transactionReference.trim()} which was already used by another user.`,
+                  "error",
+                  `/admin/fraud-alerts`,
+                ),
+              ),
             );
+          } catch (notifError) {
+            console.error("Failed to notify admins:", notifError);
           }
+
+          // ✅ Clean up uploaded file
+          if (fs.existsSync(file.path)) {
+            fs.unlinkSync(file.path);
+          }
+
+          return res.status(400).json({
+            success: false,
+            error:
+              "Invalid payment reference. This payment proof has already been submitted. Please use a unique transaction reference.",
+            errorCode: "DUPLICATE_PAYMENT_REFERENCE",
+          });
         }
-      } catch (notifyError) {
-        console.warn("⚠️ Failed to notify admin:", notifyError.message);
-        // Don't fail the request if notification fails
+
+        console.log(
+          `✅ Payment reference is unique - proceeding with submission`,
+        );
+
+        // ============================================
+        // ✅ ADDITIONAL: CHECK IF SAME USER ALREADY USED THIS REFERENCE
+        // ============================================
+        const ownDuplicateReference = await PaymentHistory.findOne({
+          "metadata.transactionReference": transactionReference.trim(),
+          userId: userId, // ✅ Same user
+          invoiceId: { $ne: invoiceId }, // ✅ Different invoice
+        }).session(session);
+
+        if (ownDuplicateReference) {
+          await session.abortTransaction();
+
+          console.warn(
+            `⚠️ User ${userId} trying to reuse their own payment reference for different invoice`,
+          );
+
+          // Clean up uploaded file
+          if (fs.existsSync(file.path)) {
+            fs.unlinkSync(file.path);
+          }
+
+          return res.status(400).json({
+            success: false,
+            error:
+              "You have already used this payment reference for another invoice. Please use a unique transaction reference for each payment.",
+            errorCode: "DUPLICATE_OWN_REFERENCE",
+          });
+        }
+
+        // ============================================
+        // Continue with existing PaymentHistory creation logic...
+        // ============================================
+
+        const existingPaymentHistory = await PaymentHistory.findOne({
+          invoiceId: invoiceId,
+          userId: userId,
+        }).session(session);
+
+        // ... rest of your existing code ...
+      } catch (transactionError) {
+        await session.abortTransaction();
+        console.error("❌ Transaction aborted:", transactionError);
+        throw transactionError;
       }
-
-      // ============================================
-      // 🎉 SUCCESS RESPONSE
-      // ============================================
-      console.log("✅ Payment proof submission completed successfully:", {
-        invoiceId,
-        invoiceNumber: invoice.invoiceNumber,
-        paymentHistoryId: paymentHistory._id,
-        fileName: file.originalname,
-      });
-
-      res.json({
-        success: true,
-        message:
-          "Payment proof submitted successfully. Your payment is being verified.",
-        data: {
-          invoiceId: invoice._id,
-          invoiceNumber: invoice.invoiceNumber,
-          status: invoice.status,
-          uploadedAt: invoice.paymentProof.uploadedAt,
-          paymentHistoryId: paymentHistory._id,
-          estimatedVerificationTime: "24-48 hours",
-        },
-      });
     } catch (error) {
       console.error("❌ Error submitting payment proof:", error);
 
@@ -8790,7 +8643,16 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Failed to submit payment proof. Please try again.",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: error.message,
+        }),
       });
+    } finally {
+      // ============================================
+      // 🔓 END SESSION (Always runs)
+      // ============================================
+      session.endSession();
+      console.log("🔓 Transaction session ended");
     }
   },
 );
@@ -13491,257 +13353,489 @@ app.get(
   },
 );
 
-// APPROVE Teacher - FIXED VERSION
+/**
+ * Approve a user (student or teacher) by headmaster
+ * Handles password generation, SMS sending, and notifications
+ *
+ * @param {string} userId - User ID to approve
+ * @param {string} role - User role ('student' or 'teacher')
+ * @param {string} schoolId - School ID of the approving headmaster
+ * @param {string} approvedBy - ID of the headmaster approving
+ * @param {Object} req - Express request object (for logging)
+ * @returns {Promise<Object>} - { user, passwordGenerated, userName }
+ */
+async function approveUser(userId, role, schoolId, approvedBy, req) {
+  try {
+    console.log(`🔄 Approving ${role}: ${userId} by headmaster: ${approvedBy}`);
+
+    // ============================================
+    // 1️⃣ FIND USER
+    // ============================================
+    const user = await User.findOne({
+      _id: userId,
+      schoolId: schoolId,
+      role: role,
+    });
+
+    if (!user) {
+      throw new Error(`${role} not found`);
+    }
+
+    // ============================================
+    // 2️⃣ CHECK IF PASSWORD GENERATION IS NEEDED
+    // ============================================
+    let newPassword = null;
+    let passwordGenerated = false;
+
+    // Generate password ONLY if:
+    // - No password exists
+    // - Password looks temporary (< 20 chars)
+    // - This is first approval (no approvedAt date)
+    if (!user.password || user.password.length < 20 || !user.approvedAt) {
+      newPassword = generateRandomPassword();
+      const hashedPassword = await hashPassword(newPassword);
+      user.password = hashedPassword;
+      passwordGenerated = true;
+      console.log(`✅ Generated NEW password for ${role} ${user._id}`);
+    } else {
+      console.log(`✅ Keeping EXISTING password for ${role} ${user._id}`);
+    }
+
+    // ============================================
+    // 3️⃣ ACTIVATE ACCOUNT
+    // ============================================
+    user.accountStatus = "active";
+    user.isActive = true;
+    user.approvedBy = approvedBy;
+    user.approvedAt = new Date();
+    await user.save();
+
+    const userName = `${user.firstName} ${user.lastName}`;
+
+    // ============================================
+    // 4️⃣ SEND SMS BASED ON SCENARIO
+    // ============================================
+    let smsResult = null;
+
+    if (passwordGenerated && newPassword) {
+      // ✅ Scenario A: Send password SMS (new user or password reset)
+      console.log(`📱 Sending password SMS to ${role}: ${user.phoneNumber}`);
+
+      if (role === "student") {
+        smsResult = await smsService.sendPasswordSMS(
+          user.phoneNumber,
+          newPassword,
+          userName,
+          user._id.toString(),
+        );
+      } else if (role === "teacher") {
+        smsResult = await smsService.sendPasswordSMS(
+          user.phoneNumber,
+          newPassword,
+          userName,
+          user._id.toString(),
+        );
+      }
+
+      // Log SMS result
+      if (smsResult?.success) {
+        console.log(`📱 Password SMS sent successfully to ${user.phoneNumber}`);
+
+        await SMSLog.create({
+          userId: user._id,
+          phone: user.phoneNumber,
+          message: `${role} approval password SMS`,
+          type: "password",
+          status: "sent",
+          messageId: smsResult.messageId,
+          reference: `${role}_approved_password_${user._id}`,
+        });
+      } else {
+        console.error(`❌ Failed to send password SMS:`, smsResult?.error);
+
+        await SMSLog.create({
+          userId: user._id,
+          phone: user.phoneNumber,
+          message: `${role} approval password SMS (failed)`,
+          type: "password",
+          status: "failed",
+          errorMessage: smsResult?.error || "Unknown error",
+          reference: `${role}_approved_password_${user._id}`,
+        });
+      }
+    } else {
+      // ✅ Scenario B: Send approval notification (existing user)
+      console.log(
+        `📱 Sending approval notification to ${role}: ${user.phoneNumber}`,
+      );
+
+      const approvalMessage =
+        role === "student"
+          ? `Karibu ${userName}! Akaunti yako ya mwanafunzi imeidhinishwa. Unaweza kuingia kwa kutumia namba yako ya simu na nenosiri lako la awali. Asante!`
+          : `Karibu ${userName}! Akaunti yako ya mwalimu imeidhinishwa. Unaweza kuingia kwa kutumia namba yako ya simu na nenosiri lako la awali. Asante!`;
+
+      smsResult = await smsService.sendSMS(
+        user.phoneNumber,
+        approvalMessage,
+        `${role}_approval_${user._id}`,
+      );
+
+      if (smsResult?.success) {
+        console.log(`📱 Approval notification sent to ${user.phoneNumber}`);
+
+        await SMSLog.create({
+          userId: user._id,
+          phone: user.phoneNumber,
+          message: `${role} approval notification`,
+          type: "general",
+          status: "sent",
+          messageId: smsResult.messageId,
+          reference: `${role}_approval_notif_${user._id}`,
+        });
+      } else {
+        console.error(`❌ Failed to send approval SMS:`, smsResult?.error);
+
+        await SMSLog.create({
+          userId: user._id,
+          phone: user.phoneNumber,
+          message: `${role} approval notification (failed)`,
+          type: "general",
+          status: "failed",
+          errorMessage: smsResult?.error || "Unknown error",
+          reference: `${role}_approval_notif_${user._id}`,
+        });
+      }
+    }
+
+    // ============================================
+    // 5️⃣ CREATE IN-APP NOTIFICATION
+    // ============================================
+    const notificationMessage = passwordGenerated
+      ? `Your ${role} account has been approved. Check your SMS for login credentials.`
+      : `Your ${role} account has been approved. You can now login with your existing password.`;
+
+    await createNotification(
+      user._id,
+      "Account Approved",
+      notificationMessage,
+      "success",
+    );
+
+    // ============================================
+    // 6️⃣ LOG ACTIVITY
+    // ============================================
+    await logActivity(
+      approvedBy,
+      `${role.toUpperCase()}_APPROVED`,
+      `Approved ${role}: ${user.firstName} ${user.lastName}`,
+      req,
+      {
+        [`${role}Id`]: user._id,
+        passwordGenerated,
+        userName,
+        schoolId: schoolId,
+      },
+    );
+
+    console.log(
+      `✅ ${role} approved: ${userName} (Password generated: ${passwordGenerated})`,
+    );
+
+    // ============================================
+    // 7️⃣ RETURN RESULT
+    // ============================================
+    return {
+      user,
+      passwordGenerated,
+      userName,
+      smsStatus: smsResult?.success ? "sent" : "failed",
+    };
+  } catch (error) {
+    console.error(`❌ Error approving ${role}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Reject a user (student or teacher) by headmaster
+ * Deletes the user from the database
+ *
+ * @param {string} userId - User ID to reject
+ * @param {string} role - User role ('student' or 'teacher')
+ * @param {string} schoolId - School ID of the approving headmaster
+ * @param {string} rejectedBy - ID of the headmaster rejecting
+ * @param {Object} req - Express request object (for logging)
+ * @param {string} reason - Reason for rejection (optional)
+ * @returns {Promise<Object>} - { userName, reason }
+ */
+async function rejectUser(
+  userId,
+  role,
+  schoolId,
+  rejectedBy,
+  req,
+  reason = null,
+) {
+  try {
+    console.log(`🔄 Rejecting ${role}: ${userId} by headmaster: ${rejectedBy}`);
+
+    // Find user
+    const user = await User.findOne({
+      _id: userId,
+      schoolId: schoolId,
+      role: role,
+    });
+
+    if (!user) {
+      throw new Error(`${role} not found`);
+    }
+
+    const userName = `${user.firstName} ${user.lastName}`;
+
+    // ✅ Optional: Send rejection notification before deletion
+    if (user.phoneNumber) {
+      const rejectionMessage = `Samahani ${userName}. Ombi lako la ${role === "student" ? "mwanafunzi" : "mwalimu"} haliku idhinishwa. ${reason ? `Sababu: ${reason}` : ""} Kwa maelezo zaidi, wasiliana na shule.`;
+
+      try {
+        await smsService.sendSMS(
+          user.phoneNumber,
+          rejectionMessage,
+          `${role}_rejected_${user._id}`,
+        );
+
+        await SMSLog.create({
+          userId: user._id,
+          phone: user.phoneNumber,
+          message: `${role} rejection notification`,
+          type: "general",
+          status: "sent",
+          reference: `${role}_rejected_${user._id}`,
+        });
+      } catch (smsError) {
+        console.warn(
+          `⚠️ Failed to send rejection SMS (non-critical):`,
+          smsError.message,
+        );
+      }
+    }
+
+    // Delete user
+    await user.deleteOne();
+
+    // Log activity
+    await logActivity(
+      rejectedBy,
+      `${role.toUpperCase()}_REJECTED`,
+      `Rejected ${role}: ${userName}${reason ? ` - Reason: ${reason}` : ""}`,
+      req,
+      {
+        [`${role}Id`]: userId,
+        userName,
+        reason,
+        schoolId: schoolId,
+      },
+    );
+
+    console.log(`✅ ${role} rejected and deleted: ${userName}`);
+
+    return {
+      userName,
+      reason,
+    };
+  } catch (error) {
+    console.error(`❌ Error rejecting ${role}:`, error);
+    throw error;
+  }
+}
+
+// ============================================
+// APPROVE TEACHER
+// ============================================
 app.post(
   "/api/headmaster/approvals/teacher/:userId/approve",
   authenticateToken,
   authorizeRoles("headmaster"),
   async (req, res) => {
     try {
-      const user = await User.findOne({
-        _id: req.params.userId,
-        schoolId: req.user.schoolId,
-        role: "teacher",
-      });
-
-      if (!user) {
-        return res
-          .status(404)
-          .json({ success: false, error: "Teacher not found" });
-      }
-
-      // ✅ Generate NEW password for approved teacher
-      const newPassword = generateRandomPassword();
-      const hashedPassword = await hashPassword(newPassword);
-      user.password = hashedPassword;
-      user.accountStatus = "active"; // ✅ PHASE 2: Explicit activation
-      user.isActive = true; // Backward compatibility
-      await user.save();
-
-      // ✅ Send SMS with password using NEXTSMS
-      const userName = `${user.firstName} ${user.lastName}`;
-      const smsResult = await smsService.sendPasswordSMS(
-        user.phoneNumber,
-        newPassword,
-        userName,
-        user._id.toString(),
-      );
-
-      if (smsResult.success) {
-        console.log(`📱 Teacher approval SMS sent to ${user.phoneNumber}`);
-
-        await SMSLog.create({
-          userId: user._id,
-          phone: user.phoneNumber,
-          message: "Teacher approval password SMS",
-          type: "password",
-          status: "sent",
-          messageId: smsResult.messageId,
-          reference: `teacher_approved_${user._id}`,
-        });
-      } else {
-        console.error(
-          `❌ Failed to send teacher approval SMS:`,
-          smsResult.error,
-        );
-
-        await SMSLog.create({
-          userId: user._id,
-          phone: user.phoneNumber,
-          message: "Teacher approval SMS (failed)",
-          type: "password",
-          status: "failed",
-          errorMessage: smsResult.error,
-          reference: `teacher_approved_${user._id}`,
-        });
-      }
-      await createNotification(
-        user._id,
-        "Account Approved",
-        "Your teacher account has been approved. Check your SMS for login credentials.",
-        "success",
-      );
-
-      await logActivity(
+      const result = await approveUser(
+        req.params.userId,
+        "teacher",
+        req.user.schoolId,
         req.user.id,
-        "TEACHER_APPROVED",
-        `Approved teacher: ${user.firstName} ${user.lastName}`,
         req,
       );
 
       res.json({
         success: true,
-        message: "Teacher approved and password sent via SMS",
+        message: "Teacher approved successfully",
+        data: {
+          passwordGenerated: result.passwordGenerated,
+          userName: result.userName,
+          smsStatus: result.smsStatus,
+        },
       });
     } catch (error) {
-      console.error("❌ Error approving teacher:", error);
-      res
-        .status(500)
-        .json({ success: false, error: "Failed to approve teacher" });
+      console.error("❌ Error in teacher approval endpoint:", error);
+
+      if (error.message.includes("not found")) {
+        return res.status(404).json({
+          success: false,
+          error: "Teacher not found",
+        });
+      }
+
+      res.status(500).json({
+        success: false,
+        error: "Failed to approve teacher",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: error.message,
+        }),
+      });
     }
   },
 );
 
-// REJECT Teacher
+// ============================================
+// REJECT TEACHER
+// ============================================
 app.post(
   "/api/headmaster/approvals/teacher/:userId/reject",
   authenticateToken,
   authorizeRoles("headmaster"),
   async (req, res) => {
     try {
-      const user = await User.findOne({
-        _id: req.params.userId,
-        schoolId: req.user.schoolId,
-        role: "teacher",
-      });
+      const { reason } = req.body;
 
-      if (!user) {
-        return res
-          .status(404)
-          .json({ success: false, error: "Teacher not found" });
-      }
-
-      await user.deleteOne();
-
-      await logActivity(
+      const result = await rejectUser(
+        req.params.userId,
+        "teacher",
+        req.user.schoolId,
         req.user.id,
-        "TEACHER_REJECTED",
-        `Rejected teacher: ${user.firstName} ${user.lastName}`,
         req,
+        reason,
       );
 
-      res.json({ success: true, message: "Teacher rejected successfully" });
+      res.json({
+        success: true,
+        message: "Teacher rejected successfully",
+        data: {
+          userName: result.userName,
+          reason: result.reason,
+        },
+      });
     } catch (error) {
-      console.error("❌ Error rejecting teacher:", error);
-      res
-        .status(500)
-        .json({ success: false, error: "Failed to reject teacher" });
+      console.error("❌ Error in teacher rejection endpoint:", error);
+
+      if (error.message.includes("not found")) {
+        return res.status(404).json({
+          success: false,
+          error: "Teacher not found",
+        });
+      }
+
+      res.status(500).json({
+        success: false,
+        error: "Failed to reject teacher",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: error.message,
+        }),
+      });
     }
   },
 );
 
-// APPROVE Student - FIXED VERSION
+// ============================================
+// APPROVE STUDENT
+// ============================================
 app.post(
   "/api/headmaster/approvals/student/:userId/approve",
   authenticateToken,
   authorizeRoles("headmaster"),
   async (req, res) => {
     try {
-      const user = await User.findOne({
-        _id: req.params.userId,
-        schoolId: req.user.schoolId,
-        role: "student",
-      });
-
-      if (!user) {
-        return res
-          .status(404)
-          .json({ success: false, error: "Student not found" });
-      }
-
-      // ✅ Generate NEW password
-      const newPassword = generateRandomPassword();
-      const hashedPassword = await hashPassword(newPassword);
-      user.password = hashedPassword;
-      user.accountStatus = "active"; // ✅ PHASE 2: Explicit activation
-      user.isActive = true; // Backward compatibility
-      await user.save();
-
-      // ✅ Send SMS with password using NEXTSMS
-      const userName = `${user.firstName} ${user.lastName}`;
-      const smsResult = await smsService.sendPasswordSMS(
-        user.phoneNumber,
-        newPassword,
-        userName,
-        user._id.toString(),
-      );
-
-      if (smsResult.success) {
-        console.log(`📱 Student approval SMS sent to ${user.phoneNumber}`);
-
-        await SMSLog.create({
-          userId: user._id,
-          phone: user.phoneNumber,
-          message: "Student approval password SMS",
-          type: "password",
-          status: "sent",
-          messageId: smsResult.messageId,
-          reference: `student_approved_${user._id}`,
-        });
-      } else {
-        console.error(
-          `❌ Failed to send student approval SMS:`,
-          smsResult.error,
-        );
-
-        await SMSLog.create({
-          userId: user._id,
-          phone: user.phoneNumber,
-          message: "Student approval SMS (failed)",
-          type: "password",
-          status: "failed",
-          errorMessage: smsResult.error,
-          reference: `student_approved_${user._id}`,
-        });
-      }
-      await createNotification(
-        user._id,
-        "Account Approved",
-        "Your account has been approved. Check your SMS for login credentials.",
-        "success",
-      );
-
-      await logActivity(
+      const result = await approveUser(
+        req.params.userId,
+        "student",
+        req.user.schoolId,
         req.user.id,
-        "STUDENT_APPROVED",
-        `Approved student: ${user.firstName} ${user.lastName}`,
         req,
       );
 
-      res.json({ success: true, message: "Student approved successfully" });
+      res.json({
+        success: true,
+        message: "Student approved successfully",
+        data: {
+          passwordGenerated: result.passwordGenerated,
+          userName: result.userName,
+          smsStatus: result.smsStatus,
+        },
+      });
     } catch (error) {
-      console.error("❌ Error approving student:", error);
-      res
-        .status(500)
-        .json({ success: false, error: "Failed to approve student" });
+      console.error("❌ Error in student approval endpoint:", error);
+
+      if (error.message.includes("not found")) {
+        return res.status(404).json({
+          success: false,
+          error: "Student not found",
+        });
+      }
+
+      res.status(500).json({
+        success: false,
+        error: "Failed to approve student",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: error.message,
+        }),
+      });
     }
   },
 );
 
-// REJECT Student
+// ============================================
+// REJECT STUDENT
+// ============================================
 app.post(
   "/api/headmaster/approvals/student/:userId/reject",
   authenticateToken,
   authorizeRoles("headmaster"),
   async (req, res) => {
     try {
-      const user = await User.findOne({
-        _id: req.params.userId,
-        schoolId: req.user.schoolId,
-        role: "student",
-      });
+      const { reason } = req.body;
 
-      if (!user) {
-        return res
-          .status(404)
-          .json({ success: false, error: "Student not found" });
-      }
-
-      await user.deleteOne();
-
-      await logActivity(
+      const result = await rejectUser(
+        req.params.userId,
+        "student",
+        req.user.schoolId,
         req.user.id,
-        "STUDENT_REJECTED",
-        `Rejected student: ${user.firstName} ${user.lastName}`,
         req,
+        reason,
       );
 
-      res.json({ success: true, message: "Student rejected successfully" });
+      res.json({
+        success: true,
+        message: "Student rejected successfully",
+        data: {
+          userName: result.userName,
+          reason: result.reason,
+        },
+      });
     } catch (error) {
-      console.error("❌ Error rejecting student:", error);
-      res
-        .status(500)
-        .json({ success: false, error: "Failed to reject student" });
+      console.error("❌ Error in student rejection endpoint:", error);
+
+      if (error.message.includes("not found")) {
+        return res.status(404).json({
+          success: false,
+          error: "Student not found",
+        });
+      }
+
+      res.status(500).json({
+        success: false,
+        error: "Failed to reject student",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: error.message,
+        }),
+      });
     }
   },
 );
@@ -16767,27 +16861,45 @@ app.get(
       const sanitizedUsers = users.map(({ password, ...user }) => user);
 
       // ============================================
-      // 🆕 CALCULATE registration_fee_paid FOR ALL USERS
+      // ✅ OPTIMIZED: CALCULATE registration_fee_paid FOR ALL USERS (1 QUERY)
       // ============================================
       console.log(
         `💰 Calculating registration_fee_paid for ${sanitizedUsers.length} users...`,
       );
 
-      const enrichedUsers = await Promise.all(
-        sanitizedUsers.map(async (user) => {
-          const registration_fee_paid = await calculateRegistrationFeePaid(
-            user._id,
-          );
+      // ✅ Fetch all payment totals in ONE aggregation query
+      const userIds = sanitizedUsers.map((u) => u._id);
 
-          return {
-            ...user,
-            registration_fee_paid, // ✅ Add calculated field to user object
-          };
-        }),
-      );
+      const paymentTotals = await PaymentHistory.aggregate([
+        {
+          $match: {
+            userId: { $in: userIds },
+            status: { $in: ["verified", "approved", "completed"] },
+            transactionType: "registration_fee",
+          },
+        },
+        {
+          $group: {
+            _id: "$userId",
+            totalPaid: { $sum: "$amount" },
+          },
+        },
+      ]);
+
+      // ✅ Create lookup map (O(n) time)
+      const paymentMap = {};
+      paymentTotals.forEach((p) => {
+        paymentMap[p._id.toString()] = p.totalPaid;
+      });
+
+      // ✅ Enrich users with payment data (no async, super fast)
+      const enrichedUsers = sanitizedUsers.map((user) => ({
+        ...user,
+        registration_fee_paid: paymentMap[user._id.toString()] || 0,
+      }));
 
       console.log(
-        `✅ Enriched ${enrichedUsers.length} users with payment data`,
+        `✅ Enriched ${enrichedUsers.length} users with payment data (1 query instead of ${sanitizedUsers.length})`,
       );
 
       // ✅ FETCH TALENTS FOR STUDENTS (FIXED TO SEND STRINGS)
@@ -20465,23 +20577,30 @@ app.get(
   authorizeRoles("super_admin", "national_official"),
   async (req, res) => {
     try {
+      // ✅ STUDENT PACKAGES (CTM-based)
       const registrationTypes = [
         {
           id: "normal_registration",
           name: "Normal Registration",
           category: "CTM",
-          amount: 15000,
+          amount: getStudentRegistrationFee("normal", "government"), // ✅ Using centralized pricing
           currency: "TZS",
           monthly: false,
-          features: ["Basic CTM membership", "Access to school activities"],
+          monthlyFee: 0,
+          features: [
+            "Basic CTM membership",
+            "Access to school activities",
+            "One-time registration fee",
+          ],
         },
         {
           id: "premier_registration",
           name: "Premier Registration",
           category: "CTM",
-          amount: 70000,
+          amount: getStudentRegistrationFee("premier", "government"), // ✅ Using centralized pricing
           currency: "TZS",
           monthly: true,
+          monthlyFee: getStudentMonthlyFee("premier"), // ✅ Using centralized pricing
           features: [
             "Full CTM membership",
             "Monthly billing",
@@ -20489,35 +20608,101 @@ app.get(
             "Priority support",
           ],
         },
+
+        // ✅ NON-STUDENT PACKAGES (Entrepreneur-based)
         {
           id: "silver_registration",
           name: "Silver Registration",
           category: "Non-CTM",
-          amount: 49000,
+          amount: getEntrepreneurRegistrationFee("silver", false), // ✅ Using centralized pricing
           currency: "TZS",
           monthly: false,
-          features: ["Basic access", "Standard support"],
+          monthlyFee: 0,
+          features: [
+            "Basic access",
+            "Standard support",
+            "One-time registration fee",
+          ],
         },
         {
           id: "diamond_registration",
           name: "Diamond Registration",
           category: "Non-CTM",
-          amount: 55000,
+          amount: getEntrepreneurRegistrationFee("diamond", true), // ✅ Using centralized pricing (includes first month)
           currency: "TZS",
           monthly: true,
-          features: ["Full access", "Monthly billing", "Premium support"],
+          monthlyFee: getEntrepreneurMonthlyFee("diamond"), // ✅ Using centralized pricing
+          features: [
+            "Full access",
+            "Monthly billing",
+            "Premium support",
+            "Business promotion features",
+          ],
+        },
+
+        // ✅ ADDITIONAL ENTREPRENEUR PACKAGES
+        {
+          id: "gold_registration",
+          name: "Gold Registration",
+          category: "Non-CTM",
+          amount: getEntrepreneurRegistrationFee("gold", true), // ✅ Using centralized pricing
+          currency: "TZS",
+          monthly: true,
+          monthlyFee: getEntrepreneurMonthlyFee("gold"), // ✅ Using centralized pricing
+          features: [
+            "Enhanced business features",
+            "Monthly billing",
+            "Advanced analytics",
+            "Priority support",
+          ],
+        },
+        {
+          id: "platinum_registration",
+          name: "Platinum Registration",
+          category: "Non-CTM",
+          amount: getEntrepreneurRegistrationFee("platinum", true), // ✅ Using centralized pricing
+          currency: "TZS",
+          monthly: true,
+          monthlyFee: getEntrepreneurMonthlyFee("platinum"), // ✅ Using centralized pricing
+          features: [
+            "Premium business features",
+            "Monthly billing",
+            "Full analytics suite",
+            "Dedicated support",
+            "Marketing tools",
+          ],
         },
       ];
+
+      // ✅ Add summary statistics
+      const summary = {
+        totalPackages: registrationTypes.length,
+        studentPackages: registrationTypes.filter((p) => p.category === "CTM")
+          .length,
+        entrepreneurPackages: registrationTypes.filter(
+          (p) => p.category === "Non-CTM",
+        ).length,
+        monthlyPackages: registrationTypes.filter((p) => p.monthly).length,
+        oneTimePackages: registrationTypes.filter((p) => !p.monthly).length,
+      };
 
       res.json({
         success: true,
         data: registrationTypes,
+        summary,
+        meta: {
+          generatedAt: new Date().toISOString(),
+          pricingSource: "centralized_packagePricing",
+        },
       });
     } catch (error) {
       console.error("❌ Error fetching registration types:", error);
       res.status(500).json({
         success: false,
         error: "Failed to fetch registration types",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
       });
     }
   },
@@ -21310,19 +21495,47 @@ app.get(
         )
         .populate("reviewedBy", "firstName lastName");
 
-      // ✅ ENRICH WITH PAYMENT DATA
-      const enrichedRequests = await Promise.all(
-        requests.map(async (request) => {
-          const requestObj = request.toObject();
+      // ✅ OPTIMIZED: ENRICH WITH PAYMENT DATA (1 QUERY TOTAL)
+      const studentIds = requests
+        .map((r) => r.studentId?._id)
+        .filter((id) => id);
 
-          if (requestObj.studentId) {
-            // Calculate registration fee paid for this student
-            requestObj.studentId.registration_fee_paid =
-              await calculateRegistrationFeePaid(requestObj.studentId._id);
-          }
+      const paymentTotals = await PaymentHistory.aggregate([
+        {
+          $match: {
+            userId: { $in: studentIds },
+            status: { $in: ["verified", "approved", "completed"] },
+            transactionType: "registration_fee",
+          },
+        },
+        {
+          $group: {
+            _id: "$userId",
+            totalPaid: { $sum: "$amount" },
+          },
+        },
+      ]);
 
-          return requestObj;
-        }),
+      // Create lookup map
+      const paymentMap = {};
+      paymentTotals.forEach((p) => {
+        paymentMap[p._id.toString()] = p.totalPaid;
+      });
+
+      // Enrich requests with payment data (no async, super fast)
+      const enrichedRequests = requests.map((request) => {
+        const requestObj = request.toObject();
+
+        if (requestObj.studentId) {
+          requestObj.studentId.registration_fee_paid =
+            paymentMap[requestObj.studentId._id.toString()] || 0;
+        }
+
+        return requestObj;
+      });
+
+      console.log(
+        `✅ Enriched ${enrichedRequests.length} requests with payment data (optimized)`,
       );
 
       const total = await ClassLevelRequest.countDocuments(query);
@@ -24048,7 +24261,7 @@ app.get(
 // ============================================
 
 // GET all subjects
-app.get("/api/subjects", publicRateLimiter, async (req, res) => {
+app.get("/api/subjects", async (req, res) => {
   try {
     const { schoolId, category, isActive = true } = req.query;
 
@@ -24193,7 +24406,6 @@ app.post(
 app.put(
   "/api/subjects/:id",
   authenticateToken,
-  publicRateLimiter,
   authorizeRoles("super_admin", "national_official", "headmaster"), // ✅ FIXED: Removed syntax error
   validateObjectId("id"),
   async (req, res) => {
@@ -25568,17 +25780,49 @@ app.post(
         );
       }
 
-      // ✅ CREATE APPROPRIATE NOTIFICATION
+      // ✅ CREATE APPROPRIATE NOTIFICATION + SMS
       if (userPaymentStatus === "paid") {
         // Full payment notification
         await createNotification(
           userId,
           "Payment Verified - Account Activated! ✅",
-          `Your full payment of ${
-            currency || "TZS"
-          } ${amount} has been recorded. Your account is now active!`,
+          `Your full payment of ${currency || "TZS"} ${amount} has been recorded. Your account is now active!`,
           "success",
         );
+
+        // 🆕 SEND CONGRATULATIONS SMS IN SWAHILI
+        if (user.phoneNumber && smsService) {
+          try {
+            const smsMessage = `Hongera ${userName}! Malipo yako ya ${
+              currency || "TZS"
+            } ${amount.toLocaleString()} yametimiwa. Akaunti yako sasa ni hai. Karibu ECONNECT! 🎉`;
+
+            const smsResult = await smsService.sendSMS(
+              user.phoneNumber,
+              smsMessage,
+              "payment_success",
+            );
+
+            if (smsResult.success) {
+              console.log(`📱 Congratulations SMS sent to ${user.phoneNumber}`);
+
+              await SMSLog.create({
+                userId,
+                phone: user.phoneNumber,
+                message: smsMessage,
+                type: "payment_success",
+                status: "sent",
+                messageId: smsResult.messageId,
+                reference: `payment_congrats_${userId}`,
+              });
+            }
+          } catch (smsError) {
+            console.error(
+              `⚠️ SMS failed for ${user.phoneNumber}:`,
+              smsError.message,
+            );
+          }
+        }
       } else if (userPaymentStatus === "partial_paid") {
         // Partial payment notification
         const remaining = actualTotalRequired - newTotal;
@@ -26695,7 +26939,6 @@ app.patch(
       if (status === "verified") {
         payment.verifiedBy = req.user.id;
         payment.verifiedAt = new Date();
-
         // Update user payment status
         const user = await User.findById(payment.userId._id);
         if (user) {
@@ -26720,7 +26963,7 @@ app.patch(
             user.paymentStatus = "paid";
             user.isActive = true;
           } else if (totalPaid > 0) {
-            user.accountStatus = "active"; // ✅ Partial payment activates user
+            user.accountStatus = "active";
             user.paymentStatus = "partial_paid";
             user.isActive = true;
           }
@@ -26732,6 +26975,45 @@ app.patch(
           console.log(
             `✅ User ${user.username} updated: ${user.accountStatus} + ${user.paymentStatus}`,
           );
+
+          // ✅ FIXED: SEND CONGRATULATIONS SMS IN SWAHILI FOR FULL PAYMENT
+          if (user.paymentStatus === "paid" && user.phoneNumber && smsService) {
+            try {
+              const userName =
+                `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
+                user.username;
+              const smsMessage = `Hongera ${userName}! Malipo yako ya ${
+                payment.currency || "TZS"
+              } ${payment.amount.toLocaleString()} yametimiwa kikamilifu. Akaunti yako sasa ni hai. Karibu ECONNECT! 🎉`;
+
+              const smsResult = await smsService.sendSMS(
+                user.phoneNumber,
+                smsMessage,
+                "payment_success",
+              );
+
+              if (smsResult.success) {
+                console.log(
+                  `📱 Congratulations SMS sent to ${user.phoneNumber}`,
+                );
+
+                await SMSLog.create({
+                  userId: user._id,
+                  phone: user.phoneNumber,
+                  message: smsMessage,
+                  type: "payment_success",
+                  status: "sent",
+                  messageId: smsResult.messageId,
+                  reference: `payment_verified_congrats_${user._id}`,
+                });
+              }
+            } catch (smsError) {
+              console.error(
+                `⚠️ SMS failed for ${user.phoneNumber}:`,
+                smsError.message,
+              );
+            }
+          }
         }
 
         // Update invoice if exists
@@ -27680,6 +27962,353 @@ if (process.env.NODE_ENV === "production") {
 
   console.log("✅ Overdue warning checker scheduled (daily at 9 AM)");
 }
+
+if (process.env.NODE_ENV === "production") {
+  // ============================================
+  // ✅ MONTHLY BILLING - Runs on 1st of every month at 1 AM
+  // ============================================
+  cron.schedule("0 1 1 * *", async () => {
+    console.log("\n💰 ========================================");
+    console.log("💰  RUNNING MONTHLY BILLING SERVICE");
+    console.log("💰 ========================================\n");
+
+    const startTime = new Date();
+    console.log(`🕐 Started at: ${startTime.toISOString()}`);
+
+    try {
+      // Execute monthly billing service
+      const result = await monthlyBillingService.processMonthlyBilling();
+
+      const endTime = new Date();
+      const duration = ((endTime - startTime) / 1000).toFixed(2);
+
+      console.log("\n✅ ========================================");
+      console.log("✅  MONTHLY BILLING COMPLETE");
+      console.log("✅ ========================================");
+      console.log(`📊 Duration: ${duration} seconds`);
+      console.log(`📊 Total Processed: ${result.totalProcessed}`);
+      console.log(`✅ Success: ${result.successCount}`);
+      console.log(`❌ Failures: ${result.failureCount}`);
+      console.log(`⏭️  Skipped: ${result.skippedCount}`);
+      console.log(
+        `💰 Total Amount: TZS ${result.totalAmount.toLocaleString()}`,
+      );
+      console.log("========================================\n");
+
+      // ✅ Notify super admins of completion
+      try {
+        const superAdmins = await User.find({ role: "super_admin" }).distinct(
+          "_id",
+        );
+
+        const summary =
+          `Monthly Billing Complete (${new Date().toLocaleDateString()}):\n` +
+          `✅ Processed: ${result.totalProcessed} subscriptions\n` +
+          `✅ Success: ${result.successCount}\n` +
+          `❌ Failures: ${result.failureCount}\n` +
+          `⏭️  Skipped: ${result.skippedCount}\n` +
+          `💰 Total Billed: TZS ${result.totalAmount.toLocaleString()}\n` +
+          `⏱️  Duration: ${duration}s`;
+
+        await Promise.all(
+          superAdmins.map((adminId) =>
+            createNotification(
+              adminId,
+              result.failureCount > 0
+                ? "Monthly Billing Completed with Errors ⚠️"
+                : "Monthly Billing Completed Successfully ✅",
+              summary,
+              result.failureCount > 0 ? "warning" : "success",
+              "/admin/analytics",
+            ),
+          ),
+        );
+
+        console.log(
+          `🔔 Notified ${superAdmins.length} super admin(s) of completion`,
+        );
+      } catch (notifError) {
+        console.error("❌ Failed to notify super admins:", notifError);
+      }
+
+      // ✅ Log activity for audit trail
+      await ActivityLog.create({
+        userId: null, // System activity
+        action: "MONTHLY_BILLING_PROCESSED",
+        description: `Monthly billing processed for ${result.successCount} subscriptions`,
+        metadata: {
+          totalProcessed: result.totalProcessed,
+          successCount: result.successCount,
+          failureCount: result.failureCount,
+          skippedCount: result.skippedCount,
+          totalAmount: result.totalAmount,
+          duration: duration,
+          executionDate: startTime,
+          students: result.students || {},
+          entrepreneurs: result.entrepreneurs || {},
+          failures: result.failures || [],
+        },
+        ipAddress: "system",
+        userAgent: "cron-job-monthly-billing",
+      });
+
+      console.log("✅ Activity logged for audit trail\n");
+
+      // ✅ If there are failures, create a detailed report
+      if (
+        result.failureCount > 0 &&
+        result.failures &&
+        result.failures.length > 0
+      ) {
+        console.log("\n⚠️  FAILURES DETECTED - Creating detailed report...");
+
+        // Group failures by reason
+        const failuresByReason = {};
+        result.failures.forEach((failure) => {
+          const reason = failure.reason || "Unknown";
+          if (!failuresByReason[reason]) {
+            failuresByReason[reason] = [];
+          }
+          failuresByReason[reason].push(failure);
+        });
+
+        console.log("\n📋 FAILURE BREAKDOWN:");
+        Object.entries(failuresByReason).forEach(([reason, failures]) => {
+          console.log(`   ❌ ${reason}: ${failures.length} users`);
+        });
+
+        // Notify super admins with detailed failure list
+        try {
+          const superAdmins = await User.find({ role: "super_admin" }).distinct(
+            "_id",
+          );
+
+          let failureDetails = "Monthly Billing Failures:\n\n";
+          Object.entries(failuresByReason).forEach(([reason, failures]) => {
+            failureDetails += `${reason} (${failures.length}):\n`;
+            failures.slice(0, 5).forEach((f) => {
+              failureDetails += `- ${f.userName || f.userId}\n`;
+            });
+            if (failures.length > 5) {
+              failureDetails += `... and ${failures.length - 5} more\n`;
+            }
+            failureDetails += "\n";
+          });
+
+          await Promise.all(
+            superAdmins.map((adminId) =>
+              createNotification(
+                adminId,
+                `Monthly Billing - ${result.failureCount} Failures Require Attention ⚠️`,
+                failureDetails,
+                "error",
+                "/admin/failed-jobs",
+              ),
+            ),
+          );
+        } catch (notifError) {
+          console.error("❌ Failed to send failure notifications:", notifError);
+        }
+      }
+    } catch (error) {
+      console.error("\n❌ ========================================");
+      console.error("❌  MONTHLY BILLING FAILED");
+      console.error("❌ ========================================");
+      console.error("❌ Error:", error.message);
+      console.error("❌ Stack:", error.stack);
+      console.error("========================================\n");
+
+      // ✅ Notify SuperAdmin of critical failure
+      try {
+        const superAdmins = await User.find({ role: "super_admin" }).distinct(
+          "_id",
+        );
+
+        const errorMessage =
+          `CRITICAL: Monthly Billing Failed!\n\n` +
+          `Error: ${error.message}\n` +
+          `Time: ${new Date().toISOString()}\n\n` +
+          `Immediate action required. Please check logs and retry manually if needed.`;
+
+        await Promise.all(
+          superAdmins.map((adminId) =>
+            createNotification(
+              adminId,
+              "🚨 Monthly Billing System Failure",
+              errorMessage,
+              "error",
+              "/admin/analytics",
+            ),
+          ),
+        );
+
+        console.log("🔔 Critical error notification sent to super admins");
+      } catch (notifError) {
+        console.error("❌ Failed to send error notification:", notifError);
+      }
+
+      // ✅ Log critical error
+      try {
+        await ActivityLog.create({
+          userId: null,
+          action: "MONTHLY_BILLING_FAILED",
+          description: `Monthly billing failed: ${error.message}`,
+          metadata: {
+            error: error.message,
+            stack: error.stack,
+            executionDate: startTime,
+          },
+          ipAddress: "system",
+          userAgent: "cron-job-monthly-billing",
+        });
+      } catch (logError) {
+        console.error("❌ Failed to log error:", logError);
+      }
+
+      // ✅ Create failed job record for retry
+      try {
+        await FailedJob.create({
+          jobType: "monthly_billing",
+          jobData: {
+            scheduledDate: startTime,
+            month: startTime.getMonth() + 1,
+            year: startTime.getFullYear(),
+          },
+          error: error.message,
+          stackTrace: error.stack,
+          attemptCount: 1,
+          maxRetries: 3,
+          nextRetryAt: new Date(Date.now() + 60 * 60 * 1000), // Retry in 1 hour
+          status: "pending",
+        });
+
+        console.log("📝 Failed job record created for retry");
+      } catch (failedJobError) {
+        console.error("❌ Failed to create failed job record:", failedJobError);
+      }
+    }
+  });
+
+  console.log(
+    "✅ Monthly billing cron job scheduled (1st of every month at 1 AM)",
+  );
+
+  // ============================================
+  // ✅ OPTIONAL: MONTHLY BILLING REMINDER
+  // Runs on the 25th of every month at 10 AM
+  // Reminds users with monthly subscriptions about upcoming billing
+  // ============================================
+  cron.schedule("0 10 25 * *", async () => {
+    console.log("\n📧 Running monthly billing reminder (upcoming charges)...");
+
+    try {
+      const today = new Date();
+      const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+
+      // Find users with monthly subscriptions
+      const monthlyUsers = await User.find({
+        registration_type: { $in: ["premier", "diamond", "gold", "platinum"] },
+        accountStatus: "active",
+        paymentStatus: { $in: ["paid", "partial_paid"] },
+      }).select(
+        "_id firstName lastName username phoneNumber registration_type role",
+      );
+
+      console.log(
+        `📊 Found ${monthlyUsers.length} users with monthly subscriptions`,
+      );
+
+      let remindersSent = 0;
+      const errors = [];
+
+      for (const user of monthlyUsers) {
+        try {
+          const userName =
+            `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
+            user.username;
+
+          // Get monthly fee amount
+          let monthlyFee = 0;
+          if (user.role === "student") {
+            if (user.registration_type === "premier") {
+              monthlyFee = 70000;
+            } else if (user.registration_type === "diamond") {
+              monthlyFee = 55000;
+            }
+          } else if (user.role === "entrepreneur") {
+            const packagePricing = getEntrepreneurMonthlyFee(
+              user.registration_type,
+            );
+            monthlyFee = packagePricing || 0;
+          }
+
+          if (monthlyFee === 0) {
+            console.log(`⏭️  Skipping ${userName} - no monthly fee`);
+            continue;
+          }
+
+          // Send reminder notification
+          await createNotification(
+            user._id,
+            "Monthly Subscription Reminder 📅",
+            `Your monthly subscription of TZS ${monthlyFee.toLocaleString()} will be billed on ${nextMonth.toLocaleDateString()}. Please ensure your account is in good standing.`,
+            "info",
+            "/payments",
+          );
+
+          remindersSent++;
+          console.log(
+            `📧 Reminder sent to ${userName} (TZS ${monthlyFee.toLocaleString()})`,
+          );
+
+          // Optional: Send SMS reminder
+          if (user.phoneNumber && smsService) {
+            try {
+              const smsMessage = `Hello ${userName}! Your ECONNECT monthly subscription (TZS ${monthlyFee.toLocaleString()}) will be billed on ${nextMonth.toLocaleDateString()}. Thank you!`;
+
+              await smsService.sendSMS(
+                user.phoneNumber,
+                smsMessage,
+                "billing_reminder",
+              );
+
+              console.log(`   📱 SMS sent to ${user.phoneNumber}`);
+            } catch (smsError) {
+              console.error(
+                `   ⚠️  SMS failed for ${user.phoneNumber}:`,
+                smsError.message,
+              );
+            }
+          }
+        } catch (userError) {
+          console.error(`❌ Error reminding user ${user._id}:`, userError);
+          errors.push({
+            userId: user._id,
+            error: userError.message,
+          });
+        }
+      }
+
+      console.log(
+        `\n✅ Monthly billing reminders complete: ${remindersSent} sent`,
+      );
+      if (errors.length > 0) {
+        console.log(`⚠️  Errors: ${errors.length}`);
+      }
+    } catch (error) {
+      console.error("❌ Monthly billing reminder check failed:", error);
+    }
+  });
+
+  console.log(
+    "✅ Monthly billing reminder scheduled (25th of every month at 10 AM)",
+  );
+} else {
+  console.log(
+    "ℹ️  Monthly billing cron jobs disabled (not in production environment)",
+  );
+}
+
 // Start server
 server.listen(PORT, () => {
   console.log("");

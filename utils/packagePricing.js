@@ -2,7 +2,8 @@
 // PACKAGE PRICING - BACKEND VERSION
 // ==========================================
 // ✅ Centralized pricing for students and entrepreneurs
-// ✅ UPDATED: 2026-01-19 to match frontend exactly
+// ✅ UPDATED: 2026-01-26 - Added monthly billing functions
+// ✅ Single source of truth for ALL fees (registration + monthly)
 // ==========================================
 
 /**
@@ -23,14 +24,34 @@ const CTM_CLUB_FEES = {
 
 /**
  * Student Package Pricing
- * Backend registration fees: { normal: 15000, premier: 70000, silver: 49000, diamond: 55000 }
+ * Includes both registration fees and monthly fees (where applicable)
  */
 const STUDENT_PACKAGES = {
-  normal: 15000,           // Normal registration (default)
-  'ctm-club': 15000,       // CTM Club (variable: 8000 or 15000 depending on institution)
-  premier: 70000,          // Premier registration (monthly billing)
-  silver: 49000,           // Silver registration (one-time)
-  diamond: 55000,          // Diamond registration (monthly billing)
+  normal: {
+    registrationFee: 15000,
+    monthlyFee: null, // One-time only
+    description: 'Normal Registration',
+  },
+  'ctm-club': {
+    registrationFee: 15000, // Variable: 8000 or 15000 depending on institution
+    monthlyFee: null, // One-time only
+    description: 'CTM Club Membership',
+  },
+  premier: {
+    registrationFee: 70000, // First month included
+    monthlyFee: 70000, // Recurring monthly
+    description: 'Premier CTM Membership',
+  },
+  silver: {
+    registrationFee: 49000,
+    monthlyFee: null, // One-time only
+    description: 'Silver Registration',
+  },
+  diamond: {
+    registrationFee: 55000, // First month included
+    monthlyFee: 55000, // Recurring monthly
+    description: 'Diamond Registration',
+  },
 };
 
 /**
@@ -43,23 +64,30 @@ const STUDENT_PACKAGES = {
 const ENTREPRENEUR_PACKAGES = {
   silver: {
     name: 'Silver Package',
-    registrationFee: 30000,   // ✅ One-time registration
-    monthlyFee: 50000,        // ✅ Monthly fee
-    totalFirstMonth: 80000,   // Registration + first month
+    registrationFee: 30000, // ✅ One-time registration
+    monthlyFee: 50000, // ✅ Monthly recurring fee
+    totalFirstMonth: 80000, // Registration + first month
+    description: 'Silver Package - Monthly Subscription',
   },
   gold: {
     name: 'Gold Package',
-    registrationFee: 100000,  // ✅ One-time registration
-    monthlyFee: 150000,       // ✅ Monthly fee
-    totalFirstMonth: 250000,  // Registration + first month
+    registrationFee: 100000, // ✅ One-time registration
+    monthlyFee: 150000, // ✅ Monthly recurring fee
+    totalFirstMonth: 250000, // Registration + first month
+    description: 'Gold Package - Monthly Subscription',
   },
   platinum: {
     name: 'Platinum Package',
-    registrationFee: 200000,  // ✅ One-time registration
-    monthlyFee: 300000,       // ✅ Monthly fee
-    totalFirstMonth: 500000,  // Registration + first month
+    registrationFee: 200000, // ✅ One-time registration
+    monthlyFee: 300000, // ✅ Monthly recurring fee
+    totalFirstMonth: 500000, // Registration + first month
+    description: 'Platinum Package - Monthly Subscription',
   },
 };
+
+// ==========================================
+// REGISTRATION FEE FUNCTIONS
+// ==========================================
 
 /**
  * Get CTM Club fees based on institution type
@@ -90,8 +118,18 @@ function getStudentRegistrationFee(registrationType, institutionType = 'governme
     return getCtmClubFees(institutionType).total;
   }
 
-  // Return from STUDENT_PACKAGES or default
-  return STUDENT_PACKAGES[normalizedType] || 15000;
+  // Get from STUDENT_PACKAGES
+  const packageData = STUDENT_PACKAGES[normalizedType];
+  if (packageData && packageData.registrationFee) {
+    return packageData.registrationFee;
+  }
+
+  // Fallback to old structure (backward compatibility)
+  if (normalizedType === 'premier') return 70000;
+  if (normalizedType === 'silver') return 49000;
+  if (normalizedType === 'diamond') return 55000;
+
+  return 15000; // Default
 }
 
 /**
@@ -114,13 +152,117 @@ function getEntrepreneurPackage(packageType) {
  */
 function getEntrepreneurRegistrationFee(packageType, includeFirstMonth = true) {
   const pkg = getEntrepreneurPackage(packageType);
-  
+
   if (includeFirstMonth) {
     return pkg.totalFirstMonth;
   }
-  
+
   return pkg.registrationFee;
 }
+
+// ==========================================
+// ✅ NEW: MONTHLY BILLING FUNCTIONS
+// ==========================================
+
+/**
+ * Get monthly subscription fee for entrepreneurs
+ * @param {string} packageType - 'silver', 'gold', or 'platinum'
+ * @returns {number|null} Monthly fee amount or null if not monthly
+ */
+function getEntrepreneurMonthlyFee(packageType) {
+  if (!packageType) return null;
+
+  const normalizedType = packageType.toLowerCase();
+  const pkg = ENTREPRENEUR_PACKAGES[normalizedType];
+
+  return pkg ? pkg.monthlyFee : null;
+}
+
+/**
+ * Get monthly subscription fee for students
+ * @param {string} registrationType - 'premier' or 'diamond'
+ * @returns {number|null} Monthly fee or null if not monthly
+ */
+function getStudentMonthlyFee(registrationType) {
+  if (!registrationType) return null;
+
+  const normalizedType = registrationType
+    .toLowerCase()
+    .replace('_registration', '')
+    .replace('-', '_');
+
+  const packageData = STUDENT_PACKAGES[normalizedType];
+
+  // Return monthly fee if it exists
+  if (packageData && packageData.monthlyFee) {
+    return packageData.monthlyFee;
+  }
+
+  // Backward compatibility: hardcoded values
+  if (normalizedType === 'premier') return 70000;
+  if (normalizedType === 'diamond') return 55000;
+
+  return null; // Normal and Silver are one-time only
+}
+
+/**
+ * Get monthly fee for any user type
+ * ✅ PRIMARY FUNCTION for monthly billing service
+ * @param {string} packageType - Package/registration type
+ * @param {string} role - User role (student, entrepreneur, nonstudent)
+ * @returns {number|null} Monthly fee or null if not applicable
+ */
+function getMonthlyFee(packageType, role) {
+  if (!packageType || !role) return null;
+
+  if (role === 'student') {
+    return getStudentMonthlyFee(packageType);
+  } else if (role === 'entrepreneur' || role === 'nonstudent') {
+    return getEntrepreneurMonthlyFee(packageType);
+  }
+
+  return null; // Other roles don't have monthly fees
+}
+
+/**
+ * Check if a package has monthly billing
+ * @param {string} packageType - Package/registration type
+ * @returns {boolean} True if monthly billing applies
+ */
+function hasMonthlyBilling(packageType) {
+  if (!packageType) return false;
+
+  const monthlyPackages = ['premier', 'diamond', 'silver', 'gold', 'platinum'];
+  const normalizedType = packageType.toLowerCase().replace('_registration', '');
+
+  return monthlyPackages.includes(normalizedType);
+}
+
+/**
+ * Get package description
+ * @param {string} packageType - Package/registration type
+ * @param {string} role - User role
+ * @returns {string} Package description
+ */
+function getPackageDescription(packageType, role) {
+  if (!packageType) return 'Unknown Package';
+
+  const normalizedType = packageType.toLowerCase().replace('_registration', '');
+
+  if (role === 'student') {
+    const pkg = STUDENT_PACKAGES[normalizedType];
+    return pkg ? pkg.description : 'Student Package';
+  } else if (role === 'entrepreneur' || role === 'nonstudent') {
+    const pkg = ENTREPRENEUR_PACKAGES[normalizedType];
+    return pkg ? pkg.description : 'Entrepreneur Package';
+  }
+
+  return 'Standard Package';
+}
+
+// ==========================================
+// UTILITY FUNCTIONS
+// ==========================================
 
 /**
  * Calculate required total based on user role and registration type
@@ -137,7 +279,7 @@ function getRequiredTotal(role, registrationType, institutionType = 'government'
   } else if (role === 'student') {
     return getStudentRegistrationFee(registrationType, institutionType);
   }
-  
+
   // Default for other roles (teachers, staff, etc.)
   return 0;
 }
@@ -151,6 +293,30 @@ function formatTZS(amount) {
   return `TZS ${amount.toLocaleString()}`;
 }
 
+/**
+ * Get all package details for a user
+ * ✅ Comprehensive package information
+ * @param {string} packageType - Package/registration type
+ * @param {string} role - User role
+ * @param {string} institutionType - Institution type (for students)
+ * @returns {object} Complete package details
+ */
+function getPackageDetails(packageType, role, institutionType = 'government') {
+  const normalizedType = packageType ? packageType.toLowerCase().replace('_registration', '') : 'normal';
+
+  return {
+    packageType: normalizedType,
+    role,
+    registrationFee: role === 'student' 
+      ? getStudentRegistrationFee(packageType, institutionType)
+      : getEntrepreneurRegistrationFee(packageType, false),
+    monthlyFee: getMonthlyFee(packageType, role),
+    hasMonthlyBilling: hasMonthlyBilling(packageType),
+    description: getPackageDescription(packageType, role),
+    totalRequired: getRequiredTotal(role, packageType, institutionType),
+  };
+}
+
 // ==========================================
 // EXPORTS
 // ==========================================
@@ -160,12 +326,22 @@ module.exports = {
   CTM_CLUB_FEES,
   STUDENT_PACKAGES,
   ENTREPRENEUR_PACKAGES,
-  
-  // Functions
+
+  // Registration Fee Functions
   getCtmClubFees,
   getStudentRegistrationFee,
   getEntrepreneurPackage,
   getEntrepreneurRegistrationFee,
   getRequiredTotal,
+
+  // ✅ NEW: Monthly Billing Functions
+  getEntrepreneurMonthlyFee,
+  getStudentMonthlyFee,
+  getMonthlyFee,
+  hasMonthlyBilling,
+  getPackageDescription,
+  getPackageDetails,
+
+  // Utility Functions
   formatTZS,
 };
