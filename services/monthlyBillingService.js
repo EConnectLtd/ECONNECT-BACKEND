@@ -12,7 +12,17 @@
 const mongoose = require('mongoose');
 // ✅ REMOVED: Top-level model imports moved to lazy loading
 // Models will be loaded when needed inside functions
-const { createNotification } = require('./notificationService');
+
+// ✅ OPTIONAL: Make notificationService optional to prevent crash
+let createNotification;
+try {
+  const notificationService = require('./notificationService');
+  createNotification = notificationService.createNotification;
+} catch (error) {
+  console.warn('⚠️  notificationService not found - in-app notifications will be disabled');
+  createNotification = null;
+}
+
 const smsService = require('./smsService');
 
 // ✅ Import from single source of truth
@@ -306,19 +316,21 @@ async function processMonthlyBilling(options = {}) {
 
         if (sendNotifications && !dryRun) {
           // In-app notification
-          try {
-            await createNotification(
-              user._id,
-              `Monthly Payment Due - ${billingMonthName} 💳`,
-              `Your monthly ${packageType.toUpperCase()} subscription fee of TZS ${billingConfig.amount.toLocaleString()} is now due. Please pay by ${dueDate.toLocaleDateString()} to avoid service interruption.`,
-              'info',
-              `/invoices/${invoice._id}`,
-            );
+          if (createNotification) {
+            try {
+              await createNotification(
+                user._id,
+                `Monthly Payment Due - ${billingMonthName} 💳`,
+                `Your monthly ${packageType.toUpperCase()} subscription fee of TZS ${billingConfig.amount.toLocaleString()} is now due. Please pay by ${dueDate.toLocaleDateString()} to avoid service interruption.`,
+                'info',
+                `/invoices/${invoice._id}`,
+              );
 
-            results.stats.notificationsSent++;
-            console.log(`   📧 In-app notification sent`);
-          } catch (notifError) {
-            console.error(`   ⚠️  Notification failed:`, notifError.message);
+              results.stats.notificationsSent++;
+              console.log(`   📧 In-app notification sent`);
+            } catch (notifError) {
+              console.error(`   ⚠️  Notification failed:`, notifError.message);
+            }
           }
 
           // SMS notification
