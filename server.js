@@ -3696,6 +3696,8 @@ app.post(
         hasTalents: !!student?.talents,
       });
 
+      let smsResult = { success: false, error: "SMS not sent" };
+
       // Validation
       if (!phone || !names || !names.first || !names.last || !role) {
         return res.status(400).json({
@@ -3703,7 +3705,6 @@ app.post(
           error: "Phone, names (first & last), and role are required",
         });
       }
-
       // Check if user already exists
       const existingUser = await User.findOne({
         $or: [
@@ -3912,9 +3913,9 @@ app.post(
         isActive: user.isActive,
       });
 
-      // ============================================================================
-      // ✅ SEND WELCOME SMS WITH CONTACT NUMBER 0758061582
-      // ============================================================================
+      // ============================================
+      // 🎯 SEND WELCOME SMS BASED ON ROLE
+      // ============================================
 
       const userName = `${names.first} ${names.last}`;
 
@@ -3923,7 +3924,7 @@ app.post(
         // 1️⃣ STUDENT - Send welcome SMS
         // ============================================================================
         if (role === "student") {
-          const smsResult = await smsService.sendStudentWelcomeSMS(
+          smsResult = await smsService.sendStudentWelcomeSMS(
             phone,
             userName,
             user._id.toString(),
@@ -3958,7 +3959,7 @@ app.post(
         // 2️⃣ TEACHER - Send welcome SMS
         // ============================================================================
         if (role === "teacher") {
-          const smsResult = await smsService.sendTeacherWelcomeSMS(
+          smsResult = await smsService.sendTeacherWelcomeSMS(
             phone,
             userName,
             user._id.toString(),
@@ -3990,16 +3991,16 @@ app.post(
         }
 
         // ============================================================================
-        // 3️⃣ ENTREPRENEUR - Send welcome SMS (FIXED!)
+        // 3️⃣ ENTREPRENEUR - Send welcome SMS
         // ============================================================================
         if (role === "entrepreneur") {
-          const smsResult = await smsService.sendEntrepreneurWelcomeSMS(
+          smsResult = await smsService.sendEntrepreneurWelcomeSMS(
             phone,
             userName,
             user._id.toString(),
             entrepreneur?.registration_type ||
               user.registration_type ||
-              "silver", // ✅ Added comma + fallback
+              "silver",
           );
 
           if (smsResult.success) {
@@ -4029,11 +4030,12 @@ app.post(
             });
           }
         }
+
         // ============================================================================
         // 4️⃣ NON-STUDENT - Send welcome SMS
         // ============================================================================
         if (role === "nonstudent") {
-          const smsResult = await smsService.sendNonStudentWelcomeSMS(
+          smsResult = await smsService.sendNonStudentWelcomeSMS(
             phone,
             userName,
             user._id.toString(),
@@ -4079,7 +4081,7 @@ app.post(
         ) {
           const smsMessage = `Karibu ECONNECT, ${userName}!\n\nUmefanikiwa kujisajili. Akaunti yako inasubiri idhini.\n\nUtapokea ujumbe baada ya kuidhinishwa.\n\nUna maswali? Piga simu: 0758061582\n\nAsante!`;
 
-          const smsResult = await smsService.sendSMS(
+          smsResult = await smsService.sendSMS(
             phone,
             smsMessage,
             `${role}_welcome_${user._id}`,
@@ -4111,8 +4113,8 @@ app.post(
       } catch (smsError) {
         console.error("❌ SMS sending error:", smsError);
         // Don't fail registration if SMS fails - just log it
+        smsResult = { success: false, error: smsError.message };
       }
-
       // ============================================================================
       // 🎯 SAVE TALENTS TO StudentTalent COLLECTION - FIXED WITH AUTO-CREATE
       // ============================================================================
