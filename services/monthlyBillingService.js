@@ -6,13 +6,12 @@
 // - Diamond Non-Students (55,000 TZS/month)
 // - Silver/Gold/Platinum Entrepreneurs (50k/150k/300k per month)
 // ✅ UPDATED: 2026-01-26 - Now imports from packagePricing.js
+// ✅ FIXED: 2026-01-26 - Lazy load models to prevent MissingSchemaError
 // ============================================
 
 const mongoose = require('mongoose');
-const User = mongoose.model('User');
-const Invoice = mongoose.model('Invoice');
-const PaymentReminder = mongoose.model('PaymentReminder');
-const ActivityLog = mongoose.model('ActivityLog');
+// ✅ REMOVED: Top-level model imports moved to lazy loading
+// Models will be loaded when needed inside functions
 const { createNotification } = require('./notificationService');
 const smsService = require('./smsService');
 
@@ -108,6 +107,12 @@ function getBillingConfig(packageType, role) {
  */
 async function processMonthlyBilling(options = {}) {
   const { dryRun = false, sendNotifications = true, billingMonth = null } = options;
+
+  // ✅ LAZY LOAD MODELS - Prevents MissingSchemaError
+  const User = mongoose.model('User');
+  const Invoice = mongoose.model('Invoice');
+  const PaymentReminder = mongoose.model('PaymentReminder');
+  const ActivityLog = mongoose.model('ActivityLog');
 
   console.log('\n💳 ========================================');
   console.log('💳  MONTHLY BILLING SERVICE');
