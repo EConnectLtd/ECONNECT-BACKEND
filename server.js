@@ -20179,241 +20179,6 @@ app.post(
 );
 
 // ============================================
-// BULK RESEND PASSWORD (Multiple users at once)
-// ============================================
-app.post(
-  "/api/superadmin/users/bulk-resend-password",
-  authenticateToken,
-  authorizeRoles("super_admin"),
-  async (req, res) => {
-    try {
-      const { userIds } = req.body;
-
-      console.log(
-        `🔑 Bulk password resend request for ${userIds?.length || 0} users`,
-      );
-
-      // Validate input
-      if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: "User IDs array is required",
-        });
-      }
-
-      // Limit bulk operations
-      if (userIds.length > 50) {
-        return res.status(400).json({
-          success: false,
-          error: "Maximum 50 users can receive password resets at once",
-        });
-      }
-
-      // Results tracking
-      const results = {
-        success: [],
-        failed: [],
-        skipped: [],
-        stats: {
-          total: userIds.length,
-          sent: 0,
-          failed: 0,
-          skipped: 0,
-        },
-      };
-
-      // Process each user
-      for (const userId of userIds) {
-        try {
-          console.log(`\n📝 Processing password reset for: ${userId}`);
-
-          // Validate ObjectId
-          if (!mongoose.Types.ObjectId.isValid(userId)) {
-            results.failed.push({
-              userId,
-              error: "Invalid user ID format",
-            });
-            results.stats.failed++;
-            continue;
-          }
-
-          // Find user
-          const user = await User.findById(userId);
-
-          if (!user) {
-            results.failed.push({
-              userId,
-              error: "User not found",
-            });
-            results.stats.failed++;
-            continue;
-          }
-
-          // Check if user has phone number
-          if (!user.phoneNumber) {
-            const userName =
-              `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
-              user.username;
-            results.skipped.push({
-              userId,
-              username: user.username,
-              name: userName,
-              reason: "No phone number on file",
-            });
-            results.stats.skipped++;
-            console.log(`⏭️ Skipped ${userName} - no phone number`);
-            continue;
-          }
-
-          // Generate new password
-          const newPassword = generateRandomPassword();
-          const hashedPassword = await hashPassword(newPassword);
-
-          // Update user password
-          user.password = hashedPassword;
-          user.updatedAt = new Date();
-          await user.save();
-
-          console.log(`✅ Generated new password for: ${user.username}`);
-
-          // Send SMS with password
-          const userName =
-            `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
-            user.username;
-          let smsResult = { success: false, error: "Not sent" };
-
-          try {
-            smsResult = await smsService.sendPasswordSMS(
-              user.phoneNumber,
-              newPassword,
-              userName,
-              user._id.toString(),
-            );
-
-            // Log SMS result
-            if (smsResult.success) {
-              console.log(`📱 Password SMS sent to ${user.phoneNumber}`);
-
-              await SMSLog.create({
-                userId: user._id,
-                phone: user.phoneNumber,
-                message: "Bulk password reset by admin",
-                type: "password",
-                status: "sent",
-                messageId: smsResult.messageId,
-                reference: `bulk_pwd_reset_${user._id}`,
-              });
-            } else {
-              console.warn(
-                `⚠️ SMS failed for ${user.phoneNumber}: ${smsResult.error}`,
-              );
-
-              await SMSLog.create({
-                userId: user._id,
-                phone: user.phoneNumber,
-                message: "Bulk password reset SMS (failed)",
-                type: "password",
-                status: "failed",
-                errorMessage: smsResult.error,
-                reference: `bulk_pwd_reset_${user._id}`,
-              });
-            }
-          } catch (smsError) {
-            console.error(`❌ SMS error for ${user.phoneNumber}:`, smsError);
-            smsResult = { success: false, error: smsError.message };
-          }
-
-          // Create notification
-          try {
-            await createNotification(
-              user._id,
-              "Password Reset",
-              `Your password has been reset by an administrator. Check your SMS at ${user.phoneNumber} for your new password.`,
-              "info",
-            );
-          } catch (notifError) {
-            console.error(`⚠️ Notification error:`, notifError);
-          }
-
-          // Add to success results
-          results.success.push({
-            userId: user._id.toString(),
-            username: user.username,
-            name: userName,
-            role: user.role,
-            phoneNumber: user.phoneNumber,
-            email: user.email,
-            smsSent: smsResult.success,
-            smsError: smsResult.success ? null : smsResult.error,
-          });
-          results.stats.sent++;
-
-          console.log(`✅ Password reset for ${userName}`);
-        } catch (userError) {
-          console.error(`❌ Error processing user ${userId}:`, userError);
-          results.failed.push({
-            userId,
-            error: userError.message,
-          });
-          results.stats.failed++;
-        }
-      }
-
-      // Log bulk activity
-      await logActivity(
-        req.user.id,
-        "BULK_PASSWORD_RESET",
-        `Reset passwords for ${results.stats.sent} users (${results.stats.failed} failed, ${results.stats.skipped} skipped)`,
-        req,
-        {
-          totalRequested: userIds.length,
-          sent: results.stats.sent,
-          failed: results.stats.failed,
-          skipped: results.stats.skipped,
-          successUserIds: results.success.map((u) => u.userId),
-          failedUserIds: results.failed.map((f) => f.userId),
-        },
-      );
-
-      console.log(`\n✅ Bulk password reset complete:`, results.stats);
-
-      // Determine response status
-      const allFailed = results.stats.sent === 0 && results.stats.failed > 0;
-      const partialSuccess = results.stats.sent > 0 && results.stats.failed > 0;
-
-      res.status(allFailed ? 500 : 200).json({
-        success: results.stats.sent > 0,
-        message: allFailed
-          ? "All password resets failed"
-          : partialSuccess
-            ? `Reset ${results.stats.sent} passwords. ${results.stats.failed} failed.`
-            : `Successfully reset ${results.stats.sent} password(s)`,
-        data: results,
-        summary: {
-          total: results.stats.total,
-          sent: results.stats.sent,
-          failed: results.stats.failed,
-          skipped: results.stats.skipped,
-          successRate: `${(
-            (results.stats.sent / results.stats.total) *
-            100
-          ).toFixed(1)}%`,
-        },
-      });
-    } catch (error) {
-      console.error("❌ Bulk password reset error:", error);
-      res.status(500).json({
-        success: false,
-        error: "Bulk password reset failed",
-        ...(process.env.NODE_ENV === "development" && {
-          debug: sanitizeError(error),
-        }),
-      });
-    }
-  },
-);
-
-// ============================================
 // BULK DELETE USERS (Multiple users at once)
 // ============================================
 app.post(
@@ -20719,6 +20484,179 @@ app.post(
       res.status(500).json({
         success: false,
         error: "Bulk deletion failed",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  },
+);
+
+// ============================================
+// ✅ SEND PASSWORD - Simple password generation without status changes
+// POST /api/superadmin/users/:userId/send-password
+// ============================================
+app.post(
+  "/api/superadmin/users/:userId/send-password",
+  authenticateToken,
+  authorizeRoles("super_admin", "national_official", "headmaster"),
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+
+      console.log(`🔑 Send password request for user: ${userId}`);
+
+      // Find user
+      const user = await User.findById(userId);
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          error: "User not found",
+        });
+      }
+
+      // Check if user has phone number
+      if (!user.phoneNumber) {
+        return res.status(400).json({
+          success: false,
+          error: "User does not have a phone number on file",
+        });
+      }
+
+      const userName =
+        `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
+        user.username;
+
+      // ============================================
+      // ✅ GENERATE 6-CHARACTER PASSWORD
+      // ============================================
+      const generateSixCharPassword = () => {
+        const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+        let password = "";
+        for (let i = 0; i < 6; i++) {
+          const randomIndex = crypto.randomInt(0, chars.length);
+          password += chars[randomIndex];
+        }
+        return password;
+      };
+
+      const newPassword = generateSixCharPassword();
+      const hashedPassword = await hashPassword(newPassword);
+
+      console.log(`✅ Generated 6-character password for: ${user.username}`);
+
+      // ============================================
+      // ✅ UPDATE ONLY PASSWORD - NO STATUS CHANGES
+      // ============================================
+      user.password = hashedPassword;
+      user.updatedAt = new Date();
+      await user.save();
+
+      console.log(`✅ Password updated for: ${user.username} - No status changes made`);
+
+      // ============================================
+      // ✅ SEND SMS WITH PASSWORD
+      // ============================================
+      let smsResult = { success: false, error: "Not sent" };
+
+      try {
+        smsResult = await smsService.sendPasswordSMS(
+          user.phoneNumber,
+          newPassword,
+          userName,
+          user._id.toString(),
+        );
+
+        // Log SMS result
+        if (smsResult.success) {
+          console.log(`📱 Password SMS sent to ${user.phoneNumber}`);
+
+          await SMSLog.create({
+            userId: user._id,
+            phone: user.phoneNumber,
+            message: "Password sent by admin",
+            type: "password",
+            status: "sent",
+            messageId: smsResult.messageId,
+            reference: `send_pwd_${user._id}`,
+          });
+        } else {
+          console.error(`❌ Failed to send SMS:`, smsResult.error);
+
+          await SMSLog.create({
+            userId: user._id,
+            phone: user.phoneNumber,
+            message: "Password send SMS (failed)",
+            type: "password",
+            status: "failed",
+            errorMessage: smsResult.error,
+            reference: `send_pwd_${user._id}`,
+          });
+        }
+      } catch (smsError) {
+        console.error(`❌ SMS error for ${user.phoneNumber}:`, smsError);
+        smsResult = { success: false, error: smsError.message };
+      }
+
+      // ============================================
+      // ✅ CREATE NOTIFICATION
+      // ============================================
+      try {
+        await createNotification(
+          user._id,
+          "Password Sent 🔑",
+          `A new password has been sent to your phone number ${user.phoneNumber}. Please check your SMS to login.`,
+          "info",
+        );
+      } catch (notifError) {
+        console.error(`⚠️ Notification error:`, notifError);
+      }
+
+      // ============================================
+      // ✅ LOG ACTIVITY
+      // ============================================
+      await logActivity(
+        req.user.id,
+        "PASSWORD_SENT",
+        `Sent password to ${userName} (${user.username}) - No status changes`,
+        req,
+        {
+          userId: user._id,
+          userRole: user.role,
+          userName,
+          phoneNumber: user.phoneNumber,
+          smsSent: smsResult.success,
+          accountStatus: user.accountStatus, // Log but don't change
+          paymentStatus: user.paymentStatus, // Log but don't change
+          passwordLength: 6,
+        },
+      );
+
+      console.log(`✅ Send password complete for ${user.username}`);
+
+      // ============================================
+      // ✅ RETURN RESPONSE
+      // ============================================
+      res.json({
+        success: true,
+        message: `Password sent successfully to ${user.phoneNumber}.`,
+        data: {
+          userId: user._id,
+          username: user.username,
+          name: userName,
+          phoneNumber: user.phoneNumber,
+          smsSent: smsResult.success,
+          smsError: smsResult.success ? null : smsResult.error,
+          accountStatus: user.accountStatus, // ✅ Status unchanged
+          paymentStatus: user.paymentStatus, // ✅ Status unchanged
+          passwordLength: 6,
+        },
+      });
+    } catch (error) {
+      console.error("❌ Error sending password:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to send password",
         ...(process.env.NODE_ENV === "development" && {
           debug: sanitizeError(error),
         }),
@@ -25525,123 +25463,6 @@ app.post(
   },
 );
 
-// ============================================
-// ✅ RESEND PASSWORD - For active users
-// ============================================
-app.post(
-  "/api/superadmin/users/:userId/resend-password",
-  authenticateToken,
-  authorizeRoles("super_admin"),
-  async (req, res) => {
-    try {
-      const { userId } = req.params;
-
-      console.log(`🔄 Resend password request for user: ${userId}`);
-
-      // Find user
-      const user = await User.findById(userId);
-      if (!user) {
-        return res.status(404).json({
-          success: false,
-          error: "User not found",
-        });
-      }
-
-      // Generate new password
-      const newPassword = generateRandomPassword();
-      const hashedPassword = await hashPassword(newPassword);
-
-      // Update user password
-      user.password = hashedPassword;
-      await user.save();
-
-      console.log(`✅ Generated new password for: ${user.username}`);
-
-      // Send SMS with password
-      const userName =
-        `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
-        user.username;
-      const smsResult = await smsService.sendPasswordSMS(
-        user.phoneNumber,
-        newPassword,
-        userName,
-        user._id.toString(),
-      );
-
-      // Log SMS result
-      if (smsResult.success) {
-        console.log(`📱 Password SMS sent to ${user.phoneNumber}`);
-
-        await SMSLog.create({
-          userId: user._id,
-          phone: user.phoneNumber,
-          message: "Password resent by admin",
-          type: "password",
-          status: "sent",
-          messageId: smsResult.messageId,
-          reference: `pwd_resend_${user._id}`,
-        });
-      } else {
-        console.error(`❌ Failed to send SMS:`, smsResult.error);
-
-        await SMSLog.create({
-          userId: user._id,
-          phone: user.phoneNumber,
-          message: "Password resend SMS (failed)",
-          type: "password",
-          status: "failed",
-          errorMessage: smsResult.error,
-          reference: `pwd_resend_${user._id}`,
-        });
-      }
-
-      // Create notification
-      await createNotification(
-        user._id,
-        "Password Reset",
-        `Your password has been reset by an administrator. Check your SMS at ${user.phoneNumber} for your new password.`,
-        "info",
-      );
-
-      // Log activity
-      await logActivity(
-        req.user.id,
-        "PASSWORD_RESENT",
-        `Resent password to ${userName} (${user.username})`,
-        req,
-        {
-          userId: user._id,
-          userRole: user.role,
-          phoneNumber: user.phoneNumber,
-          smsSent: smsResult.success,
-        },
-      );
-
-      console.log(`✅ Password resend complete for ${user.username}`);
-
-      res.json({
-        success: true,
-        message: `Password reset successfully. New password sent via SMS to ${user.phoneNumber}.`,
-        data: {
-          userId: user._id,
-          username: user.username,
-          name: userName,
-          phoneNumber: user.phoneNumber,
-          smsSent: smsResult.success,
-        },
-      });
-    } catch (error) {
-      console.error("❌ Error resending password:", error);
-      res.status(500).json({
-        success: false,
-        error: "Failed to resend password",
-        ...(process.env.NODE_ENV === "development" && {
-          debug: sanitizeError(error),
-        }),
-      });
-    }
-  },
-);
 
 // ============================================
 // ✅ SEND PAYMENT REMINDER - For users with pending payment
