@@ -18987,16 +18987,48 @@ app.get(
         .populate("regionId", "name code")
         .populate("districtId", "name code");
 
-      // ✅ Enrich with registration_fee_paid
-      const enrichedUsers = await Promise.all(
-        users.map(async (user) => {
-          const userObj = user.toObject();
-          userObj.registration_fee_paid = await calculateRegistrationFeePaid(
-            user._id,
-          );
-          delete userObj.password; // Ensure password is removed
-          return userObj;
-        }),
+      // ============================================
+      // ✅ OPTIMIZED: Fetch all payment totals in ONE query
+      // (Prevents 393 individual log lines)
+      // ============================================
+      console.log(
+        `💰 Enriching ${users.length} users with payment data (optimized)...`,
+      );
+
+      const userIds = users.map((u) => u._id);
+
+      const paymentTotals = await PaymentHistory.aggregate([
+        {
+          $match: {
+            userId: { $in: userIds },
+            status: { $in: ["verified", "approved", "completed"] },
+            transactionType: "registration_fee",
+          },
+        },
+        {
+          $group: {
+            _id: "$userId",
+            totalPaid: { $sum: "$amount" },
+          },
+        },
+      ]);
+
+      // Create lookup map for O(1) access
+      const paymentMap = {};
+      paymentTotals.forEach((p) => {
+        paymentMap[p._id.toString()] = p.totalPaid;
+      });
+
+      // Enrich users with payment data (no async, super fast)
+      const enrichedUsers = users.map((user) => {
+        const userObj = user.toObject();
+        userObj.registration_fee_paid = paymentMap[user._id.toString()] || 0;
+        delete userObj.password; // Ensure password is removed
+        return userObj;
+      });
+
+      console.log(
+        `✅ Payment enrichment complete: ${enrichedUsers.length} users (1 query)`,
       );
 
       // Get total count
@@ -20552,7 +20584,9 @@ app.post(
       user.updatedAt = new Date();
       await user.save();
 
-      console.log(`✅ Password updated for: ${user.username} - No status changes made`);
+      console.log(
+        `✅ Password updated for: ${user.username} - No status changes made`,
+      );
 
       // ============================================
       // ✅ SEND SMS WITH PASSWORD
@@ -20675,86 +20709,90 @@ app.get(
   async (req, res) => {
     try {
       const { userId } = req.params;
-      
-      console.log('🔑 View password request for user:', userId);
-      console.log('👤 Requested by admin:', req.user.email);
+
+      console.log("🔑 View password request for user:", userId);
+      console.log("👤 Requested by admin:", req.user.email);
 
       // Validate userId
       if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
         return res.status(400).json({
           success: false,
-          error: 'Invalid user ID'
+          error: "Invalid user ID",
         });
       }
 
       // Find user in all collections
-      let user = await Student.findById(userId).select('firstName lastName email phoneNumber phone password');
-      let userType = 'student';
+      let user = await Student.findById(userId).select(
+        "firstName lastName email phoneNumber phone password",
+      );
+      let userType = "student";
 
       if (!user) {
-        user = await User.findById(userId).select('firstName lastName names email phoneNumber phone password');
-        userType = 'entrepreneur/staff';
+        user = await User.findById(userId).select(
+          "firstName lastName names email phoneNumber phone password",
+        );
+        userType = "entrepreneur/staff";
       }
 
       if (!user) {
-        console.log('❌ User not found:', userId);
+        console.log("❌ User not found:", userId);
         return res.status(404).json({
           success: false,
-          error: 'User not found'
+          error: "User not found",
         });
       }
 
       // Security check - ensure user has a password
       if (!user.password) {
-        console.log('❌ User has no password:', userId);
+        console.log("❌ User has no password:", userId);
         return res.status(404).json({
           success: false,
-          error: 'User password not found'
+          error: "User password not found",
         });
       }
 
-      const userName = user.firstName 
-        ? `${user.firstName} ${user.lastName}` 
-        : `${user.names?.first || ''} ${user.names?.last || ''}`.trim();
+      const userName = user.firstName
+        ? `${user.firstName} ${user.lastName}`
+        : `${user.names?.first || ""} ${user.names?.last || ""}`.trim();
 
       console.log(`✅ Password retrieved for: ${userName} (${userType})`);
       console.log(`📱 Password: ${user.password}`);
 
       // ✅ CREATE ACTIVITY LOG
       try {
-        const ActivityLog = mongoose.model('ActivityLog');
+        const ActivityLog = mongoose.model("ActivityLog");
         await ActivityLog.create({
           userId: req.user.userId,
           userRole: req.user.role,
-          action: 'view_password',
+          action: "view_password",
           targetUserId: userId,
           targetUserType: userType,
           details: `Viewed password for ${userName}`,
           ipAddress: req.ip,
-          userAgent: req.headers['user-agent'],
-          timestamp: new Date()
+          userAgent: req.headers["user-agent"],
+          timestamp: new Date(),
         });
-        console.log('✅ Activity logged: Password view');
+        console.log("✅ Activity logged: Password view");
       } catch (logError) {
-        console.error('⚠️ Failed to log activity:', logError);
+        console.error("⚠️ Failed to log activity:", logError);
         // Don't fail the request if logging fails
       }
 
       // ✅ CREATE NOTIFICATION FOR ADMIN
       try {
-        const Notification = mongoose.model('Notification');
+        const Notification = mongoose.model("Notification");
         await Notification.create({
           recipientId: req.user.userId,
-          type: 'password_viewed',
-          title: 'Password Viewed',
+          type: "password_viewed",
+          title: "Password Viewed",
           message: `You viewed the password for ${userName}`,
           relatedId: userId,
-          relatedModel: userType === 'student' ? 'Student' : 'User',
-          createdAt: new Date()
+          relatedModel: userType === "student" ? "Student" : "User",
+          createdAt: new Date(),
         });
-        console.log('✅ Notification created for admin');
+        console.log("✅ Notification created for admin");
       } catch (notifError) {
-        console.error('⚠️ Failed to create notification:', notifError);
+        console.error("⚠️ Failed to create notification:", notifError);
         // Don't fail the request if notification fails
       }
 
@@ -20768,22 +20806,20 @@ app.get(
           userEmail: user.email,
           userPhone: user.phoneNumber || user.phone,
           retrievedAt: new Date().toISOString(),
-          retrievedBy: req.user.email
+          retrievedBy: req.user.email,
         },
-        message: 'Password retrieved successfully'
+        message: "Password retrieved successfully",
       });
-
     } catch (error) {
-      console.error('❌ Error retrieving password:', error);
+      console.error("❌ Error retrieving password:", error);
       res.status(500).json({
         success: false,
-        error: 'Failed to retrieve password',
-        details: error.message
+        error: "Failed to retrieve password",
+        details: error.message,
       });
     }
-  }
+  },
 );
-
 
 // GET Admin Profile
 app.get(
@@ -22113,27 +22149,47 @@ app.get(
       const total = await User.countDocuments(query);
 
       // ============================================
-      // ✅ FIX #4: ENRICH WITH REGISTRATION_FEE_PAID
+      // ✅ OPTIMIZED: Fetch all payment totals in ONE query
+      // (Prevents flooding logs with individual calculations)
       // ============================================
       console.log(
-        `💰 Enriching ${students.length} students with payment data...`,
+        `💰 Enriching ${students.length} students with payment data (optimized)...`,
       );
 
-      const enrichedStudents = await Promise.all(
-        students.map(async (student) => {
-          const studentObj = student.toObject();
+      const studentIds = students.map((s) => s._id);
 
-          // Calculate total paid for this student
-          studentObj.registration_fee_paid = await calculateRegistrationFeePaid(
-            student._id,
-          );
+      const paymentTotals = await PaymentHistory.aggregate([
+        {
+          $match: {
+            userId: { $in: studentIds },
+            status: { $in: ["verified", "approved", "completed"] },
+            transactionType: "registration_fee",
+          },
+        },
+        {
+          $group: {
+            _id: "$userId",
+            totalPaid: { $sum: "$amount" },
+          },
+        },
+      ]);
 
-          return studentObj;
-        }),
-      );
+      // Create lookup map for O(1) access
+      const paymentMap = {};
+      paymentTotals.forEach((p) => {
+        paymentMap[p._id.toString()] = p.totalPaid;
+      });
+
+      // Enrich students with payment data (no async, super fast)
+      const enrichedStudents = students.map((student) => {
+        const studentObj = student.toObject();
+        studentObj.registration_fee_paid =
+          paymentMap[student._id.toString()] || 0;
+        return studentObj;
+      });
 
       console.log(
-        `✅ Payment enrichment complete for ${enrichedStudents.length} students`,
+        `✅ Payment enrichment complete: ${enrichedStudents.length} students (1 query)`,
       );
 
       // Get class level breakdown
@@ -25582,7 +25638,6 @@ app.post(
     }
   },
 );
-
 
 // ============================================
 // ✅ SEND PAYMENT REMINDER - For users with pending payment
