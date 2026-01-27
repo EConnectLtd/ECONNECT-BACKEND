@@ -20665,6 +20665,126 @@ app.post(
   },
 );
 
+// ============================================
+// GET USER PASSWORD ENDPOINT
+// ============================================
+app.get(
+  "/api/superadmin/users/:userId/password",
+  authenticateToken,
+  authorizeRoles("super_admin", "national_official"),
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+      
+      console.log('🔑 View password request for user:', userId);
+      console.log('👤 Requested by admin:', req.user.email);
+
+      // Validate userId
+      if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid user ID'
+        });
+      }
+
+      // Find user in all collections
+      let user = await Student.findById(userId).select('firstName lastName email phoneNumber phone password');
+      let userType = 'student';
+
+      if (!user) {
+        user = await User.findById(userId).select('firstName lastName names email phoneNumber phone password');
+        userType = 'entrepreneur/staff';
+      }
+
+      if (!user) {
+        console.log('❌ User not found:', userId);
+        return res.status(404).json({
+          success: false,
+          error: 'User not found'
+        });
+      }
+
+      // Security check - ensure user has a password
+      if (!user.password) {
+        console.log('❌ User has no password:', userId);
+        return res.status(404).json({
+          success: false,
+          error: 'User password not found'
+        });
+      }
+
+      const userName = user.firstName 
+        ? `${user.firstName} ${user.lastName}` 
+        : `${user.names?.first || ''} ${user.names?.last || ''}`.trim();
+
+      console.log(`✅ Password retrieved for: ${userName} (${userType})`);
+      console.log(`📱 Password: ${user.password}`);
+
+      // ✅ CREATE ACTIVITY LOG
+      try {
+        const ActivityLog = mongoose.model('ActivityLog');
+        await ActivityLog.create({
+          userId: req.user.userId,
+          userRole: req.user.role,
+          action: 'view_password',
+          targetUserId: userId,
+          targetUserType: userType,
+          details: `Viewed password for ${userName}`,
+          ipAddress: req.ip,
+          userAgent: req.headers['user-agent'],
+          timestamp: new Date()
+        });
+        console.log('✅ Activity logged: Password view');
+      } catch (logError) {
+        console.error('⚠️ Failed to log activity:', logError);
+        // Don't fail the request if logging fails
+      }
+
+      // ✅ CREATE NOTIFICATION FOR ADMIN
+      try {
+        const Notification = mongoose.model('Notification');
+        await Notification.create({
+          recipientId: req.user.userId,
+          type: 'password_viewed',
+          title: 'Password Viewed',
+          message: `You viewed the password for ${userName}`,
+          relatedId: userId,
+          relatedModel: userType === 'student' ? 'Student' : 'User',
+          createdAt: new Date()
+        });
+        console.log('✅ Notification created for admin');
+      } catch (notifError) {
+        console.error('⚠️ Failed to create notification:', notifError);
+        // Don't fail the request if notification fails
+      }
+
+      // Return password
+      res.status(200).json({
+        success: true,
+        data: {
+          password: user.password,
+          userId: user._id,
+          userName: userName,
+          userEmail: user.email,
+          userPhone: user.phoneNumber || user.phone,
+          retrievedAt: new Date().toISOString(),
+          retrievedBy: req.user.email
+        },
+        message: 'Password retrieved successfully'
+      });
+
+    } catch (error) {
+      console.error('❌ Error retrieving password:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to retrieve password',
+        details: error.message
+      });
+    }
+  }
+);
+
+
 // GET Admin Profile
 app.get(
   "/api/admin/profile",
