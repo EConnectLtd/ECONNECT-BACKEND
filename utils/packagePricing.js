@@ -25,32 +25,23 @@ const CTM_CLUB_FEES = {
 /**
  * Student Package Pricing
  * Includes both registration fees and monthly fees (where applicable)
+ * ✅ UPDATED: January 28, 2025 - Match frontend exactly
  */
 const STUDENT_PACKAGES = {
   normal: {
-    registrationFee: 15000,
+    registrationFee: 20000, // Government: 20k, Private: 25k (calculated dynamically)
     monthlyFee: null, // One-time only
     description: 'Normal Registration',
   },
   'ctm-club': {
-    registrationFee: 15000, // Variable: 8000 or 15000 depending on institution
+    registrationFee: 20000, // Legacy alias for normal
     monthlyFee: null, // One-time only
     description: 'CTM Club Membership',
   },
   premier: {
-    registrationFee: 70000, // First month included
+    registrationFee: 50000, // Government: 50k, Private: 60k (first month included)
     monthlyFee: 70000, // Recurring monthly
     description: 'Premier CTM Membership',
-  },
-  silver: {
-    registrationFee: 49000,
-    monthlyFee: null, // One-time only
-    description: 'Silver Registration',
-  },
-  diamond: {
-    registrationFee: 55000, // First month included
-    monthlyFee: 55000, // Recurring monthly
-    description: 'Diamond Registration',
   },
 };
 
@@ -100,12 +91,16 @@ function getCtmClubFees(institutionType = 'government') {
 
 /**
  * Get required registration fee for a student
+ * ✅ UPDATED: January 28, 2025 - Match frontend exactly
  * @param {string} registrationType - Student's registration type
- * @param {string} institutionType - Institution type (for CTM Club)
+ * @param {string} institutionType - Institution type (government or private)
  * @returns {number} Required fee
  */
 function getStudentRegistrationFee(registrationType, institutionType = 'government') {
-  if (!registrationType) return 15000;
+  if (!registrationType) {
+    // Default to normal government pricing
+    return institutionType === 'private' ? 25000 : 20000;
+  }
 
   // Normalize the registration type
   const normalizedType = registrationType
@@ -113,23 +108,18 @@ function getStudentRegistrationFee(registrationType, institutionType = 'governme
     .replace('_registration', '')
     .replace('-', '_');
 
-  // Handle CTM Club separately (variable pricing)
+  // Handle normal/ctm-club (variable pricing based on institution)
   if (normalizedType === 'ctm_club' || normalizedType === 'normal') {
-    return getCtmClubFees(institutionType).total;
+    return institutionType === 'private' ? 25000 : 20000;
   }
 
-  // Get from STUDENT_PACKAGES
-  const packageData = STUDENT_PACKAGES[normalizedType];
-  if (packageData && packageData.registrationFee) {
-    return packageData.registrationFee;
+  // Handle premier (variable pricing based on institution)
+  if (normalizedType === 'premier') {
+    return institutionType === 'private' ? 60000 : 50000;
   }
 
-  // Fallback to old structure (backward compatibility)
-  if (normalizedType === 'premier') return 70000;
-  if (normalizedType === 'silver') return 49000;
-  if (normalizedType === 'diamond') return 55000;
-
-  return 15000; // Default
+  // Default to normal government pricing
+  return institutionType === 'private' ? 25000 : 20000;
 }
 
 /**
