@@ -19103,6 +19103,185 @@ app.get(
   },
 );
 
+// ============================================
+// GET SINGLE STUDENT (for PaymentModal and other admin functions)
+// ============================================
+app.get(
+  "/api/students/:id",
+  authenticateToken,
+  validateObjectId("id"),
+  authorizeRoles(
+    "super_admin",
+    "national_official",
+    "regional_official",
+    "district_official",
+    "headmaster",
+    "teacher",
+  ),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      console.log(`📊 Fetching student data for ID: ${id}`);
+
+      // Find the student
+      const student = await User.findById(id)
+        .select("-password") // Exclude password
+        .populate("schoolId", "name schoolCode logo address")
+        .populate("regionId", "name code")
+        .populate("districtId", "name code");
+
+      if (!student) {
+        return res.status(404).json({
+          success: false,
+          error: "Student not found",
+        });
+      }
+
+      // Verify it's actually a student role
+      if (student.role !== "student") {
+        return res.status(400).json({
+          success: false,
+          error: `User is not a student (role: ${student.role})`,
+        });
+      }
+
+      // Check permissions - admins can view students in their scope
+      const admin = await User.findById(req.user.id);
+
+      let hasPermission = false;
+      if (
+        req.user.role === "super_admin" ||
+        req.user.role === "national_official"
+      ) {
+        hasPermission = true; // Full access
+      } else if (req.user.role === "regional_official" && admin.regionId) {
+        hasPermission =
+          student.regionId?.toString() === admin.regionId.toString();
+      } else if (req.user.role === "district_official" && admin.districtId) {
+        hasPermission =
+          student.districtId?.toString() === admin.districtId.toString();
+      } else if (
+        (req.user.role === "headmaster" || req.user.role === "teacher") &&
+        req.user.schoolId
+      ) {
+        hasPermission =
+          student.schoolId?._id.toString() === req.user.schoolId.toString();
+      }
+
+      if (!hasPermission) {
+        return res.status(403).json({
+          success: false,
+          error: "You do not have permission to view this student",
+        });
+      }
+
+      // ============================================
+      // ✅ ENRICH WITH PAYMENT DATA (optimized - single query)
+      // ============================================
+      console.log(`💰 Fetching payment data for student: ${student.username}`);
+
+      const registration_fee_paid = await calculateRegistrationFeePaid(
+        student._id,
+      );
+
+      // Calculate total required based on student's package
+      let totalRequired = 0;
+      if (student.registration_type) {
+        totalRequired = getStudentRegistrationFee(
+          student.registration_type,
+          student.institutionType,
+        );
+      }
+
+      const remainingBalance = Math.max(
+        0,
+        totalRequired - registration_fee_paid,
+      );
+
+      // ============================================
+      // ✅ GET PAYMENT HISTORY SUMMARY
+      // ============================================
+      const paymentCount = await PaymentHistory.countDocuments({
+        userId: student._id,
+      });
+
+      const lastPayment = await PaymentHistory.findOne({
+        userId: student._id,
+      })
+        .sort({ paymentDate: -1 })
+        .select("amount paymentDate paymentMethod status");
+
+      // ============================================
+      // ✅ GET PENDING INVOICES
+      // ============================================
+      const pendingInvoices = await Invoice.find({
+        user_id: student._id,
+        status: { $in: ["pending", "partial_paid", "verification"] },
+      }).select("invoiceNumber amount dueDate status");
+
+      // ============================================
+      // ✅ BUILD ENRICHED RESPONSE
+      // ============================================
+      const enrichedStudent = {
+        ...student.toObject(),
+
+        // Payment information
+        registration_fee_paid,
+        totalRequired,
+        remainingBalance,
+
+        // Payment status indicators
+        isFullyPaid:
+          registration_fee_paid >= totalRequired && totalRequired > 0,
+        isPartiallyPaid:
+          registration_fee_paid > 0 && registration_fee_paid < totalRequired,
+        hasNeverPaid: registration_fee_paid === 0,
+
+        // Payment summary
+        paymentSummary: {
+          totalPaid: registration_fee_paid,
+          totalRequired,
+          remainingBalance,
+          paymentCount,
+          lastPayment: lastPayment
+            ? {
+                amount: lastPayment.amount,
+                date: lastPayment.paymentDate,
+                method: lastPayment.paymentMethod,
+                status: lastPayment.status,
+              }
+            : null,
+          pendingInvoices: pendingInvoices.length,
+        },
+      };
+
+      console.log(`✅ Student data retrieved: ${student.username}`);
+      console.log(
+        `   - Total Paid: TZS ${registration_fee_paid.toLocaleString()}`,
+      );
+      console.log(`   - Total Required: TZS ${totalRequired.toLocaleString()}`);
+      console.log(`   - Remaining: TZS ${remainingBalance.toLocaleString()}`);
+      console.log(`   - Account Status: ${student.accountStatus}`);
+      console.log(`   - Payment Status: ${student.paymentStatus}`);
+
+      res.json({
+        success: true,
+        data: enrichedStudent,
+      });
+    } catch (error) {
+      console.error("❌ Error fetching student:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to fetch student data",
+        ...(process.env.NODE_ENV === "development" && {
+          debug: sanitizeError(error),
+        }),
+      });
+    }
+  },
+);
+
 // CREATE User (Admin)
 app.post(
   "/api/admin/users",
