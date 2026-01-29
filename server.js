@@ -26300,13 +26300,38 @@ app.post(
         await createNotification(
           userId,
           "Partial Payment Recorded - Account Activated! 💳",
-          `Your payment of ${
-            currency || "TZS"
-          } ${amount} has been recorded and your account is now active! Remaining balance: ${
-            currency || "TZS"
-          } ${remaining.toLocaleString()}. Please complete payment to avoid suspension.`,
+          `Your payment of ${currency || "TZS"} ${amount} has been recorded and your account is now active! Remaining balance: ${currency || "TZS"} ${remaining.toLocaleString()}. Please complete payment to avoid suspension.`,
           "warning",
         );
+
+        // ✅ FIX: SEND SMS FOR PARTIAL PAYMENT (Swahili)
+        if (user.phoneNumber && smsService) {
+          try {
+            const smsMessage = `Asante ${userName}! Malipo yako ya ${currency || "TZS"} ${amount.toLocaleString()} yamepokewa. Akaunti yako ni hai. Baki: ${currency || "TZS"} ${remaining.toLocaleString()}. Tafadhali maliza malipo. Asante!`;
+
+            const smsResult = await smsService.sendSMS(
+              user.phoneNumber,
+              smsMessage,
+              "payment_partial",
+            );
+
+            if (smsResult.success) {
+              console.log(`📱 Partial payment SMS sent to ${user.phoneNumber}`);
+
+              await SMSLog.create({
+                userId,
+                phone: user.phoneNumber,
+                message: smsMessage,
+                type: "payment_partial",
+                status: "sent",
+                messageId: smsResult.messageId,
+                reference: `payment_partial_${userId}`,
+              });
+            }
+          } catch (smsError) {
+            console.error(`⚠️ Partial payment SMS failed:`, smsError.message);
+          }
+        }
       } else {
         // No payment notification
         await createNotification(
@@ -26689,36 +26714,103 @@ app.post(
           // SEND NOTIFICATION (if enabled)
           // ========================================
 
+          // Send notification to user
           if (sendNotifications) {
             // ✅ Smart notification based on payment status
             if (user.paymentStatus === "paid") {
               await createNotification(
                 payment.userId,
                 "Payment Verified - Fully Paid! ✅",
-                `Your payment of TZS ${payment.amount.toLocaleString()} has been verified. Your account is now fully paid and active! Reference: ${
-                  payment.payment_reference
-                }`,
+                `Your payment of TZS ${payment.amount.toLocaleString()} has been verified. Your account is now fully paid and active! Reference: ${payment.payment_reference}`,
                 "success",
                 `/invoices/${invoice._id}`,
               );
+
+              // ✅ FIX: SEND CONGRATULATIONS SMS FOR FULL PAYMENT (Swahili)
+              if (user.phoneNumber && smsService) {
+                try {
+                  const smsMessage = `Hongera ${userName}! Malipo yako ya TZS ${payment.amount.toLocaleString()} yametimiwa kikamilifu. Akaunti yako sasa ni hai. Karibu ECONNECT! 🎉`;
+
+                  const smsResult = await smsService.sendSMS(
+                    user.phoneNumber,
+                    smsMessage,
+                    "payment_success",
+                  );
+
+                  if (smsResult.success) {
+                    console.log(
+                      `   📱 [${recordNumber}] SMS sent to ${user.phoneNumber} (Swahili)`,
+                    );
+
+                    await SMSLog.create({
+                      userId: payment.userId,
+                      phone: user.phoneNumber,
+                      message: smsMessage,
+                      type: "payment_success",
+                      status: "sent",
+                      messageId: smsResult.messageId,
+                      reference: `batch_payment_success_${payment.userId}`,
+                    });
+                  } else {
+                    console.error(
+                      `   ⚠️  [${recordNumber}] SMS failed: ${smsResult.error}`,
+                    );
+                  }
+                } catch (smsError) {
+                  console.error(
+                    `   ⚠️  [${recordNumber}] SMS error:`,
+                    smsError.message,
+                  );
+                }
+              }
             } else if (user.paymentStatus === "partial_paid") {
               const remaining = totalRequired - totalPaid;
               await createNotification(
                 payment.userId,
                 "Payment Verified - Partial Payment 💳",
-                `Your payment of TZS ${payment.amount.toLocaleString()} has been verified. Remaining balance: TZS ${remaining.toLocaleString()}. Reference: ${
-                  payment.payment_reference
-                }`,
+                `Your payment of TZS ${payment.amount.toLocaleString()} has been verified. Remaining balance: TZS ${remaining.toLocaleString()}. Reference: ${payment.payment_reference}`,
                 "warning",
                 `/invoices/${invoice._id}`,
               );
+
+              // ✅ FIX: SEND SMS FOR PARTIAL PAYMENT (Swahili)
+              if (user.phoneNumber && smsService) {
+                try {
+                  const smsMessage = `Asante ${userName}! Malipo yako ya TZS ${payment.amount.toLocaleString()} yamepokewa. Baki: TZS ${remaining.toLocaleString()}. Tafadhali maliza malipo yako. Asante!`;
+
+                  const smsResult = await smsService.sendSMS(
+                    user.phoneNumber,
+                    smsMessage,
+                    "payment_partial",
+                  );
+
+                  if (smsResult.success) {
+                    console.log(
+                      `   📱 [${recordNumber}] Partial payment SMS sent to ${user.phoneNumber}`,
+                    );
+
+                    await SMSLog.create({
+                      userId: payment.userId,
+                      phone: user.phoneNumber,
+                      message: smsMessage,
+                      type: "payment_partial",
+                      status: "sent",
+                      messageId: smsResult.messageId,
+                      reference: `batch_payment_partial_${payment.userId}`,
+                    });
+                  }
+                } catch (smsError) {
+                  console.error(
+                    `   ⚠️  [${recordNumber}] Partial SMS error:`,
+                    smsError.message,
+                  );
+                }
+              }
             } else {
               await createNotification(
                 payment.userId,
                 "Payment Information Recorded 💳",
-                `Your payment of TZS ${payment.amount.toLocaleString()} has been recorded and verified. Reference: ${
-                  payment.payment_reference
-                }`,
+                `Your payment of TZS ${payment.amount.toLocaleString()} has been recorded and verified. Reference: ${payment.payment_reference}`,
                 "info",
                 `/invoices/${invoice._id}`,
               );
@@ -26726,7 +26818,6 @@ app.post(
 
             console.log(`🔔 [${recordNumber}] Notification sent to user`);
           }
-
           // ========================================
           // UPDATE STATS
           // ========================================
@@ -27326,7 +27417,8 @@ app.get(
 );
 
 // ============================================
-// UPDATE PAYMENT STATUS (Verify/Reject) - ✅ FIXED VERSION
+// ✅ FIXED: UPDATE PAYMENT STATUS (Verify/Reject)
+// Corrected partial payment SMS placement
 // ============================================
 
 app.patch(
@@ -27338,7 +27430,7 @@ app.patch(
     try {
       const { status, reason } = req.body;
 
-      // ✅ FIXED: Validate status against allowed values
+      // Validate status
       const VALID_PAYMENT_STATUSES = ["pending", "verified", "rejected"];
 
       if (!status || !VALID_PAYMENT_STATUSES.includes(status)) {
@@ -27362,7 +27454,7 @@ app.patch(
 
       const previousStatus = payment.status;
 
-      // ✅ Prevent changing already-verified payments back to pending
+      // Prevent changing verified payments back to pending
       if (previousStatus === "verified" && status === "pending") {
         return res.status(400).json({
           success: false,
@@ -27374,26 +27466,27 @@ app.patch(
       // Update payment status
       payment.status = status;
 
-      // Add to status history with proper tracking
+      // Add to status history
       payment.statusHistory.push({
         status,
         changedBy: req.user.id,
         changedAt: new Date(),
         reason: reason || `Status changed from ${previousStatus} to ${status}`,
-        previousStatus, // ✅ Track previous status for audit
+        previousStatus,
       });
 
       // ✅ VERIFIED STATUS: Update user and invoice
       if (status === "verified") {
         payment.verifiedBy = req.user.id;
         payment.verifiedAt = new Date();
+
         // Update user payment status
         const user = await User.findById(payment.userId._id);
         if (user) {
           // Calculate new total paid
           const totalPaid = await calculateRegistrationFeePaid(user._id);
 
-          // Determine if full or partial payment
+          // Determine required amount
           let totalRequired = 0;
           if (user.role === "entrepreneur" || user.role === "nonstudent") {
             const packageType = user.registration_type || "silver";
@@ -27424,12 +27517,16 @@ app.patch(
             `✅ User ${user.username} updated: ${user.accountStatus} + ${user.paymentStatus}`,
           );
 
-          // ✅ FIXED: SEND CONGRATULATIONS SMS IN SWAHILI FOR FULL PAYMENT
+          // ============================================
+          // ✅ SEND SMS NOTIFICATIONS (BOTH CASES)
+          // ============================================
+          const userName =
+            `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
+            user.username;
+
+          // ✅ FULL PAYMENT SMS
           if (user.paymentStatus === "paid" && user.phoneNumber && smsService) {
             try {
-              const userName =
-                `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
-                user.username;
               const smsMessage = `Hongera ${userName}! Malipo yako ya ${
                 payment.currency || "TZS"
               } ${payment.amount.toLocaleString()} yametimiwa kikamilifu. Akaunti yako sasa ni hai. Karibu ECONNECT! 🎉`;
@@ -27441,9 +27538,7 @@ app.patch(
               );
 
               if (smsResult.success) {
-                console.log(
-                  `📱 Congratulations SMS sent to ${user.phoneNumber}`,
-                );
+                console.log(`📱 Full payment SMS sent to ${user.phoneNumber}`);
 
                 await SMSLog.create({
                   userId: user._id,
@@ -27452,12 +27547,53 @@ app.patch(
                   type: "payment_success",
                   status: "sent",
                   messageId: smsResult.messageId,
-                  reference: `payment_verified_congrats_${user._id}`,
+                  reference: `payment_verified_full_${user._id}`,
                 });
               }
             } catch (smsError) {
               console.error(
-                `⚠️ SMS failed for ${user.phoneNumber}:`,
+                `⚠️ Full payment SMS failed for ${user.phoneNumber}:`,
+                smsError.message,
+              );
+            }
+          }
+
+          // ✅ PARTIAL PAYMENT SMS (NOW INSIDE THE CORRECT BLOCK!)
+          if (
+            user.paymentStatus === "partial_paid" &&
+            user.phoneNumber &&
+            smsService
+          ) {
+            try {
+              // Calculate remaining balance
+              const remaining = totalRequired - totalPaid;
+
+              const smsMessage = `Asante ${userName}! Malipo yako ya ${payment.currency || "TZS"} ${payment.amount.toLocaleString()} yamethibitishwa. Akaunti yako ni hai. Baki: ${payment.currency || "TZS"} ${remaining.toLocaleString()}. Asante!`;
+
+              const smsResult = await smsService.sendSMS(
+                user.phoneNumber,
+                smsMessage,
+                "payment_partial",
+              );
+
+              if (smsResult.success) {
+                console.log(
+                  `📱 Partial payment SMS sent to ${user.phoneNumber}`,
+                );
+
+                await SMSLog.create({
+                  userId: user._id,
+                  phone: user.phoneNumber,
+                  message: smsMessage,
+                  type: "payment_partial",
+                  status: "sent",
+                  messageId: smsResult.messageId,
+                  reference: `payment_verified_partial_${user._id}`,
+                });
+              }
+            } catch (smsError) {
+              console.error(
+                `⚠️ Partial payment SMS failed for ${user.phoneNumber}:`,
                 smsError.message,
               );
             }
