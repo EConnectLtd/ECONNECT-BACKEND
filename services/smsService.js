@@ -24,38 +24,63 @@ class SMSService {
     this.baseUrl =
       process.env.NEXTSMS_BASE_URL || "https://messaging-service.co.tz";
 
-    // Create Base64 encoded auth string
-    if (this.username && this.password) {
-      this.authToken = Buffer.from(
-        `${this.username}:${this.password}`,
-      ).toString("base64");
+    // ✅ FIX: Add validation and better error handling for credentials
+    this.authToken = null;
+    this.isConfigured = false;
 
-      console.log("✅ NEXTSMS Service Initialized");
-      console.log(`   - Base URL: ${this.baseUrl}`);
-      console.log(`   - Primary Sender: ${this.senderId}`);
-      console.log(`   - Fallback Sender: ${this.fallbackSenderId}`);
-    } else {
-      console.warn("⚠️  NEXTSMS credentials not configured");
-      console.warn(
-        "   SMS functionality will be disabled until credentials are provided.",
-      );
+    try {
+      if (this.username && this.password) {
+        // Validate credentials are strings
+        if (
+          typeof this.username !== "string" ||
+          typeof this.password !== "string"
+        ) {
+          throw new Error("Username and password must be strings");
+        }
+
+        // Create Base64 encoded auth string
+        const authString = `${this.username}:${this.password}`;
+        this.authToken = Buffer.from(authString).toString("base64");
+        this.isConfigured = true;
+
+        console.log("✅ NEXTSMS Service Initialized");
+        console.log(`   - Base URL: ${this.baseUrl}`);
+        console.log(`   - Username: ${this.username}`);
+        console.log(`   - Primary Sender: ${this.senderId}`);
+        console.log(`   - Fallback Sender: ${this.fallbackSenderId}`);
+        console.log(`   - Auth Token Length: ${this.authToken.length}`);
+      } else {
+        console.warn("\n⚠️  ========================================");
+        console.warn("⚠️   NEXTSMS NOT CONFIGURED");
+        console.warn("⚠️  ========================================");
+        console.warn("⚠️  Missing credentials:");
+        console.warn(
+          `   - Username: ${this.username ? "✅ Set" : "❌ Missing"}`,
+        );
+        console.warn(
+          `   - Password: ${this.password ? "✅ Set" : "❌ Missing"}`,
+        );
+        console.warn("⚠️  SMS functionality will be disabled");
+        console.warn("⚠️  ========================================\n");
+      }
+    } catch (error) {
+      console.error("❌ Error initializing NEXTSMS:", error.message);
       this.authToken = null;
+      this.isConfigured = false;
     }
 
     // ✅ FIX: Warn if using unregistered alphanumeric sender ID
-    if (this.senderId && /^[A-Z]{3,11}$/.test(this.senderId)) {
+    if (
+      this.isConfigured &&
+      this.senderId &&
+      /^[A-Z]{3,11}$/.test(this.senderId)
+    ) {
       console.warn("\n⚠️  ========================================");
       console.warn("⚠️   SENDER ID WARNING");
       console.warn("⚠️  ========================================");
-      console.warn(
-        `⚠️  Using alphanumeric sender ID: "${this.senderId}"`,
-      );
-      console.warn(
-        "⚠️  If SMS messages are not delivered to users,",
-      );
-      console.warn(
-        "⚠️  this sender ID may not be registered with TCRA.",
-      );
+      console.warn(`⚠️  Using alphanumeric sender ID: "${this.senderId}"`);
+      console.warn("⚠️  If SMS messages are not delivered to users,");
+      console.warn("⚠️  this sender ID may not be registered with TCRA.");
       console.warn("");
       console.warn("💡 SOLUTIONS:");
       console.warn(
@@ -96,7 +121,7 @@ class SMSService {
   }
 
   /**
-   * ✅ NEW: Internal method to send SMS with specific sender ID
+   * ✅ FIXED: Internal method to send SMS with specific sender ID
    * @param {string} senderId - Sender ID to use
    * @param {string} phone - Formatted phone number
    * @param {string} message - SMS message content
@@ -104,7 +129,20 @@ class SMSService {
    * @returns {Promise} SMS send response
    */
   async _sendWithSenderId(senderId, phone, message, reference = null) {
+    let response;
+
     try {
+      // ✅ Validate all parameters before making API call
+      if (!senderId) {
+        throw new Error("Sender ID is required");
+      }
+      if (!phone) {
+        throw new Error("Phone number is required");
+      }
+      if (!message) {
+        throw new Error("Message content is required");
+      }
+
       const payload = {
         from: senderId,
         to: phone,
@@ -122,29 +160,62 @@ class SMSService {
         reference,
       });
 
-      const response = await axios.post(
-        `${this.baseUrl}/api/sms/v1/text/single`,
-        payload,
-        {
-          headers: {
-            Authorization: `Basic ${this.authToken}`,
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          timeout: 10000, // 10 second timeout
-        },d
-      );
+      // ✅ FIX: Add more detailed axios configuration
+      const axiosConfig = {
+        headers: {
+          Authorization: `Basic ${this.authToken}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        timeout: 10000, // 10 second timeout
+        validateStatus: function (status) {
+          // Accept any status code less than 500
+          return status < 500;
+        },
+      };
 
-      console.log("✅ SMS API Response:", {
-        status: response.status,
-        data: response.data,
+      console.log("🔧 Axios config prepared:", {
+        url: `${this.baseUrl}/api/sms/v1/text/single`,
+        hasAuth: !!axiosConfig.headers.Authorization,
+        timeout: axiosConfig.timeout,
       });
 
+      response = await axios.post(
+        `${this.baseUrl}/api/sms/v1/text/single`,
+        payload,
+        axiosConfig,
+      );
+
+      console.log("✅ SMS API Response received:", {
+        status: response?.status,
+        statusText: response?.statusText,
+        hasData: !!response?.data,
+      });
+
+      // ✅ FIX: Safely access response data
+      if (!response || !response.data) {
+        throw new Error("No response data received from SMS API");
+      }
+
+      const responseData = response.data;
+      console.log("📊 Response data:", JSON.stringify(responseData, null, 2));
+
       // ✅ FIX: CHECK ACTUAL MESSAGE STATUS (not just API acceptance)
-      const messages = response.data.messages || [];
+      const messages = responseData.messages || [];
+
+      if (messages.length === 0) {
+        throw new Error("No messages in response");
+      }
+
       const firstMessage = messages[0];
       const messageStatus = firstMessage?.status;
       const messageId = firstMessage?.messageId;
+
+      console.log("📨 Message details:", {
+        messageId,
+        status: messageStatus,
+        hasStatus: !!messageStatus,
+      });
 
       // Check if message was rejected by carrier
       if (messageStatus && messageStatus.groupName === "REJECTED") {
@@ -173,7 +244,7 @@ class SMSService {
 
       return {
         success: true,
-        data: response.data,
+        data: responseData,
         messageId: messageId,
         status: messageStatus,
         senderId: senderId, // ✅ Track which sender ID worked
@@ -181,15 +252,38 @@ class SMSService {
     } catch (error) {
       console.error("❌ SMS API call failed:", {
         message: error.message,
-        response: error.response?.data,
-        status: error.response?.status,
+        name: error.name,
+        stack: error.stack,
+        hasResponse: !!error.response,
+        responseStatus: error.response?.status,
+        responseData: error.response?.data,
       });
+
+      // ✅ FIX: Better error message formatting
+      let errorMessage = error.message;
+      let errorDetails = null;
+
+      if (error.response) {
+        // The request was made and the server responded with a status code
+        // that falls out of the range of 2xx
+        errorMessage =
+          error.response.data?.message ||
+          error.response.statusText ||
+          error.message;
+        errorDetails = error.response.data;
+      } else if (error.request) {
+        // The request was made but no response was received
+        errorMessage =
+          "No response received from SMS API (network error or timeout)";
+        errorDetails = { timeout: true };
+      }
 
       return {
         success: false,
-        error: error.response?.data?.message || error.message,
-        details: error.response?.data,
+        error: errorMessage,
+        details: errorDetails,
         httpStatus: error.response?.status,
+        originalError: error.message,
       };
     }
   }
@@ -204,7 +298,7 @@ class SMSService {
   async sendSMS(phone, message, reference = null) {
     try {
       // Check if credentials are configured
-      if (!this.authToken) {
+      if (!this.isConfigured || !this.authToken) {
         console.log(
           "⚠️  NEXTSMS not configured. SMS would have been sent to:",
           phone,
@@ -227,6 +321,8 @@ class SMSService {
           error: `Invalid phone number format: ${phone}`,
         };
       }
+
+      console.log(`📞 Formatted phone: ${phone} → ${formattedPhone}`);
 
       // ✅ FIX: TRY PRIMARY SENDER ID FIRST
       console.log(`🔄 Attempting SMS with primary sender: ${this.senderId}`);
@@ -282,7 +378,10 @@ class SMSService {
 
       return primaryResult;
     } catch (error) {
-      console.error("❌ SMS sending failed with exception:", error.message);
+      console.error("❌ SMS sending failed with exception:", {
+        message: error.message,
+        stack: error.stack,
+      });
       return {
         success: false,
         error: error.message,
@@ -300,7 +399,7 @@ class SMSService {
    */
   async sendBulkSMS(phones, message, reference = null) {
     try {
-      if (!this.authToken) {
+      if (!this.isConfigured || !this.authToken) {
         console.log(
           "⚠️  NEXTSMS not configured. Bulk SMS would have been sent to",
           phones.length,
@@ -565,7 +664,7 @@ class SMSService {
    */
   async getDeliveryReport(messageId) {
     try {
-      if (!this.authToken) {
+      if (!this.isConfigured || !this.authToken) {
         return {
           success: false,
           error: "NEXTSMS credentials not configured",
@@ -609,7 +708,7 @@ class SMSService {
    */
   async getAccountBalance() {
     try {
-      if (!this.authToken) {
+      if (!this.isConfigured || !this.authToken) {
         return {
           success: false,
           error: "NEXTSMS credentials not configured",
