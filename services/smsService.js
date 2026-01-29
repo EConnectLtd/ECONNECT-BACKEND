@@ -46,12 +46,8 @@ class SMSService {
         console.warn("⚠️   NEXTSMS NOT CONFIGURED");
         console.warn("⚠️  ========================================");
         console.warn("⚠️  Missing credentials:");
-        console.warn(
-          `   - Username: ${this.username ? "✅ Set" : "❌ Missing"}`,
-        );
-        console.warn(
-          `   - Password: ${this.password ? "✅ Set" : "❌ Missing"}`,
-        );
+        console.warn(`   - Username: ${this.username ? "✅ Set" : "❌ Missing"}`);
+        console.warn(`   - Password: ${this.password ? "✅ Set" : "❌ Missing"}`);
         console.warn("⚠️  SMS functionality will be disabled");
         console.warn("⚠️  ========================================\n");
       }
@@ -99,7 +95,7 @@ class SMSService {
    */
   async _sendWithSenderId(senderId, phone, message, reference = null) {
     let response;
-
+    
     try {
       // ✅ Validate all parameters before making API call
       if (!senderId) {
@@ -171,7 +167,7 @@ class SMSService {
 
       // ✅ FIX: CHECK ACTUAL MESSAGE STATUS (not just API acceptance)
       const messages = responseData.messages || [];
-
+      
       if (messages.length === 0) {
         throw new Error("No messages in response");
       }
@@ -235,15 +231,11 @@ class SMSService {
       if (error.response) {
         // The request was made and the server responded with a status code
         // that falls out of the range of 2xx
-        errorMessage =
-          error.response.data?.message ||
-          error.response.statusText ||
-          error.message;
+        errorMessage = error.response.data?.message || error.response.statusText || error.message;
         errorDetails = error.response.data;
       } else if (error.request) {
         // The request was made but no response was received
-        errorMessage =
-          "No response received from SMS API (network error or timeout)";
+        errorMessage = "No response received from SMS API (network error or timeout)";
         errorDetails = { timeout: true };
       }
 

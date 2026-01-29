@@ -38,6 +38,14 @@ const {
   getEntrepreneurMonthlyFee,
   getStudentMonthlyFee,
   hasMonthlyBilling,
+
+  // ✅ ADD THESE NEW IMPORTS
+  getStudentAnnualFee,
+  getAnnualFee,
+  hasAnnualBilling,
+  getBillingCycle,
+  getRecurringFee,
+
   getPackageDescription,
   getPackageDetails,
 } = require("./utils/packagePricing");
@@ -486,6 +494,11 @@ const userSchema = new mongoose.Schema({
     required: true,
     index: true,
   },
+
+  // Billing tracking fields
+  last_monthly_invoice_date: { type: Date },
+  last_annual_invoice_date: { type: Date },
+  next_billing_date: { type: Date },
 
   // ============================================
   // OLD FIELDS (KEPT FOR BACKWARD COMPATIBILITY)
@@ -3007,35 +3020,17 @@ async function logActivity(
   }
 }
 
-// ============================================
-// HELPER: Calculate Total Registration Fee Paid
-// ============================================
+// Initialize after all models are defined
+monthlyBillingService.initialize({
+  User,
+  Invoice,
+  PaymentHistory,
+  Notification,
+  ActivityLog,
+});
 
-/**
- * Calculate total registration fee paid by user from PaymentHistory
- * ✅ CORRECTED: Uses "pending" and "verified" statuses
- * @param {string} userId - The user's MongoDB ObjectId
- * @returns {Promise<number>} Total amount paid (sum of verified + pending payments)
- */
-async function calculateRegistrationFeePaid(userId) {
-  try {
-    // ✅ CORRECT: PaymentHistory uses "pending" and "verified" statuses
-    const paidPayments = await PaymentHistory.find({
-      userId: new mongoose.Types.ObjectId(userId),
-      status: { $in: ["verified", "pending"] }, // ✅ These are the valid statuses
-      transactionType: "registration_fee",
-    });
+console.log("✅ Monthly/Annual Billing Service initialized");
 
-    const totalPaid = paidPayments.reduce(
-      (sum, payment) => sum + payment.amount,
-      0,
-    );
-    return totalPaid;
-  } catch (error) {
-    console.error("❌ Error calculating registration fee:", error);
-    return 0;
-  }
-}
 
 // ============================================
 // HELPER: Send Bulk Payment Reminders (for Cron Job)
