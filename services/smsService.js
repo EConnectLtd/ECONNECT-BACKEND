@@ -13,18 +13,11 @@ class SMSService {
   constructor() {
     this.username = process.env.NEXTSMS_USERNAME;
     this.password = process.env.NEXTSMS_PASSWORD;
-
-    // ✅ FIX: PRIMARY sender ID (numeric works immediately without TCRA registration)
-    // Defaults to a numeric sender if NEXTSMS_SENDER_ID is not set
     this.senderId = process.env.NEXTSMS_SENDER_ID || "255758061582";
-
-    // ✅ FIX: FALLBACK sender ID (pre-approved generic sender)
-    this.fallbackSenderId = process.env.NEXTSMS_FALLBACK_SENDER_ID || "INFO";
-
     this.baseUrl =
       process.env.NEXTSMS_BASE_URL || "https://messaging-service.co.tz";
 
-    // ✅ FIX: Add validation and better error handling for credentials
+    // ✅ Add validation and better error handling for credentials
     this.authToken = null;
     this.isConfigured = false;
 
@@ -46,8 +39,7 @@ class SMSService {
         console.log("✅ NEXTSMS Service Initialized");
         console.log(`   - Base URL: ${this.baseUrl}`);
         console.log(`   - Username: ${this.username}`);
-        console.log(`   - Primary Sender: ${this.senderId}`);
-        console.log(`   - Fallback Sender: ${this.fallbackSenderId}`);
+        console.log(`   - Sender ID: ${this.senderId}`);
         console.log(`   - Auth Token Length: ${this.authToken.length}`);
       } else {
         console.warn("\n⚠️  ========================================");
@@ -67,29 +59,6 @@ class SMSService {
       console.error("❌ Error initializing NEXTSMS:", error.message);
       this.authToken = null;
       this.isConfigured = false;
-    }
-
-    // ✅ FIX: Warn if using unregistered alphanumeric sender ID
-    if (
-      this.isConfigured &&
-      this.senderId &&
-      /^[A-Z]{3,11}$/.test(this.senderId)
-    ) {
-      console.warn("\n⚠️  ========================================");
-      console.warn("⚠️   SENDER ID WARNING");
-      console.warn("⚠️  ========================================");
-      console.warn(`⚠️  Using alphanumeric sender ID: "${this.senderId}"`);
-      console.warn("⚠️  If SMS messages are not delivered to users,");
-      console.warn("⚠️  this sender ID may not be registered with TCRA.");
-      console.warn("");
-      console.warn("💡 SOLUTIONS:");
-      console.warn(
-        "   1. Use numeric sender (e.g., 255758061582) - works immediately",
-      );
-      console.warn(
-        "   2. Register this sender ID with TCRA via NEXTSMS support",
-      );
-      console.warn("⚠️  ========================================\n");
     }
   }
 
@@ -332,42 +301,6 @@ class SMSService {
         message,
         reference,
       );
-
-      // ✅ FIX: If primary sender failed, try fallback sender ID
-      if (!primaryResult.success && this.fallbackSenderId) {
-        console.warn(
-          `⚠️  Primary sender "${this.senderId}" failed: ${primaryResult.error}`,
-        );
-        console.log(
-          `🔄 Retrying with fallback sender: ${this.fallbackSenderId}`,
-        );
-
-        const fallbackResult = await this._sendWithSenderId(
-          this.fallbackSenderId,
-          formattedPhone,
-          message,
-          reference,
-        );
-
-        if (fallbackResult.success) {
-          console.log(
-            `✅ SMS sent successfully using fallback sender: ${this.fallbackSenderId}`,
-          );
-          return {
-            ...fallbackResult,
-            usedFallback: true,
-            primaryError: primaryResult.error,
-          };
-        } else {
-          console.error("❌ Both primary and fallback senders failed");
-          return {
-            success: false,
-            error: "Both primary and fallback senders failed",
-            primaryError: primaryResult.error,
-            fallbackError: fallbackResult.error,
-          };
-        }
-      }
 
       // Primary sender succeeded
       if (primaryResult.success) {
