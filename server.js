@@ -3031,7 +3031,6 @@ monthlyBillingService.initialize({
 
 console.log("✅ Monthly/Annual Billing Service initialized");
 
-
 // ============================================
 // HELPER: Send Bulk Payment Reminders (for Cron Job)
 // ============================================
@@ -4203,9 +4202,11 @@ app.post(
 
       if (role === "student" && student?.registration_type) {
         // ✅ FIXED: Use centralized pricing from utils/packagePricing.js
+        // ✅ CORRECT - Pass education level
         const registrationFee = getStudentRegistrationFee(
           student.registration_type,
           student.institution_type || "government",
+          student.education_level || student.classLevel || student.gradeLevel, // ✅ NEW
         );
 
         if (registrationFee && registrationFee > 0) {
@@ -21051,7 +21052,11 @@ app.get(
           id: "normal_registration",
           name: "Normal Registration",
           category: "CTM",
-          amount: getStudentRegistrationFee("normal", "government"), // ✅ Using centralized pricing
+          amount: getStudentRegistrationFee(
+            "normal",
+            "government",
+            "secondary",
+          ), // ✅ FIXED
           currency: "TZS",
           monthly: false,
           monthlyFee: 0,
@@ -21060,23 +21065,28 @@ app.get(
             "Access to school activities",
             "One-time registration fee",
           ],
+          note: "Actual fee varies by education level (Primary/Secondary/College/University)",
         },
         {
           id: "premier_registration",
           name: "Premier Registration",
           category: "CTM",
-          amount: getStudentRegistrationFee("premier", "government"), // ✅ Using centralized pricing
+          amount: getStudentRegistrationFee(
+            "premier",
+            "government",
+            "secondary",
+          ), // ✅ FIXED
           currency: "TZS",
           monthly: true,
-          monthlyFee: getStudentMonthlyFee("premier"), // ✅ Using centralized pricing
+          monthlyFee: getStudentMonthlyFee("premier"), // ✅ OK
           features: [
             "Full CTM membership",
             "Monthly billing",
             "Premium features",
             "Priority support",
           ],
+          note: "Actual registration fee varies by education level + monthly billing",
         },
-
         // ✅ NON-STUDENT PACKAGES (Entrepreneur-based)
         {
           id: "silver_registration",
@@ -25435,7 +25445,8 @@ app.get(
       });
     }
   },
-); // ✅ FIXED: Closing app.get() for SMS Stats
+);
+
 // ============================================
 // RESEND PASSWORD SMS (Manual Trigger for Admin)
 // ============================================
@@ -25577,9 +25588,17 @@ app.post(
           const packageType = user.registration_type || "silver";
           totalRequired = getEntrepreneurRegistrationFee(packageType, false);
         } else if (user.role === "student") {
+          // ✅ FIXED: Get education level from classLevel/gradeLevel
+          const educationLevel = getUserEducationLevel(user);
+
           totalRequired = getStudentRegistrationFee(
             user.registration_type,
             user.institutionType,
+            educationLevel, // ✅ ADDED
+          );
+
+          console.log(
+            `💰 Student registration fee: TZS ${totalRequired} (${user.registration_type}, ${educationLevel})`,
           );
         }
 
@@ -26058,13 +26077,17 @@ app.post(
             `📊 Entrepreneur ${packageType} - Registration fee: ${actualTotalRequired}`,
           );
         } else if (user.role === "student") {
-          // Student: Get student package fee
+          // ✅ FIXED: Get education level from classLevel/gradeLevel
+          const educationLevel = getUserEducationLevel(user);
+
           actualTotalRequired = getStudentRegistrationFee(
             user.registration_type,
             user.institutionType,
+            educationLevel, // ✅ ADDED
           );
+
           console.log(
-            `📊 Student ${user.registration_type} - Fee: ${actualTotalRequired}`,
+            `📊 Student ${user.registration_type} (${educationLevel}) - Fee: ${actualTotalRequired}`,
           );
         } else {
           // Other roles - no payment required
@@ -26676,12 +26699,15 @@ app.post(
             const packageType = user.registration_type || "silver";
             totalRequired = getEntrepreneurRegistrationFee(packageType, false);
           } else if (user.role === "student") {
+            // ✅ FIXED: Get education level from classLevel/gradeLevel
+            const educationLevel = getUserEducationLevel(user);
+
             totalRequired = getStudentRegistrationFee(
               user.registration_type,
               user.institutionType,
+              educationLevel, // ✅ ADDED
             );
           }
-
           // Update user payment status
           if (totalPaid >= totalRequired && totalRequired > 0) {
             user.accountStatus = "active";
@@ -27487,9 +27513,13 @@ app.patch(
             const packageType = user.registration_type || "silver";
             totalRequired = getEntrepreneurRegistrationFee(packageType, false);
           } else if (user.role === "student") {
+            // ✅ FIXED: Get education level from classLevel/gradeLevel
+            const educationLevel = getUserEducationLevel(user);
+
             totalRequired = getStudentRegistrationFee(
               user.registration_type,
               user.institutionType,
+              educationLevel, // ✅ ADDED
             );
           }
 
