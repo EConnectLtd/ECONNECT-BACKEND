@@ -1303,14 +1303,12 @@ const transactionSchema = new mongoose.Schema(
     paymentReference: {
       type: String,
       trim: true,
-      index: true,
     },
 
     referenceId: {
       type: String,
       required: true,
       unique: true,
-      index: true,
     },
 
     // Description
