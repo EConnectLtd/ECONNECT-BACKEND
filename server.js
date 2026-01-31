@@ -28161,63 +28161,6 @@ app.get(
 );
 
 // ============================================
-// 🧪 TEST ENDPOINT (Optional - for verification)
-// ============================================
-//
-// This endpoint lets you check indexes without modifying them
-// Safe to call anytime
-//
-
-app.get(
-  "/api/superadmin/migrate/check-indexes",
-  authenticateToken,
-  authorizeRoles("super_admin"),
-  async (req, res) => {
-    try {
-      const PaymentHistory = mongoose.model("PaymentHistory");
-      const collection = PaymentHistory.collection;
-
-      const indexes = await collection.indexes();
-
-      const invoiceIdIndexes = indexes.filter(
-        (idx) => idx.key && idx.key.invoiceId !== undefined,
-      );
-
-      const indexList = indexes.map((idx) => ({
-        name: idx.name,
-        keys: idx.key,
-        unique: idx.unique || false,
-        sparse: idx.sparse || false,
-      }));
-
-      res.json({
-        success: true,
-        totalIndexes: indexes.length,
-        invoiceIdIndexCount: invoiceIdIndexes.length,
-        status:
-          invoiceIdIndexes.length === 1
-            ? "✅ Healthy - One invoiceId index"
-            : invoiceIdIndexes.length > 1
-              ? "⚠️  Warning - Multiple invoiceId indexes"
-              : "⚠️  Warning - No invoiceId index",
-        indexes: indexList,
-        invoiceIdIndexes: invoiceIdIndexes.map((idx) => ({
-          name: idx.name,
-          keys: idx.key,
-        })),
-      });
-    } catch (error) {
-      console.error("❌ Error checking indexes:", error);
-      res.status(500).json({
-        success: false,
-        error: "Failed to check indexes",
-        message: error.message,
-      });
-    }
-  },
-);
-
-// ============================================
 // FAILED JOBS MANAGEMENT ENDPOINTS
 // ============================================
 
