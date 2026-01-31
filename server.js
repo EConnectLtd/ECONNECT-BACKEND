@@ -26359,7 +26359,7 @@ app.post(
         notes || `Manual payment recorded by ${req.user.username}`;
 
       const typeMapping = {
-        registration_fee: "registration",
+        registration_fee: "registration_fee",
         membership_fee: "ctm_membership",
         ctm_membership: "ctm_membership",
         certificate_fee: "certificate",
@@ -26815,7 +26815,7 @@ app.post(
               dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
               status: "paid", // ✅ FIXED: Changed from "verification" to "paid"
               paidDate: new Date(), // ✅ ADDED
-              type: user.role === "student" ? "ctm_membership" : "registration",
+              type: user.role === "student" ? "ctm_membership" : "registration_fee",
               items: [
                 {
                   description: getRegistrationDescription(
