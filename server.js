@@ -49,6 +49,10 @@ const {
   getPackageDescription,
   getPackageDetails,
 } = require("./utils/packagePricing");
+const {
+  getEducationLevelFromClass,
+  getUserEducationLevel,
+} = require("./utils/educationLevelHelper");
 const jobRetryService = require("./services/jobRetryService");
 const monthlyBillingService = require("./services/monthlyBillingService");
 
@@ -687,7 +691,7 @@ const classLevelRequestSchema = new mongoose.Schema({
   reason: { type: String, required: true },
   status: {
     type: String,
-    enum: ["pending", "approved", "rejected"],
+    enum: ["pending", "verified", "rejected", "failed"],
     default: "pending",
   },
   reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
@@ -1201,63 +1205,6 @@ const productSchema = new mongoose.Schema({
 
 productSchema.index({ name: "text", description: "text" });
 
-// Transaction Schema (AzamPay Integration)
-const transactionSchema = new mongoose.Schema({
-  userId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
-    required: true,
-    index: true,
-  },
-  transactionType: {
-    type: String,
-    enum: [
-      "book_purchase",
-      "event_registration",
-      "product_purchase",
-      "service_payment",
-      "subscription",
-      "donation",
-      "membership_fee",
-      "certificate_fee",
-      "other",
-    ],
-    required: true,
-    index: true,
-  },
-  amount: { type: Number, required: true, min: 0 },
-  currency: { type: String, default: "TZS" },
-  paymentProvider: String,
-  status: {
-    type: String,
-    enum: [
-      "pending",
-      "processing",
-      "completed",
-      "failed",
-      "cancelled",
-      "refunded",
-    ],
-    default: "pending",
-    index: true,
-  },
-  referenceId: { type: String, unique: true, index: true },
-  providerReference: String,
-  providerTransactionId: String,
-  phoneNumber: String,
-  description: String,
-  metadata: mongoose.Schema.Types.Mixed,
-  relatedEntityType: String,
-  relatedEntityId: mongoose.Schema.Types.ObjectId,
-  businessId: { type: mongoose.Schema.Types.ObjectId, ref: "Business" },
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School" },
-  completedAt: Date,
-  failureReason: String,
-  ipAddress: String,
-  userAgent: String,
-  createdAt: { type: Date, default: Date.now },
-});
-
 // Revenue Schema (Revenue Tracking)
 const revenueSchema = new mongoose.Schema({
   transactionId: {
@@ -1696,65 +1643,84 @@ const AssignmentSubmission = mongoose.model(
 
 const invoiceSchema = new mongoose.Schema(
   {
-    // ✅ FIXED: Changed from student_id to user_id (more generic)
-    user_id: {
+    // ✅ FIXED: Changed from "user_id" to "userId" (consistency)
+    userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
+      index: true, // ✅ Added index for performance
     },
+
     invoiceNumber: {
       type: String,
       required: true,
       unique: true,
+      index: true, // ✅ Added index
     },
-    // ✅ FIXED: Added 'registration' and 'monthly_fee' to type enum
+
+    // ✅ FIXED: Aligned with PaymentHistory.transactionType
     type: {
       type: String,
       enum: [
-        "ctm_membership", // CTM Club annual fees
-        "certificate", // CTM Certificates
-        "school_fees", // School fees
-        "event", // Event fees
-        "registration", // ✅ ADDED: Registration fees (fixes entrepreneur registration error)
-        "monthly_fee", // ✅ ADDED: Monthly subscription fees
-        "other", // Other charges
+        "registration_fee", // ✅ Changed from "registration"
+        "ctm_membership", // ✅ Same
+        "monthly_fee", // ✅ Changed from "monthly_billing"
+        "certificate_fee", // ✅ Changed from "certificate"
+        "event_fee", // ✅ Changed from "event"
+        "school_fees", // ✅ Same
+        "tuition_fee", // ✅ Changed from "tuition"
+        "exam_fee", // ✅ Changed from "exam"
+        "other", // ✅ Same
       ],
       required: true,
+      index: true, // ✅ Added index
     },
+
     description: {
       type: String,
       required: true,
     },
+
     amount: {
       type: Number,
       required: true,
+      min: [0, "Amount cannot be negative"],
     },
-    // ✅ FIXED: Changed from 'Tsh' to 'TZS' (proper ISO format)
+
     currency: {
       type: String,
       default: "TZS",
+      enum: ["TZS", "USD", "EUR"],
     },
-    // ✅ FIXED: Added 'unpaid' and 'partially_paid' to status enum
+
+    // ✅ FIXED: Aligned statuses with PaymentHistory workflow
     status: {
       type: String,
       enum: [
+        "unpaid", // Invoice created, no payment yet
+        "pending", // Payment initiated but not submitted
+        "submitted", // ✅ Changed from "verification" - Payment proof submitted
+        "verified", // ✅ NEW - Payment verified by admin (same as PaymentHistory)
         "paid", // Fully paid
-        "unpaid", // Not paid yet
-        "pending", // Awaiting payment
-        "partially_paid", // Partially paid
+        "partially_paid", // Partial payment received
         "overdue", // Past due date
-        "cancelled", // Cancelled invoice
-        "verification", // Payment under verification
+        "cancelled", // Invoice cancelled
       ],
-      default: "unpaid", // ✅ CHANGED: Default to 'unpaid' instead of 'pending'
+      default: "unpaid",
+      required: true,
+      index: true, // ✅ Added index
     },
+
     dueDate: {
       type: Date,
       required: true,
+      index: true, // ✅ Added index for overdue queries
     },
+
     paidDate: {
       type: Date,
     },
+
     academicYear: {
       type: String,
     },
@@ -1768,6 +1734,7 @@ const invoiceSchema = new mongoose.Schema(
       mimeType: String,
       uploadedAt: Date,
       notes: String,
+      transactionReference: String, // ✅ Added missing field
       status: {
         type: String,
         enum: ["pending", "verified", "rejected"],
@@ -1785,6 +1752,12 @@ const invoiceSchema = new mongoose.Schema(
     timestamps: true,
   },
 );
+
+// ✅ CRITICAL: Add indexes for common queries
+invoiceSchema.index({ userId: 1, status: 1, dueDate: -1 }); // User invoices sorted by due date
+invoiceSchema.index({ type: 1, status: 1 }); // Filter by type and status
+invoiceSchema.index({ dueDate: 1, status: 1 }); // Overdue invoice queries
+invoiceSchema.index({ "paymentProof.status": 1 }); // Pending verification queries
 
 const Invoice = mongoose.model("Invoice", invoiceSchema);
 module.exports = Invoice;
@@ -1819,18 +1792,17 @@ const paymentHistorySchema = new mongoose.Schema(
     transactionType: {
       type: String,
       enum: [
-        "registration_fee",
-        "tuition_fee",
-        "exam_fee",
-        "ctm_membership",
-        "book_purchase",
-        "event_registration",
-        "certification_fee",
-        "other",
+        "registration_fee", // ✅ Used throughout Part 2
+        "monthly_fee", // For monthly subscriptions
+        "ctm_membership", // CTM club fees
+        "certificate_fee", // Certificate fees
+        "event_fee", // Event registration
+        "school_fees", // General school fees
+        "exam_fee", // Exam fees
+        "tuition_fee", // Tuition
+        "other", // Miscellaneous
       ],
       required: true,
-      default: "registration_fee",
-      description: "Type of transaction/payment",
     },
 
     amount: {
@@ -4227,7 +4199,7 @@ app.post(
           };
 
           const invoice = await Invoice.create({
-            user_id: user._id,
+            userId: user._id,
             invoiceNumber,
             type: "ctm_membership",
             description: getPackageName(student.registration_type),
@@ -4293,9 +4265,9 @@ app.post(
           };
 
           const invoice = await Invoice.create({
-            user_id: user._id,
+            userId: user._id,
             invoiceNumber,
-            type: "registration",
+            type: "registration_fee",
             description: getEntrepreneurPackageName(
               entrepreneur.registration_type,
             ),
@@ -8666,7 +8638,7 @@ app.post(
       // ============================================
       const invoice = await Invoice.findOne({
         _id: invoiceId,
-        user_id: userId,
+        userId: userId,
       });
 
       if (!invoice) {
@@ -9108,7 +9080,7 @@ app.get(
       // Find invoice and verify ownership
       const invoice = await Invoice.findOne({
         _id: invoiceId,
-        user_id: userId,
+        userId: userId,
       }).populate("user_id", "firstName lastName email");
       if (!invoice) {
         return res.status(404).json({
@@ -9177,7 +9149,7 @@ app.get(
       const userId = req.user.id;
       const { status, page = 1, limit = 20 } = req.query;
 
-      const query = { user_id: userId };
+      const query = { userId: userId };
       if (status) {
         query.status = status;
       }
@@ -26147,7 +26119,7 @@ app.post(
         notes || `Manual payment recorded by ${req.user.username}`;
 
       const typeMapping = {
-        registration_fee: "ctm_membership",
+        registration_fee: "registration",
         membership_fee: "ctm_membership",
         ctm_membership: "ctm_membership",
         certificate_fee: "certificate",
@@ -26180,7 +26152,7 @@ app.post(
 
       // ✅ CREATE INVOICE
       const invoice = await Invoice.create({
-        user_id: userId,
+        userId: userId,
         invoiceNumber,
         type: invoiceType,
         description,
@@ -27251,6 +27223,7 @@ app.get(
           $match: {
             userId: new mongoose.Types.ObjectId(userId),
             status: { $in: ["verified", "pending"] }, // ✅ Use "pending" instead
+            transactionType: "registration_fee",
           },
         },
         {
