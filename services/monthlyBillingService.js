@@ -3,6 +3,7 @@
 // ==========================================
 // ✅ Handles both monthly (Premier, Entrepreneurs) and annual (CTM Club) billing
 // ✅ Generates invoices automatically based on billing cycle
+// ✅ FIXED: All enum references use valid Invoice type enums
 // ==========================================
 
 const mongoose = require('mongoose');
@@ -97,10 +98,10 @@ async function processMonthlyBilling() {
           );
 
           if (annualFee && annualFee > 0) {
-            // Check if invoice already exists for this period
+            // ✅ FIXED: Check for existing invoice with correct type
             const existingInvoice = await Invoice.findOne({
               user_id: user._id,
-              type: 'ctm_membership',
+              type: 'registration_fee',  // ✅ FIXED: Use valid enum value
               createdAt: { $gte: new Date(today.getFullYear(), today.getMonth(), 1) },
             });
 
@@ -108,10 +109,11 @@ async function processMonthlyBilling() {
               // Create annual renewal invoice
               const invoiceNumber = `INV-ANNUAL-${Date.now()}-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
 
+              // ✅ FIXED: Create invoice with valid enum type
               await Invoice.create({
                 user_id: user._id,
                 invoiceNumber,
-                type: 'ctm_membership',
+                type: 'registration_fee',  // ✅ FIXED: CTM renewal uses registration_fee
                 description: `CTM Club Annual Renewal - ${today.getFullYear()}`,
                 amount: annualFee,
                 currency: 'TZS',
@@ -188,7 +190,7 @@ async function processMonthlyBilling() {
               // Create monthly invoice
               const invoiceNumber = `INV-MONTHLY-${Date.now()}-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
 
-              const invoiceType = user.role === 'student' ? 'ctm_membership' : 'monthly_fee';
+              // ✅ FIXED: All monthly subscriptions use 'monthly_fee' type
               const description = user.role === 'student' 
                 ? `Premier Monthly Fee - ${today.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`
                 : `Monthly Subscription - ${today.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`;
@@ -196,7 +198,7 @@ async function processMonthlyBilling() {
               await Invoice.create({
                 user_id: user._id,
                 invoiceNumber,
-                type: invoiceType,
+                type: 'monthly_fee',  // ✅ FIXED: All monthly billing uses monthly_fee
                 description,
                 amount: monthlyFee,
                 currency: 'TZS',
