@@ -1205,6 +1205,248 @@ const productSchema = new mongoose.Schema({
 
 productSchema.index({ name: "text", description: "text" });
 
+// ============================================
+// TRANSACTION SCHEMA
+// ============================================
+
+const transactionSchema = new mongoose.Schema(
+  {
+    // User reference
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+
+    // Business reference (for entrepreneur transactions)
+    businessId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Business",
+      index: true,
+    },
+
+    // School reference (for school-related transactions)
+    schoolId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "School",
+      index: true,
+    },
+
+    // Transaction details
+    transactionType: {
+      type: String,
+      enum: [
+        "registration_fee",
+        "monthly_fee",
+        "ctm_membership",
+        "certificate_fee",
+        "event_fee",
+        "school_fees",
+        "exam_fee",
+        "tuition_fee",
+        "book_sale",
+        "product_sale",
+        "service_fee",
+        "product_purchase",
+        "service_payment",
+        "subscription",
+        "commission",
+        "other",
+      ],
+      required: true,
+      index: true,
+    },
+
+    amount: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+
+    currency: {
+      type: String,
+      default: "TZS",
+      enum: ["TZS", "USD", "EUR"],
+    },
+
+    // Transaction status
+    status: {
+      type: String,
+      enum: [
+        "pending",
+        "processing",
+        "completed",
+        "failed",
+        "cancelled",
+        "refunded",
+      ],
+      default: "pending",
+      required: true,
+      index: true,
+    },
+
+    // Payment details
+    paymentMethod: {
+      type: String,
+      enum: [
+        "mpesa",
+        "tigopesa",
+        "airtel_money",
+        "bank_transfer",
+        "cash",
+        "card",
+        "other",
+      ],
+    },
+
+    paymentReference: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+
+    referenceId: {
+      type: String,
+      required: true,
+      unique: true,
+      index: true,
+    },
+
+    // Description
+    description: {
+      type: String,
+      trim: true,
+    },
+
+    // Metadata (flexible storage)
+    metadata: {
+      type: Map,
+      of: mongoose.Schema.Types.Mixed,
+    },
+
+    // Timestamps
+    initiatedAt: {
+      type: Date,
+      default: Date.now,
+    },
+
+    completedAt: {
+      type: Date,
+    },
+
+    failedAt: {
+      type: Date,
+    },
+
+    // Error tracking
+    errorMessage: {
+      type: String,
+    },
+
+    errorCode: {
+      type: String,
+    },
+
+    // Reconciliation
+    reconciled: {
+      type: Boolean,
+      default: false,
+    },
+
+    reconciledAt: {
+      type: Date,
+    },
+
+    reconciledBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+
+    // Notes
+    notes: {
+      type: String,
+      maxlength: 1000,
+    },
+  },
+  {
+    timestamps: true, // Adds createdAt and updatedAt
+  },
+);
+
+// Indexes for performance
+transactionSchema.index({ userId: 1, createdAt: -1 });
+transactionSchema.index({ businessId: 1, status: 1 });
+transactionSchema.index({ transactionType: 1, status: 1 });
+transactionSchema.index({ status: 1, createdAt: -1 });
+transactionSchema.index({ referenceId: 1 }, { unique: true });
+transactionSchema.index({ paymentReference: 1 }, { sparse: true });
+
+// Pre-save middleware
+transactionSchema.pre("save", function (next) {
+  // Auto-set completedAt when status changes to completed
+  if (
+    this.isModified("status") &&
+    this.status === "completed" &&
+    !this.completedAt
+  ) {
+    this.completedAt = new Date();
+  }
+
+  // Auto-set failedAt when status changes to failed
+  if (this.isModified("status") && this.status === "failed" && !this.failedAt) {
+    this.failedAt = new Date();
+  }
+
+  next();
+});
+
+// Instance methods
+transactionSchema.methods.markAsCompleted = function () {
+  this.status = "completed";
+  this.completedAt = new Date();
+  return this.save();
+};
+
+transactionSchema.methods.markAsFailed = function (errorMessage, errorCode) {
+  this.status = "failed";
+  this.failedAt = new Date();
+  this.errorMessage = errorMessage;
+  this.errorCode = errorCode;
+  return this.save();
+};
+
+transactionSchema.methods.reconcile = function (reconciledBy) {
+  this.reconciled = true;
+  this.reconciledAt = new Date();
+  this.reconciledBy = reconciledBy;
+  return this.save();
+};
+
+// Static methods
+transactionSchema.statics.getByReference = function (referenceId) {
+  return this.findOne({ referenceId });
+};
+
+transactionSchema.statics.getUserTransactions = function (
+  userId,
+  options = {},
+) {
+  const query = { userId };
+
+  if (options.status) {
+    query.status = options.status;
+  }
+
+  if (options.type) {
+    query.transactionType = options.type;
+  }
+
+  return this.find(query)
+    .sort({ createdAt: -1 })
+    .limit(options.limit || 50);
+};
+
 // Revenue Schema (Revenue Tracking)
 const revenueSchema = new mongoose.Schema({
   transactionId: {
