@@ -1236,28 +1236,30 @@ const transactionSchema = new mongoose.Schema(
     // Transaction details
     transactionType: {
       type: String,
-      enum: [
-        "registration_fee",
-        "monthly_fee",
-        "ctm_membership",
-        "certificate_fee",
-        "event_fee",
-        "school_fees",
-        "exam_fee",
-        "tuition_fee",
-        "book_sale",
-        "product_sale",
-        "service_fee",
-        "product_purchase",
-        "service_payment",
-        "subscription",
-        "commission",
-        "other",
-      ],
+      enum: {
+        values: [
+          "registration_fee",
+          "monthly_fee",
+          "annual_fee", // ✅ ADD
+          "certificate_fee",
+          "event_fee",
+          "school_fees",
+          "exam_fee",
+          "tuition_fee",
+          "book_sale",
+          "product_sale",
+          "service_fee",
+          "product_purchase",
+          "service_payment",
+          "subscription",
+          "commission",
+          "other",
+        ],
+        message: "{VALUE} is not a valid transaction type",
+      },
       required: true,
       index: true,
     },
-
     amount: {
       type: Number,
       required: true,
@@ -1462,16 +1464,22 @@ const revenueSchema = new mongoose.Schema({
   netAmount: { type: Number, required: true },
   revenueType: {
     type: String,
-    enum: [
-      "book_sale",
-      "event_fee",
-      "product_sale",
-      "service_fee",
-      "subscription",
-      "commission",
-      "membership",
-      "other",
-    ],
+    enum: {
+      values: [
+        "book_sale",
+        "event_fee",
+        "product_sale",
+        "service_fee",
+        "subscription",
+        "commission",
+        "membership", // ✅ Can keep this for CTM Club revenue
+        "registration_fee", // ✅ ADD
+        "monthly_fee", // ✅ ADD
+        "annual_fee", // ✅ ADD
+        "other",
+      ],
+      message: "{VALUE} is not a valid revenue type",
+    },
     required: true,
     index: true,
   },
@@ -1898,22 +1906,25 @@ const invoiceSchema = new mongoose.Schema(
       index: true, // ✅ Added index
     },
 
-    // ✅ FIXED: Aligned with PaymentHistory.transactionType
     type: {
       type: String,
-      enum: [
-        "registration_fee", // ✅ Changed from "registration"
-        "ctm_membership", // ✅ Same
-        "monthly_fee", // ✅ Changed from "monthly_billing"
-        "certificate_fee", // ✅ Changed from "certificate"
-        "event_fee", // ✅ Changed from "event"
-        "school_fees", // ✅ Same
-        "tuition_fee", // ✅ Changed from "tuition"
-        "exam_fee", // ✅ Changed from "exam"
-        "other", // ✅ Same
-      ],
+      enum: {
+        values: [
+          "registration_fee", // ✅ ALL registrations (students, entrepreneurs)
+          "monthly_fee", // ✅ Monthly subscriptions
+          "annual_fee", // ✅ ADD: Annual subscriptions
+          "certificate_fee", // ✅ Certificate fees
+          "event_fee", // ✅ Event registration
+          "school_fees", // ✅ General school fees
+          "tuition_fee", // ✅ Tuition
+          "exam_fee", // ✅ Exam fees
+          "other", // ✅ Miscellaneous
+        ],
+        message:
+          '{VALUE} is not a valid invoice type. Use "registration_fee" for all registrations.',
+      },
       required: true,
-      index: true, // ✅ Added index
+      index: true,
     },
 
     description: {
@@ -2031,17 +2042,21 @@ const paymentHistorySchema = new mongoose.Schema(
     // ============================================
     transactionType: {
       type: String,
-      enum: [
-        "registration_fee", // ✅ Used throughout Part 2
-        "monthly_fee", // For monthly subscriptions
-        "ctm_membership", // CTM club fees
-        "certificate_fee", // Certificate fees
-        "event_fee", // Event registration
-        "school_fees", // General school fees
-        "exam_fee", // Exam fees
-        "tuition_fee", // Tuition
-        "other", // Miscellaneous
-      ],
+      enum: {
+        values: [
+          "registration_fee", // ✅ ALL registrations
+          "monthly_fee", // ✅ Monthly subscriptions
+          "annual_fee", // ✅ ADD: Annual subscriptions
+          "certificate_fee", // ✅ Certificate fees
+          "event_fee", // ✅ Event registration
+          "school_fees", // ✅ General school fees
+          "exam_fee", // ✅ Exam fees
+          "tuition_fee", // ✅ Tuition
+          "other", // ✅ Miscellaneous
+          // ❌ REMOVED: "ctm_membership"
+        ],
+        message: "{VALUE} is not a valid transaction type",
+      },
       required: true,
     },
 
@@ -4414,11 +4429,10 @@ app.post(
 
       if (role === "student" && student?.registration_type) {
         // ✅ FIXED: Use centralized pricing from utils/packagePricing.js
-        // ✅ CORRECT - Pass education level
         const registrationFee = getStudentRegistrationFee(
           student.registration_type,
           student.institution_type || "government",
-          student.education_level || student.classLevel || student.gradeLevel, // ✅ NEW
+          student.education_level || student.classLevel || student.gradeLevel,
         );
 
         if (registrationFee && registrationFee > 0) {
@@ -4441,11 +4455,11 @@ app.post(
           const invoice = await Invoice.create({
             userId: user._id,
             invoiceNumber,
-            type: "ctm_membership",
+            type: "registration_fee", // ✅ CORRECT
             description: getPackageName(student.registration_type),
-            amount: registrationFee, // ✅ CORRECT - Uses centralized pricing
+            amount: registrationFee,
             currency: "TZS",
-            status: payment && payment.reference ? "verification" : "unpaid", // ✅ FIXED: "unpaid" instead of "pending"
+            status: payment && payment.reference ? "submitted" : "unpaid", // ✅ Also fixed this
             dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
             academicYear: new Date().getFullYear().toString(),
             ...(payment &&
@@ -4459,11 +4473,11 @@ app.post(
           });
 
           console.log(
-            `💰 Invoice created: ${invoiceNumber} for ${registrationFee} TZS`,
+            `💰 Invoice created: ${invoiceNumber} for ${registrationFee} TZS (type: registration_fee)`,
           );
 
           console.log(
-            `📊 PaymentHistory will be created when payment proof is submitted`,
+            `💰 Invoice created: ${invoiceNumber} for ${registrationFee} TZS (type: registration_fee)`, // ✅ Added type logging
           );
 
           // Set next billing date for monthly subscriptions (Silver, Gold, Platinum)
@@ -4513,7 +4527,7 @@ app.post(
             ),
             amount: registrationFee,
             currency: "TZS",
-            status: payment && payment.reference ? "verification" : "unpaid",
+            status: payment && payment.reference ? "submitted" : "unpaid",
             dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
             academicYear: new Date().getFullYear().toString(),
           });
@@ -26360,8 +26374,8 @@ app.post(
 
       const typeMapping = {
         registration_fee: "registration_fee",
-        membership_fee: "ctm_membership",
-        ctm_membership: "ctm_membership",
+        membership_fee: "registration_fee",
+        ctm_membership: "registration_fee",
         certificate_fee: "certificate",
         event_fee: "event",
         tuition_fee: "school_fees",
@@ -26373,13 +26387,15 @@ app.post(
 
       if (
         transactionType === "registration_fee" ||
-        transactionType === "ctm_membership"
+        transactionType === "membership_fee" || // ✅ FIXED: Use valid parameter
+        transactionType === "ctm_membership" // ✅ Accept but map correctly
       ) {
         description = user.registration_type
           ? `${user.registration_type.toUpperCase()} Registration Payment${
               userPaymentStatus === "partial_paid" ? " (Partial)" : ""
             }`
-          : `CTM Club Membership Payment${
+          : `Registration Fee Payment${
+              // ✅ FIXED: Generic description
               userPaymentStatus === "partial_paid" ? " (Partial)" : ""
             }`;
       } else if (transactionType === "certificate_fee") {
@@ -26815,7 +26831,7 @@ app.post(
               dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
               status: "paid", // ✅ FIXED: Changed from "verification" to "paid"
               paidDate: new Date(), // ✅ ADDED
-              type: user.role === "student" ? "ctm_membership" : "registration_fee",
+              type: user.role === "registration_fee",
               items: [
                 {
                   description: getRegistrationDescription(
